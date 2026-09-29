@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# Generated files: collapsed in GitHub diffs. Never edit by hand (see .agents/generated.json).
+**/src/gql/** linguist-generated=true
+**/routeTree.gen.ts linguist-generated=true
+packages/graphql/schema.graphql linguist-generated=true
+packages/db/migrations/**/snapshot.json linguist-generated=true
+pnpm-lock.yaml linguist-generated=true

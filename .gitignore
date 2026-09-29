@@ -1,0 +1,37 @@
+# Dependencies & build output
+node_modules/
+dist/
+.output/
+out-tsc/
+coverage/
+test-output/
+tmp/
+*.tsbuildinfo
+
+# Nx
+.nx/cache/
+.nx/workspace-data/
+.nx/polygraph/
+.nx/self-healing/
+.nx/migrate-runs/
+
+# Environment (commit .env.example only)
+.env
+.env.*
+!.env.example
+!**/.env.serve-e2e
+
+# Agents: local-only files (plans, logs, spike notes, personal settings, worktrees)
+.agents/ignore/
+.claude/settings.local.json
+.claude/worktrees/
+CLAUDE.local.md
+.playwright-cli/
+
+# Editors & OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.DS_Store
+Thumbs.db
