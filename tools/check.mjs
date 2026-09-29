@@ -5,12 +5,18 @@
 //   pnpm check --all    every project (what CI's template smoke test runs)
 //
 // Gates: lint (oxlint) · eslint (module boundaries) · typecheck · test · lint of the files no
-// project owns · agent-config hygiene · generated-file drift · pinned version consistency.
+// project owns · formatting (oxfmt --check) · agent-config hygiene · Nx's agent config · generated-
+// file drift · pinned version consistency.
+//
+//   node tools/check.mjs --lint-loose   one gate: oxlint on the files no project owns
+//   node tools/check.mjs --format       one gate: every file oxfmt formats is formatted
+//   node tools/check.mjs --nx-agents    one gate: `nx configure-ai-agents --check`
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nodeBin, SHELL_ON_WINDOWS } from './lib/bin.mjs';
+import { SCRIPT_EXTENSIONS } from './lib/file-types.mjs';
 import { findArtifact, loadManifest } from './lib/generated.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,7 +47,11 @@ function hasBaseCommit() {
 export const steps = (nxMode) => [
   { name: 'nx', command: ['pnpm', 'nx', ...nxMode, '-t', ...TARGETS, '--outputStyle=static'] },
   { name: 'lint outside projects', command: ['node', 'tools/check.mjs', '--lint-loose'] },
+  // the hooks format edits and commits, but a commit made without them (--no-verify, a web edit,
+  // a bot, a clone without hooks) is only caught here
+  { name: 'format', command: ['node', 'tools/check.mjs', '--format'] },
   { name: 'agent config', command: ['node', 'tools/agents.mjs', 'check'] },
+  { name: 'nx agent config', command: ['node', 'tools/check.mjs', '--nx-agents'] },
   { name: 'generated files', command: ['node', 'tools/agents.mjs', 'regen', '--check'] },
   { name: 'versions', command: ['node', 'tools/check-versions.mjs'] },
 ];
@@ -53,7 +63,7 @@ export const steps = (nxMode) => [
  */
 export function looseFiles(root = ROOT) {
   const manifest = loadManifest(root);
-  const patterns = ['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts'].map((e) => `*.${e}`);
+  const patterns = SCRIPT_EXTENSIONS.map((e) => `*.${e}`);
   const out = execFileSync(
     'git',
     ['ls-files', '-co', '--exclude-standard', '-z', '--', ...patterns],
@@ -90,6 +100,50 @@ function lintLoose() {
   return spawnSync(cmd, [...args, ...files], { cwd: ROOT, stdio: 'inherit' }).status ?? 1;
 }
 
+/**
+ * oxfmt --check on the whole repository: every file type oxfmt formats, minus .gitignore and the
+ * ignorePatterns of .oxfmtrc.json (generated files are rendered into them). Returns the exit code.
+ */
+export function formatCheck(
+  root = ROOT,
+  { oxfmt = nodeBin(root, 'oxfmt'), stdio = 'inherit' } = {},
+) {
+  if (!oxfmt) {
+    console.error('oxfmt is not installed: run `pnpm install`');
+    return 1;
+  }
+  const [cmd, ...args] = oxfmt;
+  const status = spawnSync(cmd, [...args, '--check', '.'], { cwd: root, stdio }).status ?? 1;
+  if (status !== 0 && stdio === 'inherit')
+    console.error('✗ files above are not formatted: run `pnpm format` (or oxfmt on them)');
+  return status;
+}
+
+/**
+ * `nx configure-ai-agents --check`: the CLAUDE.md block, settings and .gitignore lines that Nx
+ * writes still match what it would write. Humans update them (`pnpm agents:nx`); agents may not.
+ */
+function nxAgentsCheck() {
+  const nx = nodeBin(ROOT, 'nx');
+  if (!nx) {
+    console.error('nx is not installed: run `pnpm install`');
+    return 1;
+  }
+  const [cmd, ...args] = nx;
+  const status =
+    spawnSync(cmd, [...args, 'configure-ai-agents', '--check'], {
+      cwd: ROOT,
+      stdio: 'inherit',
+      // the AI files of the installed Nx version, not the latest ones from the network
+      env: { ...process.env, NX_AI_FILES_USE_LOCAL: 'true' },
+    }).status ?? 1;
+  if (status !== 0)
+    console.error(
+      "✗ Nx's agent config drifted from what `nx configure-ai-agents` writes: a human runs `pnpm agents:nx` and commits the result",
+    );
+  return status;
+}
+
 function main() {
   const nxMode = all || !hasBaseCommit() ? ['run-many', '--all'] : ['affected'];
   const failed = [];
@@ -111,5 +165,7 @@ function main() {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (process.argv.includes('--lint-loose')) process.exitCode = lintLoose();
+  else if (process.argv.includes('--format')) process.exitCode = formatCheck();
+  else if (process.argv.includes('--nx-agents')) process.exitCode = nxAgentsCheck();
   else main();
 }

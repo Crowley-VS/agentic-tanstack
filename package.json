@@ -6,12 +6,14 @@
   "type": "module",
   "scripts": {
     "check": "node tools/check.mjs",
+    "format": "oxfmt",
     "ports": "node tools/dev-ports.mjs --print",
     "regen": "node tools/agents.mjs regen",
     "agents:sync": "node tools/agents.mjs sync",
     "agents:check": "node tools/agents.mjs check",
     "agents:nx": "NX_AI_FILES_USE_LOCAL=true nx configure-ai-agents --agents claude --no-interactive",
-    "agents:nx-check": "NX_AI_FILES_USE_LOCAL=true nx configure-ai-agents --check"
+    "agents:nx-check": "node tools/check.mjs --nx-agents",
+    "prepare": "node tools/agents.mjs install-hooks"
   },
   "devDependencies": {
     "@nx/eslint": "catalog:",

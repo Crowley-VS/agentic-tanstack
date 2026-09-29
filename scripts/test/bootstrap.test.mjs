@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { needsShell, USAGE, withoutScriptsRules } from '../bootstrap.ts';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const PROJECT = ['--yes', '--scope', '@smoke', '--name', 'smoke-app'];
@@ -66,6 +67,24 @@ function withOrigin(url) {
   execFileSync('git', ['remote', 'add', 'origin', url], { cwd: copy });
   return bootstrap(copy, [...PROJECT, '--dry-run']);
 }
+/** `git …` in `cwd`, returning trimmed stdout. */
+const gitIn = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+/** A "Use this template" copy: every file in one initial commit, with a git identity. */
+function templateCopy() {
+  const copy = archiveCopy();
+  gitIn(copy, 'init', '-q', '-b', 'main');
+  gitIn(copy, 'config', 'user.email', 'smoke@example.com');
+  gitIn(copy, 'config', 'user.name', 'Smoke');
+  gitIn(copy, 'add', '-A');
+  gitIn(copy, 'commit', '-q', '-m', 'Initial commit');
+  return copy;
+}
+/** The copy's formatting, checked with this repository's oxfmt (the copy has no node_modules). */
+function oxfmtCheck(copy) {
+  const bin = JSON.parse(readFileSync(join(REPO, 'node_modules/oxfmt/package.json'), 'utf8')).bin;
+  const entry = join(REPO, 'node_modules/oxfmt', typeof bin === 'string' ? bin : bin.oxfmt);
+  return spawnSync(process.execPath, [entry, '--check', '.'], { cwd: copy, encoding: 'utf8' });
+}
 const secret = (root) =>
   readFileSync(join(root, '.env'), 'utf8').match(/^INTERNAL_API_SECRET=(.*)$/m)?.[1];
 
@@ -86,6 +105,17 @@ describe('bootstrap', () => {
     expect(readFileSync(join(copy, 'README.md'), 'utf8')).toMatch(/^# smoke-app\n/);
     const tsconfig = JSON.parse(readFileSync(join(copy, 'tsconfig.json'), 'utf8'));
     expect(tsconfig.references.map((r) => r.path)).not.toContain('./scripts');
+    // the scripts project is gone, and so are the allow rules that name its targets
+    const before = readFileSync(join(REPO, '.claude/settings.json'), 'utf8');
+    expect(before).toContain('"Bash(pnpm nx run scripts:test)"');
+    const settings = readFileSync(join(copy, '.claude/settings.json'), 'utf8');
+    expect(settings).not.toContain('scripts:');
+    expect(JSON.parse(settings).permissions.allow).toEqual(
+      JSON.parse(before).permissions.allow.filter((r) => !r.includes(' scripts:')),
+    );
+    // what bootstrap rewrote is still formatted (`pnpm check` has a format gate)
+    const fmt = oxfmtCheck(copy);
+    expect(fmt.status, `${fmt.stdout}${fmt.stderr}`).toBe(0);
     const pkg = JSON.parse(readFileSync(join(copy, 'package.json'), 'utf8'));
     expect(pkg.name).toBe('@smoke/source');
     expect(pkg.template.repo).toBeTruthy();
@@ -199,6 +229,93 @@ describe('bootstrap', () => {
         `chore: bootstrap from ${template.repo}@${template.version}`,
       );
     },
+  );
+
+  it('--help documents every option it accepts; an unknown option prints the same help', () => {
+    const source = readFileSync(join(REPO, 'scripts/bootstrap.ts'), 'utf8');
+    const options = [...source.matchAll(/^\s*case '(-[-\w]+)':/gm)].map((m) => m[1]);
+    expect(options).toEqual(expect.arrayContaining(['--yes', '--dry-run', '--keep-script', '-h']));
+    const help = bootstrap(archiveCopy(), ['--help']);
+    expect(help.code).toBe(0);
+    expect(help.out.trim()).toBe(USAGE);
+    for (const option of options)
+      expect(help.out, option).toMatch(new RegExp(`(^|[\\s,])${option}\\b`));
+    const unknown = bootstrap(archiveCopy(), ['--frobnicate']);
+    expect(unknown.code).toBe(1);
+    expect(unknown.out).toContain('unknown option --frobnicate');
+    expect(unknown.out).toContain(USAGE);
+  });
+
+  it('starts only pnpm through a shell (cmd.exe would split the commit message)', () => {
+    expect(needsShell('pnpm', 'win32')).toBe(true);
+    for (const cmd of ['git', 'node']) expect(needsShell(cmd, 'win32'), cmd).toBe(false);
+    for (const cmd of ['pnpm', 'git']) expect(needsShell(cmd, 'linux'), cmd).toBe(false);
+  });
+
+  it('drops only whole allow-rule lines for the scripts project', () => {
+    const text =
+      '{\n  "allow": [\n    "Bash(pnpm nx run scripts:test)",\n    "Bash(pnpm nx run tools:test)"\n  ]\n}\n';
+    expect(withoutScriptsRules(text)).toBe(
+      '{\n  "allow": [\n    "Bash(pnpm nx run tools:test)"\n  ]\n}\n',
+    );
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps itself when the commit fails, and a re-run commits without it, then deletes it',
+    () => {
+      const copy = templateCopy();
+      const hook = join(copy, '.git/hooks/pre-commit');
+      writeFileSync(hook, '#!/bin/sh\necho "refusing to commit" >&2\nexit 1\n');
+      chmodSync(hook, 0o755);
+
+      const first = bootstrap(copy, [...PROJECT, '--no-install']);
+      expect(first.code, first.out).toBe(1);
+      expect(first.out).toContain('`git commit -q -m chore: bootstrap from');
+      for (const f of ['scripts/bootstrap.ts', 'scripts/bootstrap.mjs'])
+        expect(existsSync(join(copy, f)), f).toBe(true);
+
+      rmSync(hook);
+      const again = bootstrap(copy, [...PROJECT, '--no-install']);
+      expect(again.code, again.out).toBe(0);
+      expect(existsSync(join(copy, 'scripts'))).toBe(false);
+      expect(gitIn(copy, 'log', '-1', '--format=%s')).toMatch(/^chore: bootstrap from /);
+      expect(gitIn(copy, 'show', '--name-status', '--format=', 'HEAD')).toMatch(
+        /^D\tscripts\/bootstrap\.ts$/m,
+      );
+      expect(gitIn(copy, 'status', '--porcelain')).toBe('');
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'leaves no Nx daemon behind: the first Nx task after a local (non-CI) bootstrap passes',
+    () => {
+      // a tarball copy with a fresh repository, as in the report this reproduces
+      const copy = archiveCopy();
+      gitIn(copy, 'init', '-q', '-b', 'main');
+      gitIn(copy, 'config', 'user.email', 'smoke@example.com');
+      gitIn(copy, 'config', 'user.name', 'Smoke');
+      // a developer's shell: not CI (CI=false also overrides GITHUB_ACTIONS for Nx), and none of
+      // the Nx task variables of the run we are in
+      const env = Object.fromEntries(
+        Object.entries(process.env).filter(([k]) => !k.startsWith('NX_')),
+      );
+      Object.assign(env, { CI: 'false', NX_NO_CLOUD: 'true' });
+      const pnpm = (...args) =>
+        spawnSync('pnpm', args, { cwd: copy, env, encoding: 'utf8', input: '' });
+      try {
+        const res = bootstrap(copy, PROJECT, env);
+        expect(res.code, res.out).toBe(0);
+        // the install (not CI) also installed the git hooks
+        expect(existsSync(join(copy, '.git/hooks/pre-commit'))).toBe(true);
+        const task = pnpm('nx', 'run', 'validators:lint', '--outputStyle=static');
+        const out = `${task.stdout}${task.stderr}`;
+        expect(out).not.toContain('DB transaction error');
+        expect(task.status, out).toBe(0);
+      } finally {
+        pnpm('nx', 'daemon', '--stop');
+      }
+    },
+    180_000,
   );
 
   it('fails with a readable error instead of prompting when stdin is not a terminal', () => {

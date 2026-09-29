@@ -15,12 +15,17 @@
         "inputs": [
           "default",
           "^production",
+          "{workspaceRoot}/.agents/generated.json",
           "{workspaceRoot}/.agents/skills/**/*",
           "{workspaceRoot}/.claude/settings.json",
           "{workspaceRoot}/.claude/workflows/**/*",
           "{workspaceRoot}/AGENTS.md",
           "{workspaceRoot}/eslint.config.mjs",
-          "{workspaceRoot}/lefthook.yml"
+          "{workspaceRoot}/lefthook.yml",
+          "{workspaceRoot}/nx.json",
+          "{workspaceRoot}/**/package.json",
+          "{workspaceRoot}/**/project.json",
+          "{workspaceRoot}/**/tsconfig*.json"
         ]
       }
     }

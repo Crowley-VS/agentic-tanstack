@@ -1,8 +1,9 @@
-// Turns a fresh copy of the template into your project. Run via `node scripts/bootstrap.mjs`.
-// Zero dependencies (runs before `pnpm install`), erasable TypeScript only.
+// Turns a fresh copy of the template into your project. Run via `node scripts/bootstrap.mjs`
+// (`--help` lists every option; see USAGE). Zero dependencies (runs before `pnpm install`),
+// erasable TypeScript only.
 //
 // Every step checks its own postcondition first, so a failed run can simply be re-run.
-// The script deletes itself only after everything succeeded.
+// The script deletes itself only after everything succeeded, the commit included.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
@@ -45,6 +46,30 @@ const TEMPLATE_ONLY = [
   'release-please-config.json',
   '.release-please-manifest.json',
 ];
+
+export const USAGE = `Usage: node scripts/bootstrap.mjs [options]
+
+Turns a fresh copy of this template into your project: renames the @acme / acme-app placeholders,
+writes .env with a generated secret, removes template-only files, records the template version,
+installs, commits, and deletes itself. It asks for anything it needs that no option gives, unless
+--yes is set. Safe to re-run after a failure.
+
+Options:
+  -y, --yes                 never ask: take the defaults (needs --scope and --name)
+      --scope <@scope>      npm scope for the internal packages, e.g. @my-org
+      --name <name>         project name: lowercase letters, digits and dashes, e.g. my-app
+      --repo <owner/repo>   GitHub repository the deploy config points at (default: the origin
+                            remote, else <scope>/<name>)
+      --license <choice>    keep, replace (MIT with your name) or delete LICENSE (default: ask;
+                            replace with --yes)
+      --author <name>       copyright holder of a replaced LICENSE (default: git user.name)
+      --dry-run             print what would change, write nothing, and stop before installing
+      --force               run even though origin is the template repository itself
+      --no-install          skip pnpm install, regeneration and the git hooks
+      --no-browsers         skip the Playwright browser download
+      --no-commit           leave the changes uncommitted
+      --keep-script         keep scripts/bootstrap.* instead of deleting them at the end
+  -h, --help                print this help`;
 
 type Options = {
   yes: boolean;
@@ -118,16 +143,11 @@ function parseArgs(argv: string[]): Options {
         break;
       case '--help':
       case '-h':
-        console.log(
-          readFileSync(join(ROOT, 'scripts', 'bootstrap.mjs'), 'utf8')
-            .split('\n')
-            .slice(1, 6)
-            .join('\n'),
-        );
+        console.log(USAGE);
         process.exit(0);
         break;
       default:
-        fail(`unknown option ${arg}`);
+        fail(`unknown option ${arg}\n\n${USAGE}`);
     }
   }
   return opts;
@@ -146,9 +166,22 @@ function fail(message: string): never {
 
 const step = (title: string) => console.log(`\n▶ ${title}`);
 
-// On Windows `pnpm` (from corepack or `npm i -g`) is a .cmd shim, which only starts through a
-// shell. The arguments passed here are fixed words that need no quoting.
-const SHELL = process.platform === 'win32';
+/**
+ * Whether `cmd` must start through a shell. On Windows `pnpm` (from corepack or `npm i -g`) is a
+ * .cmd shim, which only starts through one; its arguments here are fixed words that need no
+ * quoting. Nothing else goes through a shell: cmd.exe would split an argument with spaces (the
+ * commit message) into several.
+ */
+export function needsShell(cmd: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'win32' && cmd === 'pnpm';
+}
+
+/**
+ * Environment of every command bootstrap runs. No Nx daemon: one started by bootstrap's own Nx
+ * commands outlives it, and the first Nx task after a local bootstrap then fails with an Nx DB
+ * error ("FOREIGN KEY constraint failed") although every task passed.
+ */
+export const CHILD_ENV = { NX_DAEMON: 'false' };
 
 function run(
   cmd: string,
@@ -158,8 +191,8 @@ function run(
   const res = spawnSync(cmd, args, {
     cwd: ROOT,
     stdio: 'inherit',
-    env: { ...process.env, ...opts.env },
-    shell: SHELL,
+    env: { ...process.env, ...CHILD_ENV, ...opts.env },
+    shell: needsShell(cmd),
   });
   if (res.status !== 0 && !opts.allowFail)
     fail(`\`${cmd} ${args.join(' ')}\` failed (exit ${res.status})`);
@@ -183,7 +216,7 @@ function tryGit(args: string[]): string | undefined {
 }
 
 function hasCommand(cmd: string): boolean {
-  return spawnSync(cmd, ['--version'], { stdio: 'ignore', shell: SHELL }).status === 0;
+  return spawnSync(cmd, ['--version'], { stdio: 'ignore', shell: needsShell(cmd) }).status === 0;
 }
 
 /** `owner/repo` of a GitHub remote URL (https, ssh or scp-like), or undefined. */
@@ -259,7 +292,19 @@ function isText(buf: Buffer): boolean {
   return !buf.subarray(0, 8000).includes(0);
 }
 
-async function main() {
+/**
+ * .claude/settings.json without the allow rules for the scripts project's targets (e.g.
+ * `Bash(pnpm nx run scripts:test)`): bootstrap deletes that project. Line by line, so the rest of
+ * the file keeps its formatting; each such rule is on a line of its own, never the last one.
+ */
+export function withoutScriptsRules(settings: string): string {
+  return settings
+    .split('\n')
+    .filter((l) => !/^\s*"Bash\(pnpm nx run scripts:[\w-]+\)",\s*$/.test(l))
+    .join('\n');
+}
+
+export async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const template = existsSync(join(ROOT, 'template.json')) ? readJson('template.json') : undefined;
   const pkg = readJson('package.json');
@@ -369,6 +414,15 @@ async function main() {
     if (!opts.dryRun) writeJson('tsconfig.json', { ...rootTsconfig, references: kept });
     console.log('  removed the scripts project from tsconfig.json');
   }
+  const settingsFile = join(ROOT, '.claude', 'settings.json');
+  if (existsSync(settingsFile)) {
+    const settings = readFileSync(settingsFile, 'utf8');
+    const trimmed = withoutScriptsRules(settings);
+    if (trimmed !== settings) {
+      if (!opts.dryRun) writeFileSync(settingsFile, trimmed);
+      console.log("  removed the scripts project's allow rules from .claude/settings.json");
+    }
+  }
   if (existsSync(join(ROOT, 'README.project.md'))) {
     if (!opts.dryRun) renameSync(join(ROOT, 'README.project.md'), join(ROOT, 'README.md'));
     console.log('  README.project.md → README.md');
@@ -423,7 +477,9 @@ async function main() {
   if (opts.install) {
     step('Install');
     run('pnpm', ['install']); // not frozen: package names changed
-    if (!process.env.CI) run('pnpm', ['exec', 'lefthook', 'install'], { allowFail: true });
+    // Its `prepare` script installs the git hooks too, but only on a full install: after a failed
+    // first run, pnpm may find everything up to date and run no scripts. Skipped when CI is set.
+    run('node', ['tools/agents.mjs', 'install-hooks'], { allowFail: true });
     run('pnpm', ['nx', 'reset']);
     run('pnpm', ['nx', 'sync']);
     if (readJson('.agents/generated.json').artifacts.length > 0) run('pnpm', ['regen']);
@@ -435,31 +491,36 @@ async function main() {
     }
   }
 
-  // 8. Remove this script, then commit -----------------------------------------------------
+  // 8. Commit, then remove this script ------------------------------------------------------
+  // The commit leaves the script out, and the script is deleted only after the commit succeeded:
+  // a failed commit leaves it in place to re-run.
+  const self = ['scripts/bootstrap.ts', 'scripts/bootstrap.mjs'];
+  if (opts.commit) {
+    step('Commit');
+    const identity = tryGit(['config', 'user.email']);
+    if (!identity) console.log('  skipped: set git user.name/user.email, then commit yourself');
+    else {
+      run('git', ['add', '-A']);
+      if (!opts.keepScript) run('git', ['rm', '-q', '--cached', '--ignore-unmatch', '--', ...self]);
+      // exits 0 when nothing is staged
+      if (tryGit(['diff', '--cached', '--quiet']) !== undefined) console.log('  nothing to commit');
+      else {
+        // template.json is gone after an earlier run; package.json#template keeps the provenance.
+        const provenance = template ?? fresh.template;
+        const from = provenance?.repo ? `${provenance.repo}@${provenance.version}` : 'template';
+        run('git', ['commit', '-q', '-m', `chore: bootstrap from ${from}`], {
+          env: { LEFTHOOK: '0' },
+        });
+        console.log('  committed');
+      }
+    }
+  }
   if (!opts.keepScript) {
-    rmSync(join(ROOT, 'scripts', 'bootstrap.ts'), { force: true });
-    rmSync(join(ROOT, 'scripts', 'bootstrap.mjs'), { force: true });
+    for (const f of self) rmSync(join(ROOT, f), { force: true });
     try {
       rmdirSync(join(ROOT, 'scripts'));
     } catch {
       // not empty: keep it
-    }
-  }
-  if (opts.commit) {
-    step('Commit');
-    const identity = tryGit(['config', 'user.email']);
-    const dirty = (tryGit(['status', '--porcelain']) ?? '').length > 0;
-    if (!identity) console.log('  skipped: set git user.name/user.email, then commit yourself');
-    else if (!dirty) console.log('  nothing to commit');
-    else {
-      run('git', ['add', '-A']);
-      // template.json is gone after an earlier run; package.json#template keeps the provenance.
-      const provenance = template ?? fresh.template;
-      const from = provenance?.repo ? `${provenance.repo}@${provenance.version}` : 'template';
-      run('git', ['commit', '-q', '-m', `chore: bootstrap from ${from}`], {
-        env: { LEFTHOOK: '0' },
-      });
-      console.log('  committed');
     }
   }
 
@@ -467,10 +528,8 @@ async function main() {
 ✓ Bootstrapped ${scope}/… (${name}).
 
 Next steps:
-  pnpm check                      the definition of done (lint, boundaries, types, tests, agent config)
+  pnpm check                      the definition of done (lint, format, boundaries, types, tests, agent config)
   pnpm ports                      this checkout's ports and database URLs
   AGENTS.md                       how agents (and you) work in this repo
 `);
 }
-
-await main();

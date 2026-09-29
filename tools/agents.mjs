@@ -13,10 +13,14 @@
 //   regen    run every regen command from .agents/generated.json; --check = fail when regen
 //            changes ANY file (generated outputs and the configs sync renders)
 //   staged   pre-commit: format + lint the given staged files (skipping generated ones), and
-//            re-stage them at once so the jobs after it see the formatted content
+//            re-stage them at once so the jobs after it see the formatted content. oxfmt itself
+//            decides which files it formats (like `oxfmt --check` in `pnpm check`)
 //   heal     post-commit: after `git commit -- <paths>`, put back in the index what the
-//            pre-commit hook changed in the commit (see healIndex)
-import { execFileSync, execSync } from 'node:child_process';
+//            pre-commit hook changed in the commit (see healIndex); then sync the working tree
+//            from its own sources (see healWorkingTree)
+//   install-hooks  install the git hooks (lefthook); the root `prepare` script runs it on
+//            `pnpm install`. Skipped when CI is set, like lefthook's own postinstall
+import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   cpSync,
@@ -34,7 +38,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nodeBin } from './lib/bin.mjs';
-import { findArtifact, isTracked, loadManifest, toRepoPath } from './lib/generated.mjs';
+import { isScript } from './lib/file-types.mjs';
+import { findArtifact, loadManifest, toRepoPath } from './lib/generated.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -394,6 +399,52 @@ function healIndex(root = ROOT) {
   return heal;
 }
 
+/** git operations that commit step by step; a post-commit that edits files would break the next step. */
+const SEQUENCES = ['rebase-merge', 'rebase-apply', 'sequencer'];
+
+/**
+ * Post-commit, after healIndex: sync the working tree from its own sources. While the pre-commit
+ * hook runs, lefthook hides the unstaged changes of partially staged files, so the pre-commit sync
+ * copied the STAGED version of a partially staged skill source; lefthook then restores the unstaged
+ * edit in the source only. Returns sync's problems, or undefined when a rebase, cherry-pick or
+ * revert is committing step by step (its next step needs a clean working tree).
+ */
+function healWorkingTree(root = ROOT) {
+  const inSequence = SEQUENCES.some((d) =>
+    existsSync(resolve(root, git(root, ['rev-parse', '--git-path', d]).trim())),
+  );
+  return inSequence ? undefined : sync(root);
+}
+
+// ---------- install-hooks ----------
+/** Like lefthook's postinstall: `CI` set and not overridden by `LEFTHOOK`. */
+const enabled = (value) => Boolean(value) && value !== '0' && value !== 'false';
+
+/**
+ * Install the git hooks (lefthook.yml), which lefthook's own postinstall does not do reliably:
+ * pnpm skips it when lefthook was already built into its store (side-effects cache). Never throws:
+ * an install must not fail over hooks. Skipped when CI is set (as lefthook's postinstall does), so
+ * CI and agent worktrees (`CI=1 pnpm install`) leave the hooks that every worktree shares alone.
+ * Returns what it did.
+ */
+function installHooks(
+  root = ROOT,
+  { env = process.env, lefthook = nodeBin(root, 'lefthook') } = {},
+) {
+  if (enabled(env.CI) && !enabled(env.LEFTHOOK)) return 'skipped (CI is set)';
+  if (!lefthook) return 'skipped (lefthook is not installed)';
+  try {
+    git(root, ['rev-parse', '--git-dir'], { stdio: 'ignore' });
+  } catch {
+    return 'skipped (not a git repository)';
+  }
+  const [cmd, ...args] = lefthook;
+  const res = spawnSync(cmd, [...args, 'install'], { cwd: root, encoding: 'utf8' });
+  return res.status === 0
+    ? 'installed'
+    : `failed: ${`${res.stdout ?? ''}${res.stderr ?? ''}`.trim() || res.error?.message || `exit ${res.status}`}`;
+}
+
 // ---------- adopt ----------
 function adopt(root = ROOT) {
   const dst = join(root, '.claude', 'skills');
@@ -412,11 +463,14 @@ function adopt(root = ROOT) {
 
 // ---------- check (hygiene) ----------
 const GIT_OUTPUT_COMMANDS = ['diff', 'log', 'show', 'whatchanged', 'format-patch'];
-const NX_RUNNERS = ['nx', 'pnpm nx', 'pnpm exec nx', 'pnpm dlx nx', 'npx nx'];
+const NX_RUNNERS = ['nx', 'pnpm nx', 'pnpm exec nx', 'pnpm dlx nx', 'pnpx nx', 'npx nx'];
 // nx subcommands that only read. Every other one runs or writes something: run, run-many,
 // affected, exec and the `nx <target> <project>` shorthand run targets (nx:run-commands takes
 // --command/--args, and other arguments are forwarded to the tool), --graph=<file> writes a file.
 const NX_READ_ONLY = new Set(['show', 'list', 'report']);
+// gh commands that read a PR's whole discussion (`gh pr view --comments`, the comments API):
+// `node tools/pr-review.mjs info` passes on only what the PR author and the `gh` user wrote.
+const GH_DISCUSSION = ['gh pr view', 'gh issue view', 'gh api'];
 
 /**
  * Why a wildcard allow rule auto-approves more than it seems to, or undefined when it does not
@@ -429,11 +483,26 @@ export function unsafeAllowRule(rule) {
   const pattern = content.replace(/:\*$/, ' *'); // legacy `cmd:*` = `cmd *`
   const star = pattern.indexOf('*');
   if (star === -1) return undefined;
-  const prefix = pattern.slice(0, star);
+  // leading `VAR=value` assignments do not change which command runs
+  const prefix = pattern.slice(0, star).replace(/^(?:[A-Za-z_]\w*=\S*\s+)+/, '');
+  // Options between git/pnpm and the subcommand change what runs where: `git -c core.pager=<cmd>`
+  // runs any command, `git -C <dir>` / `--no-pager` and `pnpm -w` / `--filter <p>` reach the same
+  // subcommands under another spelling (`git --no-pager log --output=<file>`).
+  const words = prefix.split(/\s+/);
+  const optionAt = (i) => words.length > i && words[i].startsWith('-');
+  if (
+    (words[0] === 'git' && optionAt(1)) ||
+    (words[0] === 'pnpm' && (optionAt(1) || (['exec', 'dlx'].includes(words[1]) && optionAt(2))))
+  )
+    return `puts options before the ${words[0]} subcommand, which can run any command (git -c core.pager=<cmd>) or reach any subcommand under another spelling (git -C . diff, pnpm -w nx run); allow the plain command instead`;
   // the wildcard can complete the prefix to `command …`, or the prefix already is `command …`
   const covers = (command) => `${command} `.startsWith(prefix) || prefix.startsWith(`${command} `);
   if (GIT_OUTPUT_COMMANDS.some((c) => covers(`git ${c}`)))
     return 'also approves writing any file (git diff/log/show --output=<file>); drop it (read-only git diff/log need no rule)';
+  if (covers('gh api'))
+    return 'also approves any GitHub API call, writes included (gh api -X POST), and reading the unfiltered PR discussion; allow exact commands instead';
+  if (GH_DISCUSSION.some((c) => covers(c)))
+    return 'also approves reading the unfiltered PR discussion (gh pr view --comments), which `node tools/pr-review.mjs info` limits to the PR author and your gh user; allow exact commands or `node tools/pr-review.mjs info *` instead';
   for (const runner of NX_RUNNERS) {
     if (!covers(runner)) continue;
     const rest = prefix.startsWith(`${runner} `) ? prefix.slice(runner.length + 1) : '';
@@ -537,8 +606,10 @@ function check(root = ROOT, { tracked, previousGlobs, fix = '`pnpm agents:sync`'
     '.mcp.json',
     ...listFiles(join(root, '.agents', 'skills')).map((f) => `.agents/skills/${f}`),
     ...listFiles(join(root, '.claude', 'agents')).map((f) => `.claude/agents/${f}`),
-  ].filter((f) => existsSync(join(root, f)));
-  for (const f of agentFiles) {
+    // workflow scripts: their template strings are the prompts of every agent they start
+    ...listFiles(join(root, '.claude', 'workflows')).map((f) => `.claude/workflows/${f}`),
+  ].map((f) => f.split(sep).join('/'));
+  for (const f of agentFiles.filter((file) => existsSync(join(root, file)))) {
     const text = readFileSync(join(root, f), 'utf8');
     if (/(?:^|[\s"'`(])(?:\/home\/|\/Users\/|[A-Z]:\\Users\\)/m.test(text))
       problems.push(`${f} contains a machine-specific absolute path`);
@@ -665,12 +736,14 @@ function staged(files, root = ROOT) {
   // Files with unstaged changes are left to lefthook's `stage_fixed` (under lefthook there are
   // none: it hides the unstaged changes of partially staged files while the hook runs).
   const unstaged = new Set(lines0(git(root, ['diff', '--name-only', '-z', '--', ...keep])));
+  // Every staged file goes to oxfmt, which formats the types it supports and skips the rest: the
+  // same decision as the edit hook and `oxfmt --check` in `pnpm check`.
   const [oxfmt, ...oxfmtArgs] = tool('oxfmt');
   execFileSync(oxfmt, [...oxfmtArgs, '--no-error-on-unmatched-pattern', ...keep], {
     cwd: root,
     stdio: 'inherit',
   });
-  const lintable = keep.filter((f) => /\.(?:[cm]?[jt]sx?)$/.test(f));
+  const lintable = keep.filter(isScript);
   if (lintable.length) {
     const [oxlint, ...oxlintArgs] = tool('oxlint');
     execFileSync(oxlint, [...oxlintArgs, '--fix', ...lintable], { cwd: root, stdio: 'inherit' });
@@ -732,14 +805,30 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       const healed = healIndex();
       if (healed.length)
         console.log(`agents: restored the committed ${healed.join(', ')} in the index`);
+      const synced = healWorkingTree() ?? [];
+      const updates = synced.filter((p) => !p.includes(NO_SOURCE));
+      if (updates.length) console.log(`agents: synced the working tree (${updates.join('; ')})`);
       break;
     }
+    case 'install-hooks':
+      console.log(`agents: git hooks ${installHooks()}`);
+      break;
     default:
       console.error(
-        'usage: node tools/agents.mjs <sync [--stage]|check [--staged]|adopt|regen [--check]|staged <files...>|heal>',
+        'usage: node tools/agents.mjs <sync [--stage]|check [--staged]|adopt|regen [--check]|staged <files...>|heal|install-hooks>',
       );
       process.exitCode = 1;
   }
 }
 
-export { adopt, check, checkStaged, healIndex, regen, sync, syncAndStage, isTracked };
+export {
+  adopt,
+  check,
+  checkStaged,
+  healIndex,
+  healWorkingTree,
+  installHooks,
+  regen,
+  sync,
+  syncAndStage,
+};

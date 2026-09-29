@@ -4,6 +4,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { installHooks } from '../agents.mjs';
+import { nodeBin } from '../lib/bin.mjs';
 import { commentBody, findingId } from '../pr-review.mjs';
 import { commitAll, makeRepo, tempDir } from './helpers.mjs';
 
@@ -34,17 +36,36 @@ const DEFAULTS = {
   summary: () => 'commented',
 };
 
+/** A clean hands-on run: what the tester reports unless a test answers for it (`tester`). */
+const TESTED = [
+  {
+    claimOrArea: 'pnpm check --all',
+    stepsOrCommand: 'pnpm check --all',
+    result: 'pass',
+    evidence: '✓ pnpm check passed',
+  },
+];
+
 // Like the workflow runtime: a thunk that throws resolves to null.
 const parallel = (thunks) => Promise.all(thunks.map((t) => t().catch(() => null)));
 
-/** Run the workflow; `responders[kind](call)` answers agent calls (kind = label prefix). */
+/**
+ * Run the workflow; `responders[kind](call)` answers agent calls (kind = label prefix). The tester
+ * is a reviewer (`review`), answered by `responders.tester` when a test gives one; otherwise its
+ * `review` answer comes with a clean hands-on run (TESTED), since most tests are about findings.
+ */
 async function runLoop(responders = {}, args = { pr: 7, maxRounds: 3 }) {
   const calls = [];
   const state = { sha: SHA, pushes: 0 };
   const agent = async (prompt, opts = {}) => {
     const call = { kind: String(opts.label).split(':')[0], label: opts.label, prompt, opts, state };
     calls.push(call);
-    return (responders[call.kind] ?? DEFAULTS[call.kind])(call);
+    const tester = String(opts.label).startsWith('review:tester');
+    if (tester && responders.tester) return responders.tester(call);
+    const out = await (responders[call.kind] ?? DEFAULTS[call.kind])(call);
+    return tester && Array.isArray(out?.findings) && !('tested' in out)
+      ? { ...out, tested: TESTED }
+      : out;
   };
   const body = SOURCE.replace(/^export const meta =/m, 'const meta =');
   const run = new AsyncFunction('args', 'agent', 'parallel', 'phase', 'log', body);
@@ -242,6 +263,15 @@ describe('review-loop workflow', () => {
     const tester = of('review').find((c) => c.label === 'review:tester:r1');
     expect(tester?.prompt).toContain('pnpm check --all');
     expect(tester?.prompt).toContain('open the changed pages in a browser');
+    // and has it report what it ran: at least one entry, each with its result and evidence
+    expect(tester?.opts.schema.required).toEqual(['findings', 'tested']);
+    expect(tester?.opts.schema.properties.tested).toMatchObject({
+      minItems: 1,
+      items: { required: ['claimOrArea', 'stepsOrCommand', 'result', 'evidence'] },
+    });
+    expect(tester?.prompt).toContain('"could-not-run"');
+    const reviewer = of('review').find((c) => c.label === 'review:correctness:r1');
+    expect(reviewer?.opts.schema.required).toEqual(['findings']);
     // (stack-only scripts such as the ports one are kept out by `pnpm agents:check`)
     expect(tester?.prompt).not.toMatch(/pnpm dev|playwright-cli|dev-ports/);
   });
@@ -320,6 +350,59 @@ describe('review-loop: an agent that returns nothing is never a clean answer', (
       complete: false,
       open: ['tools/check.mjs: Gate order hides drift'],
     });
+  });
+});
+
+describe('review-loop: the hands-on tester shows what it ran', () => {
+  it('does not post ✅ when the tester reports nothing it ran', async () => {
+    for (const tester of [() => ({ findings: [] }), () => ({ findings: [], tested: [] })]) {
+      const { result, summary, of } = await runLoop({ tester });
+      expect(of('review').filter(inRound(3))).toHaveLength(4); // each round had a gap
+      expect(of('fix')).toHaveLength(0);
+      expect(summary).not.toContain('✅');
+      expect(summary).toContain('⚠️');
+      expect(summary).toContain('tester (reported nothing it ran)');
+      expect(summary).toContain('- (the tester reported nothing it ran)');
+      expect(result.complete).toBe(false);
+    }
+  });
+
+  it('treats anything the tester could not run as a gap, and lists every test in the summary', async () => {
+    const tested = [
+      ...TESTED,
+      {
+        claimOrArea: 'the notes page',
+        stepsOrCommand: 'open http://localhost:3000/notes',
+        result: 'could-not-run',
+        evidence: 'no browser tools in this session',
+      },
+    ];
+    const { result, summary } = await runLoop({ tester: () => ({ findings: [], tested }) });
+    expect(summary).toContain('tester could not run: the notes page');
+    expect(summary).not.toContain('✅');
+    expect(summary).toContain('**Hands-on testing** (round 3, at aaaaaaa):');
+    expect(summary).toContain(
+      '- pass · pnpm check --all · `pnpm check --all` · ✓ pnpm check passed',
+    );
+    expect(summary).toContain(
+      '- **could not run** · the notes page · `open http://localhost:3000/notes` · no browser tools',
+    );
+    expect(result).toMatchObject({ complete: false, tested: { round: 3, sha: SHA, tested } });
+  });
+
+  it('posts ✅ with the evidence once everything ran', async () => {
+    const { result, summary } = await runLoop();
+    expect(summary).toContain('✅');
+    expect(summary).toContain('**Hands-on testing** (round 1, at aaaaaaa):');
+    expect(summary).toContain('- pass · pnpm check --all');
+    expect(result).toMatchObject({ complete: true, tested: { round: 1, tested: TESTED } });
+  });
+
+  it('says so in the summary when the tester never answered', async () => {
+    const { summary } = await runLoop({ tester: () => null });
+    expect(summary).toContain('**Hands-on testing:** the tester never answered.');
+    expect(summary).toContain('reviewer tester');
+    expect(summary).not.toContain('✅');
   });
 });
 
@@ -480,6 +563,9 @@ describe('review-loop: worktree setup', () => {
       spawnSync(process.execPath, [POSTINSTALL], { cwd: wt, env, encoding: 'utf8' });
 
     postinstall({ ...base, ...assigned });
+    // ... and the root `prepare` script (tools/agents.mjs install-hooks)
+    const lefthook = nodeBin(REPO, 'lefthook');
+    expect(installHooks(wt, { env: { ...base, ...assigned }, lefthook })).toMatch(/^skipped/);
     expect(hooks()).toEqual([]);
     // Control: without that environment the same postinstall writes the shared hooks.
     const res = postinstall(base);

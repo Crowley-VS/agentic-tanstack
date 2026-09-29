@@ -46,6 +46,7 @@
         "default",
         "^default",
         "{workspaceRoot}/eslint.config.mjs",
+        "{workspaceRoot}/.agents/generated.json",
         { "externalDependencies": ["eslint", "@nx/eslint-plugin", "@typescript-eslint/parser"] }
       ]
     },

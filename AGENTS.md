@@ -10,7 +10,7 @@ Business logic lives in `packages/core`; apps are thin wrappers around it.
 
 ## Done means
 
-1. `pnpm check` passes (lint, module boundaries, typecheck, tests, generated-file drift, agent config).
+1. `pnpm check` passes (lint, formatting, module boundaries, typecheck, tests, generated-file drift, agent config).
 2. The stack's extra checks below pass.
 3. If you changed runtime behavior: you ran it and verified the behavior yourself.
 
@@ -30,6 +30,7 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 | ------------------------------------------------ | ---------------------------------------------------------------- |
 | All checks (definition of done)                  | `pnpm check` (`--all` for every project)                         |
 | Regenerate generated files                       | `pnpm regen`                                                     |
+| Format everything (hooks format what you edit)   | `pnpm format`                                                    |
 | One target                                       | `pnpm nx run <project>:<target>` (e.g. `pnpm nx run tools:test`) |
 | Only what changed                                | `pnpm nx affected -t lint eslint typecheck test`                 |
 | What exists / depends on what                    | `pnpm nx show projects`, `pnpm nx show project <name> --json`    |
@@ -73,6 +74,8 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 | --------------------- | ------------------------------------------------------------- | --------------------------- |
 | `packages/validators` | Zod schemas + limits shared by api and web                    | `scope:shared`, `type:util` |
 | `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync | `scope:tooling`             |
+
+`tools` is plain `.mjs` with no `typecheck` target: its gates are lint, boundaries and tests.
 
 <!-- stack:end -->
 

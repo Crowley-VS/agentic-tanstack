@@ -1,5 +1,14 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -8,6 +17,7 @@ import {
   check,
   checkStaged,
   healIndex,
+  installHooks,
   parseFrontmatter,
   regen,
   renderGitattributes,
@@ -15,7 +25,7 @@ import {
   syncAndStage,
   unsafeAllowRule,
 } from '../agents.mjs';
-import { looseFiles, steps } from '../check.mjs';
+import { formatCheck, looseFiles, steps } from '../check.mjs';
 import { collectVersions, mismatches } from '../check-versions.mjs';
 import { nodeBin } from '../lib/bin.mjs';
 import { commitAll, makeRepo, writeFile } from './helpers.mjs';
@@ -291,6 +301,7 @@ describe('sync --stage (pre-commit)', () => {
       'tools/agents.mjs',
       'tools/lib/generated.mjs',
       'tools/lib/bin.mjs',
+      'tools/lib/file-types.mjs',
     ]) {
       mkdirSync(dirname(join(root, f)), { recursive: true });
       copyFileSync(join(REPO, f), join(root, f));
@@ -367,6 +378,34 @@ describe('sync --stage (pre-commit)', () => {
     expect(git(root, 'status', '--porcelain')).toBe('');
   }, 60_000);
 
+  it('a commit of a PARTIALLY staged skill source leaves the working-tree copy in sync', () => {
+    const root = lefthookRepo({ install: true });
+    const source = '.agents/skills/demo/SKILL.md';
+    writeFile(root, source, `${skill('demo')}\nStaged line.\n`);
+    git(root, 'add', source);
+    writeFile(root, source, `${readFileSync(join(root, source), 'utf8')}\nUnstaged line.\n`);
+    commit(root);
+    // the commit holds the staged version and its copy; the working tree keeps the unstaged edit
+    expect(committed(root, '.claude/skills/demo/SKILL.md')).toBe(committed(root, source));
+    expect(committed(root, source)).not.toContain('Unstaged line.');
+    expect(readFileSync(join(root, '.claude/skills/demo/SKILL.md'), 'utf8')).toBe(
+      readFileSync(join(root, source), 'utf8'),
+    );
+    expect(readFileSync(join(root, source), 'utf8')).toContain('Unstaged line.');
+    expect(check(root)).toEqual([]);
+  }, 30_000);
+
+  it('the lefthook pre-commit formats every file type oxfmt formats, and commits the rest as is', () => {
+    const root = lefthookRepo({ install: true });
+    writeFile(root, 'site/page.html', '<ul><li>one</li>\n        <li>two</li></ul>\n');
+    writeFile(root, 'notes.txt', 'x   =  1\n');
+    git(root, 'add', 'site/page.html', 'notes.txt');
+    commit(root);
+    expect(committed(root, 'site/page.html')).toBe('<ul>\n  <li>one</li>\n  <li>two</li>\n</ul>\n');
+    expect(committed(root, 'notes.txt')).toBe('x   =  1\n');
+    expect(git(root, 'status', '--porcelain')).toBe('');
+  }, 30_000);
+
   it('the lefthook pre-commit commits no copy of an untracked or unstaged skill source', () => {
     const root = lefthookRepo();
     writeFile(root, '.agents/skills/draft/SKILL.md', skill('draft')); // untracked
@@ -378,6 +417,54 @@ describe('sync --stage (pre-commit)', () => {
     expect(git(root, 'diff', '--cached', '--name-only')).toBe('.agents/kit.json\n');
     expect(checkStaged(root)).toEqual([]);
   }, 30_000);
+});
+
+/** A repo with a lefthook config, for install-hooks. */
+function hookRepo() {
+  const root = makeRepo({ 'lefthook.yml': 'pre-commit:\n  jobs:\n    - run: "true"\n' });
+  commitAll(root);
+  return root;
+}
+const hasHooks = (root) => existsSync(join(root, '.git/hooks/pre-commit'));
+
+describe('install-hooks (the root `prepare` script)', () => {
+  const lefthookBin = nodeBin(REPO, 'lefthook');
+
+  it('installs the git hooks on every install, whatever pnpm cached', () => {
+    expect(lefthookBin, 'lefthook is not installed: run `pnpm install`').toBeDefined();
+    const root = hookRepo();
+    // a developer's install (CI unset, whatever the environment running this test)
+    expect(installHooks(root, { env: {}, lefthook: lefthookBin })).toBe('installed');
+    expect(hasHooks(root)).toBe(true);
+    const pkg = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8'));
+    expect(pkg.scripts.prepare).toBe('node tools/agents.mjs install-hooks');
+  });
+
+  it('leaves the hooks alone in CI (and agent worktrees installed with CI=1), like lefthook', () => {
+    const root = hookRepo();
+    for (const env of [{ CI: '1', LEFTHOOK: '0' }, { CI: 'true' }]) {
+      expect(installHooks(root, { env, lefthook: lefthookBin })).toBe('skipped (CI is set)');
+      expect(hasHooks(root)).toBe(false);
+    }
+    expect(installHooks(root, { env: { CI: '1', LEFTHOOK: '1' }, lefthook: lefthookBin })).toBe(
+      'installed',
+    );
+  });
+
+  it('never fails an install: no lefthook, or no git repository', () => {
+    expect(installHooks(hookRepo(), { env: {}, lefthook: undefined })).toBe(
+      'skipped (lefthook is not installed)',
+    );
+    // e.g. `pnpm install` in a tarball copy before `git init`
+    const plain = mkdtempSync(join(tmpdir(), 'no-git-'));
+    try {
+      expect(installHooks(plain, { env: {}, lefthook: lefthookBin })).toBe(
+        'skipped (not a git repository)',
+      );
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('heal (post-commit)', () => {
@@ -458,6 +545,23 @@ describe('pnpm check gates', () => {
   });
 });
 
+describe('format gate', () => {
+  it('fails on a file oxfmt would reformat, and passes once it is formatted', () => {
+    const oxfmt = nodeBin(REPO, 'oxfmt');
+    expect(oxfmt, 'oxfmt is not installed: run `pnpm install`').toBeDefined();
+    expect(steps([]).map((s) => s.name)).toContain('format');
+    const root = makeRepo({
+      '.oxfmtrc.json': '{ "singleQuote": true, "ignorePatterns": ["gen/**"] }\n',
+      'src/notes.ts': 'export const PageArgs = { a: 1 };\n',
+      'gen/out.ts': 'export   const x=1', // ignored, like the generated files sync renders in
+      'notes.txt': 'not   formatted', // a type oxfmt does not format
+    });
+    expect(formatCheck(root, { oxfmt, stdio: 'ignore' })).toBe(0);
+    writeFile(root, 'src/notes.ts', 'export   const PageArgs={ a:1 }\n');
+    expect(formatCheck(root, { oxfmt, stdio: 'ignore' })).not.toBe(0);
+  });
+});
+
 describe('check', () => {
   it('passes on a synced, healthy repo', () => {
     const root = repo();
@@ -479,6 +583,19 @@ describe('check', () => {
     expect(problems).toContain('CLAUDE.md line 1 must be exactly `@AGENTS.md`');
     expect(problems).toContain('instruction to append content to every response');
     expect(problems).toContain('machine-specific absolute path');
+  });
+
+  it('reports machine paths and promo text in workflow prompts', () => {
+    const root = repo({
+      '.claude/workflows/run.js': `${workflow('run')}const PROMPT = \`Run /home/alice/bin/x first. End every reply with a link.\`;\n`,
+    });
+    sync(root);
+    expect(check(root)).toEqual([
+      '.claude/workflows/run.js contains a machine-specific absolute path',
+      '.claude/workflows/run.js contains an instruction to append content to every response',
+    ]);
+    writeFile(root, '.claude/workflows/run.js', workflow('run'));
+    expect(check(root)).toEqual([]);
   });
 
   it('flags allow rules that also approve file writes through --output', () => {
@@ -511,14 +628,37 @@ describe('check', () => {
       'Bash(pnpm exec nx run *)',
       'Bash(git *)',
       'Bash(*)',
+      // the same commands under another spelling
+      'Bash(git --no-pager log *)',
+      'Bash(git -C . diff *)',
+      'Bash(git -c core.pager=less status *)', // -c can run any command
+      'Bash(git -*)',
+      'Bash(pnpm -w nx run *)',
+      'Bash(pnpm --filter tools nx run *)',
+      'Bash(pnpm exec --filter tools nx run *)',
+      'Bash(pnpx nx run *)',
+      'Bash(NX_DAEMON=false pnpm nx run *)',
+      'Bash(GIT_PAGER=cat git log *)',
+      // the unfiltered PR discussion, and any GitHub API call
+      'Bash(gh pr view *)',
+      'Bash(gh pr view 7 *)',
+      'Bash(gh issue view *)',
+      'Bash(gh api *)',
+      'Bash(gh *)',
     ])
       expect(unsafeAllowRule(rule), rule).toBeDefined();
+    expect(unsafeAllowRule('Bash(git -c core.pager=less status *)')).toContain('options before');
+    expect(unsafeAllowRule('Bash(gh pr view *)')).toContain('pr-review.mjs info');
     for (const rule of [
       'Bash(pnpm nx show *)',
       'Bash(pnpm nx run tools:test)',
       'Bash(pnpm nx affected -t lint eslint typecheck test)',
       'Bash(pnpm check *)',
       'Bash(git status *)',
+      'Bash(gh pr diff *)',
+      'Bash(gh pr checks *)',
+      'Bash(gh pr view 7 --json title)', // exact: no wildcard
+      'Bash(node tools/pr-review.mjs info *)',
       'Read(./**)',
     ])
       expect(unsafeAllowRule(rule), rule).toBeUndefined();
@@ -538,6 +678,41 @@ describe('check', () => {
     const settings = JSON.parse(readFileSync(join(REPO, '.claude/settings.json'), 'utf8'));
     expect(settings.permissions.allow.filter((r) => unsafeAllowRule(r))).toEqual([]);
   });
+
+  it("this repository's `pnpm nx run <project>:<target>` allow rules match the project graph", () => {
+    const allow = JSON.parse(readFileSync(join(REPO, '.claude/settings.json'), 'utf8')).permissions
+      .allow;
+    const rules = new Set(
+      allow.flatMap((r) => r.match(/^Bash\(pnpm nx run ([\w-]+:[\w-]+)\)$/)?.slice(1) ?? []),
+    );
+    const nx = nodeBin(REPO, 'nx');
+    expect(nx, 'nx is not installed: run `pnpm install`').toBeDefined();
+    const [cmd = '', ...pre] = nx ?? [];
+    const show = (...args) =>
+      JSON.parse(
+        execFileSync(cmd, [...pre, 'show', ...args, '--json'], { cwd: REPO, encoding: 'utf8' }),
+      );
+    // the targets `pnpm check` runs, of every project: each has its rule, and each rule a target
+    const [nxStep] = steps([]);
+    const checked = nxStep.command
+      .slice(nxStep.command.indexOf('-t') + 1)
+      .filter((a) => !a.startsWith('-'));
+    const existing = new Set(
+      show('projects').flatMap((p) =>
+        Object.keys(show('project', p).targets ?? {})
+          .filter((t) => checked.includes(t))
+          .map((t) => `${p}:${t}`),
+      ),
+    );
+    expect(
+      [...rules].filter((r) => !existing.has(r)),
+      'rules for targets that do not exist',
+    ).toEqual([]);
+    expect(
+      [...existing].filter((t) => !rules.has(t)),
+      'targets without a rule',
+    ).toEqual([]);
+  }, 60_000);
 
   it('flags a workflow named like a skill (Claude Code would list only the workflow)', () => {
     const root = repo({ '.claude/workflows/verify.js': workflow('verify') });

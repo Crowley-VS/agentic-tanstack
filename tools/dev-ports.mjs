@@ -2,11 +2,17 @@
 // Deterministic ports + names per checkout, so parallel worktrees (and the agents
 // running in them) never fight over ports or share a database.
 //
-//   primary checkout  -> fixed, memorable defaults (web 3000, api 4000, db 5432)
+//   primary checkout  -> fixed, memorable defaults (web 3000, api 4000, db 5432) and
+//                        databases app / e2e
 //   linked worktree   -> its own block of 100 ports in 20000-59999, recorded in
 //                        <git common dir>/dev-ports.json: the block its path hashes to, or the
-//                        next free one, so no two worktrees of this repository share a block
+//                        next free one, so no two worktrees of this repository share a block;
+//                        its own compose project (so its own Postgres), and databases named
+//                        app_<hash> / e2e_<hash>, which stay apart even when an override
+//                        points several worktrees at one Postgres server
 //   env overrides     -> WEB_PORT, API_PORT, DB_PORT, WEB_E2E_PORT, API_E2E_PORT, COMPOSE_PROJECT_NAME
+//   test database URL -> the server's `postgres` maintenance database, for tests that create
+//                        databases of their own
 //
 // Usage:
 //   node tools/dev-ports.mjs --print          human-readable URLs
@@ -148,6 +154,7 @@ export function computePorts({ root, primary, block }, env = {}) {
       .replace(/^-+|-+$/g, '') || 'app';
   const composeProject = env.COMPOSE_PROJECT_NAME || (primary ? slug : `${slug}-${hash}`);
   const dbUrl = (db) => `postgres://postgres:postgres@127.0.0.1:${ports.db}/${db}`;
+  const dbName = (name) => (primary ? name : `${name}_${hash}`);
   return {
     primary,
     root,
@@ -159,7 +166,11 @@ export function computePorts({ root, primary, block }, env = {}) {
       webE2e: `http://localhost:${ports.webE2e}`,
       apiE2e: `http://localhost:${ports.apiE2e}/graphql`,
     },
-    databaseUrls: { dev: dbUrl('app'), e2e: dbUrl('e2e'), test: dbUrl('postgres') },
+    databaseUrls: {
+      dev: dbUrl(dbName('app')),
+      e2e: dbUrl(dbName('e2e')),
+      test: dbUrl('postgres'),
+    },
   };
 }
 

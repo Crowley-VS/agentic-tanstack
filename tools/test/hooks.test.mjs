@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { commitAll, makeRepo, runHook, tempDir, writeFile } from './helpers.mjs';
 
+const REPO = resolve(import.meta.dirname, '../..');
 const GUARD = resolve(import.meta.dirname, '../agent-hooks/guard-paths.mjs');
 const FORMAT = resolve(import.meta.dirname, '../agent-hooks/format.mjs');
 
@@ -167,6 +168,22 @@ describe('format hook', () => {
     // positive control: the same setup does format an ordinary file
     expect(runHook(FORMAT, edit(root, 'apps/web/src/main.ts')).code).toBe(0);
     expect(readFileSync(join(root, 'apps/web/src/main.ts'), 'utf8')).toBe('formatted\n');
+  });
+
+  it('leaves the choice of file types to oxfmt, like the pre-commit formatter and `pnpm check`', () => {
+    const root = repo();
+    // the real oxfmt, which formats e.g. .html and skips e.g. .txt
+    symlinkSync(join(REPO, 'node_modules'), join(root, 'node_modules'), 'dir');
+    const html = '<ul><li>one</li>\n        <li>two</li></ul>\n';
+    const text = 'x   =  1\n';
+    writeFile(root, 'site/page.html', html);
+    writeFile(root, 'notes.txt', text);
+    for (const f of ['site/page.html', 'notes.txt'])
+      expect(runHook(FORMAT, edit(root, f)).code, f).toBe(0);
+    expect(readFileSync(join(root, 'site/page.html'), 'utf8')).toBe(
+      '<ul>\n  <li>one</li>\n  <li>two</li>\n</ul>\n',
+    );
+    expect(readFileSync(join(root, 'notes.txt'), 'utf8')).toBe(text);
   });
 
   it('treats a symlinked path to the repo as inside it', () => {

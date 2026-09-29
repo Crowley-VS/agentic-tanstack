@@ -51,6 +51,21 @@ describe('computePorts', () => {
     expect(info.databaseUrls.e2e).toBe('postgres://postgres:postgres@127.0.0.1:6543/e2e');
   });
 
+  it('gives every worktree its own database names, even on one shared Postgres server', () => {
+    const shared = { DB_PORT: '5432' }; // e.g. an override pointing every worktree at one server
+    const primary = computePorts({ root: '/work/my-app', primary: true }, shared);
+    const roots = ['/work/my-app/.claude/worktrees/a', '/work/my-app/.claude/worktrees/b'];
+    const [a, b] = roots.map((root) => computePorts({ root, primary: false }, shared));
+    expect(a?.databaseUrls.dev).toBe(
+      `postgres://postgres:postgres@127.0.0.1:5432/app_${pathHash(roots[0] ?? '')}`,
+    );
+    expect(a?.databaseUrls.e2e).toMatch(/\/e2e_[0-9a-f]{8}$/);
+    const urls = [primary, a, b].flatMap((i) => [i?.databaseUrls.dev, i?.databaseUrls.e2e]);
+    expect(new Set(urls).size).toBe(urls.length);
+    // the maintenance database the test harness creates its own databases from
+    expect(a?.databaseUrls.test).toBe(primary.databaseUrls.test);
+  });
+
   it('sanitizes odd directory names into a compose-safe slug', () => {
     expect(computePorts({ root: '/w/My App!', primary: true }).composeProject).toBe('my-app');
   });

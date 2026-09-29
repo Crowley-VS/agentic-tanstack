@@ -1,39 +1,19 @@
 #!/usr/bin/env node
 // Claude Code PostToolUse hook (Edit|Write|MultiEdit): format the edited file with oxfmt.
 // Never blocks (always exits 0): formatting is a convenience, not a gate — `pnpm check`
-// and the pre-commit hook are the gates. Skips generated files and missing tooling.
+// and the pre-commit hook are the gates. Skips generated files and missing tooling. oxfmt
+// itself skips the file types it does not format, exactly as in the pre-commit formatter and
+// `oxfmt --check` in `pnpm check`.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { extname } from 'node:path';
 import { nodeBin } from '../lib/bin.mjs';
 import { findArtifact, loadManifest, repoRoot, toRepoPath } from '../lib/generated.mjs';
-
-const FORMATTABLE = new Set([
-  '.ts',
-  '.tsx',
-  '.mts',
-  '.cts',
-  '.js',
-  '.jsx',
-  '.mjs',
-  '.cjs',
-  '.json',
-  '.jsonc',
-  '.css',
-  '.md',
-  '.yml',
-  '.yaml',
-  '.graphql',
-  '.html',
-  '.vue',
-]);
 
 try {
   const input = JSON.parse(readFileSync(0, 'utf8'));
   const toolInput = input?.tool_input ?? {};
   const filePath = toolInput.file_path ?? toolInput.path;
   if (typeof filePath !== 'string' || !existsSync(filePath)) process.exit(0);
-  if (!FORMATTABLE.has(extname(filePath))) process.exit(0);
 
   // The project is the session's working directory, not whatever repo the file happens to be in.
   const root = repoRoot(

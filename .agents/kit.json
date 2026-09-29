@@ -6,6 +6,7 @@
     "tools/check-versions.mjs",
     "tools/lib/generated.mjs",
     "tools/lib/bin.mjs",
+    "tools/lib/file-types.mjs",
     "tools/test/bin.test.mjs",
     "tools/agent-hooks/guard-paths.mjs",
     "tools/agent-hooks/format.mjs",

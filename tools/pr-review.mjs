@@ -65,32 +65,46 @@ export function diffFromFiles(files) {
 
 /**
  * Parse a unified diff into { path → Set(line numbers on the RIGHT side that can take a comment) }.
- * Added and context lines inside hunks are commentable; removed lines are not.
+ * Added and context lines inside hunks are commentable; removed lines are not. A hunk header
+ * counts its lines, so every line inside a hunk is content, even one that looks like a header
+ * (an added `++ x` is `+++ x`, a removed `-- x` is `--- x`).
  */
 export function commentableLines(diff) {
   const map = new Map();
   let path;
   let right = 0;
+  let oldLeft = 0;
+  let newLeft = 0;
   for (const line of diff.split('\n')) {
+    if (oldLeft > 0 || newLeft > 0) {
+      if (line.startsWith('\\')) continue; // "\ No newline at end of file"
+      if (line.startsWith('-')) {
+        oldLeft--;
+        continue;
+      }
+      if (line.startsWith('+')) newLeft--;
+      else {
+        // context: ' ', or '' when a tool stripped the trailing space of an empty line
+        oldLeft--;
+        newLeft--;
+      }
+      if (path) map.get(path).add(right);
+      right++;
+      continue;
+    }
     if (line.startsWith('+++ ')) {
       const p = line.slice(4).trim();
       path = p === '/dev/null' ? undefined : p.replace(/^b\//, '');
       if (path && !map.has(path)) map.set(path, new Set());
       continue;
     }
-    if (line.startsWith('--- ') || line.startsWith('diff --git') || line.startsWith('index '))
-      continue;
-    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    const hunk = line.match(/^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
     if (hunk) {
-      right = Number(hunk[1]);
-      continue;
+      oldLeft = hunk[1] === undefined ? 1 : Number(hunk[1]);
+      right = Number(hunk[2]);
+      newLeft = hunk[3] === undefined ? 1 : Number(hunk[3]);
     }
-    if (!path) continue;
-    if (line.startsWith('+') || line.startsWith(' ')) {
-      map.get(path).add(right);
-      right++;
-    }
-    // '-' lines and '\ No newline' do not advance the right side
+    // anything else outside a hunk (diff --git, ---, index, mode lines) is a header
   }
   return map;
 }
@@ -284,7 +298,7 @@ export function trustedInfo(pr, viewer) {
 }
 
 /**
- * A thread's comments, oldest first. THREADS_QUERY fetches the first comment (the finding, with
+ * A thread's comments, oldest first. readThreadData fetches the first comment (the finding, with
  * its marker) and the latest replies separately, so a long thread never hides either.
  */
 function threadComments(t) {
@@ -329,7 +343,7 @@ function bodyThreads(pr, viewer) {
 }
 
 /**
- * Pure: the review-loop findings in a THREADS_QUERY response (`data`): threads whose first comment
+ * Pure: the review-loop findings in what readThreadData returns (`data`): threads whose first comment
  * was written by the viewer (the `gh` user running the loop) and carries a review-loop marker,
  * then the viewer's findings in review bodies. `wontfix` = the viewer's latest reply is a won't-fix.
  */
@@ -471,46 +485,69 @@ function viewerLogin() {
   return gh(['api', 'user', '--jq', '.login']).trim();
 }
 
-// Oldest first, 100 per page. Each thread: its first comment (the finding) and its latest replies.
-// Plus the latest reviews and PR comments (body findings and their resolutions), read from the
-// first page.
-const THREADS_QUERY = `query($owner:String!,$name:String!,$pr:Int!,$after:String){viewer{login} repository(owner:$owner,name:$name){pullRequest(number:$pr){reviews(last:100){nodes{body createdAt author{login}}} comments(last:100){nodes{body createdAt author{login}}} reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved path line first:comments(first:1){nodes{databaseId body author{login}}} latest:comments(last:50){nodes{databaseId body author{login}}}}}}}}`;
+// One query per PR connection, each read oldest first, 100 per page. Every page of each is read: a
+// PR gains a review for every thread reply, so the review that holds round 1's body findings
+// soon falls out of any fixed window. A thread brings its first comment (the finding) and its
+// latest replies.
+const connectionQuery = (connection, nodes) =>
+  `query($owner:String!,$name:String!,$pr:Int!,$after:String){viewer{login} repository(owner:$owner,name:$name){pullRequest(number:$pr){${connection}(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{${nodes}}}}}}`;
+export const PR_CONNECTIONS = {
+  reviewThreads:
+    'id isResolved path line first:comments(first:1){nodes{databaseId body author{login}}} latest:comments(last:50){nodes{databaseId body author{login}}}',
+  reviews: 'body createdAt author{login}',
+  comments: 'body createdAt author{login}',
+};
+
+/**
+ * Every review thread, review and PR comment of a PR, shaped for `parseThreads`. `graphql(query,
+ * variables)` runs one GraphQL request and returns the parsed response.
+ */
+export function readThreadData(graphql, { owner, name, pr }) {
+  let viewer;
+  const pullRequest = {};
+  for (const [connection, fields] of Object.entries(PR_CONNECTIONS)) {
+    const nodes = [];
+    let after;
+    for (;;) {
+      const res = graphql(connectionQuery(connection, fields), {
+        owner,
+        name,
+        pr,
+        ...(after ? { after } : {}),
+      });
+      const page = res?.data?.repository?.pullRequest?.[connection];
+      if (!page) throw new Error(`could not read the ${connection} of PR #${pr}`);
+      viewer ??= res.data.viewer;
+      nodes.push(...(page.nodes ?? []));
+      if (!page.pageInfo?.hasNextPage) break;
+      if (!page.pageInfo.endCursor || page.pageInfo.endCursor === after)
+        throw new Error(`the ${connection} of PR #${pr} did not advance past a page`);
+      after = page.pageInfo.endCursor;
+    }
+    pullRequest[connection] = { nodes };
+  }
+  return { viewer, repository: { pullRequest } };
+}
+
+/** One GraphQL request through `gh`. -f passes a string as is; -F would turn e.g. "123" into a number. */
+function ghGraphql(query, vars) {
+  return JSON.parse(
+    gh([
+      'api',
+      'graphql',
+      '-f',
+      `query=${query}`,
+      ...Object.entries(vars).flatMap(([k, v]) => [
+        typeof v === 'number' ? '-F' : '-f',
+        `${k}=${v}`,
+      ]),
+    ]),
+  );
+}
 
 function threads(pr, all = false) {
   const [owner, name] = repoSlug().split('/');
-  const nodes = [];
-  let viewer;
-  let first;
-  let after;
-  for (;;) {
-    const res = JSON.parse(
-      gh([
-        'api',
-        'graphql',
-        '-f',
-        `query=${THREADS_QUERY}`,
-        '-F',
-        `owner=${owner}`,
-        '-F',
-        `name=${name}`,
-        '-F',
-        `pr=${pr}`,
-        ...(after ? ['-f', `after=${after}`] : []),
-      ]),
-    );
-    const page = res.data?.repository?.pullRequest?.reviewThreads;
-    if (!page) throw new Error(`could not read the review threads of PR #${pr}`);
-    viewer = res.data.viewer;
-    first ??= res.data.repository.pullRequest;
-    nodes.push(...(page.nodes ?? []));
-    if (!page.pageInfo?.hasNextPage) break;
-    after = page.pageInfo.endCursor;
-  }
-  const { reviews, comments } = first;
-  return parseThreads(
-    { viewer, repository: { pullRequest: { reviews, comments, reviewThreads: { nodes } } } },
-    { all },
-  );
+  return parseThreads(readThreadData(ghGraphql, { owner, name, pr }), { all });
 }
 
 /** The PR's diff, from its per-file patches (see diffFromFiles). */

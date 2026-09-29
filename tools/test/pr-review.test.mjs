@@ -14,7 +14,9 @@ import {
   MARKER,
   markerId,
   parseThreads,
+  PR_CONNECTIONS,
   planResolutions,
+  readThreadData,
   prNumber,
   resolutionComment,
   resolvedIn,
@@ -27,7 +29,7 @@ const DIFF = `diff --git a/tools/a.mjs b/tools/a.mjs
 index 111..222 100644
 --- a/tools/a.mjs
 +++ b/tools/a.mjs
-@@ -1,4 +1,5 @@
+@@ -1,3 +1,4 @@
  line1
 -old2
 +new2
@@ -61,6 +63,50 @@ describe('commentableLines', () => {
   });
 });
 
+describe('commentableLines inside hunks', () => {
+  it('reads lines that look like headers as content (an added `++ x`, a removed `-- x`)', () => {
+    const files = [
+      {
+        filename: 'docs/a.md',
+        status: 'modified',
+        patch: '@@ -1,2 +1,4 @@\n line1\n+++ counter\n+added\n line2',
+      },
+      {
+        filename: 'docs/b.md',
+        status: 'modified',
+        patch: '@@ -1,3 +1,3 @@\n top\n--- old rule\n+++ new rule\n bottom',
+      },
+    ];
+    const map = commentableLines(diffFromFiles(files));
+    expect(Object.fromEntries([...map].map(([p, l]) => [p, [...l]]))).toEqual({
+      'docs/a.md': [1, 2, 3, 4],
+      'docs/b.md': [1, 2, 3],
+    });
+    // so a finding on docs/a.md:3 anchors on line 3, not on a line of a made-up file
+    const review = buildReview({
+      diff: diffFromFiles(files),
+      round: 1,
+      commitId: 'x',
+      findings: [{ path: 'docs/a.md', line: 3, severity: 'minor', title: 'T', body: 'b' }],
+    });
+    expect(review.comments).toMatchObject([{ path: 'docs/a.md', line: 3 }]);
+  });
+
+  it('handles "no newline at end of file" markers and single-line hunks', () => {
+    const diff = [
+      'diff --git a/x b/x',
+      '--- a/x',
+      '+++ b/x',
+      '@@ -1 +1 @@',
+      '-old',
+      '\\ No newline at end of file',
+      '+new',
+      '\\ No newline at end of file',
+    ].join('\n');
+    expect([...commentableLines(diff).get('x')]).toEqual([1]);
+  });
+});
+
 describe('diffFromFiles', () => {
   it("builds the same commentable lines from the files API's per-file patches", () => {
     const files = [
@@ -68,7 +114,7 @@ describe('diffFromFiles', () => {
         filename: 'tools/a.mjs',
         status: 'modified',
         patch:
-          '@@ -1,4 +1,5 @@\n line1\n-old2\n+new2\n+new3\n line4\n@@ -20,2 +21,3 @@ function x() {\n ctx21\n+add22\n ctx23',
+          '@@ -1,3 +1,4 @@\n line1\n-old2\n+new2\n+new3\n line4\n@@ -20,2 +21,3 @@ function x() {\n ctx21\n+add22\n ctx23',
       },
       { filename: 'docs/new.md', status: 'added', patch: '@@ -0,0 +1,2 @@\n+# New\n+text' },
       { filename: 'gone.txt', status: 'removed', patch: '@@ -1 +0,0 @@\n-bye' },
@@ -197,7 +243,7 @@ const thread = (id, comments, extra = {}) => ({
   ...extra,
 });
 
-/** Review-body helpers: a review (or PR comment) by `login`, and a THREADS_QUERY response. */
+/** Review-body helpers: a review (or PR comment) by `login`, and what readThreadData returns. */
 const bodyOf = (f, round) => buildReview({ diff: DIFF, round, commitId: 'x', findings: [f] }).body;
 const review = (login, text, createdAt) => ({ author: { login }, body: text, createdAt });
 const pr = (reviews, comments) => ({
@@ -363,6 +409,85 @@ describe('parseThreads', () => {
       { all: true },
     );
     expect(parsed).toMatchObject([{ id: skipped.id, threadId: 'T9', wontfix: true }]);
+  });
+});
+
+/** A GraphQL endpoint that serves each PR connection 100 nodes per page, oldest first. */
+function server(data) {
+  const calls = [];
+  const graphql = (query, vars) => {
+    const connection = Object.keys(PR_CONNECTIONS).find((c) => query.includes(`${c}(first:100`));
+    calls.push({ connection, after: vars.after });
+    const all = data[connection] ?? [];
+    const start = vars.after ? Number(vars.after) : 0;
+    const end = Math.min(start + 100, all.length);
+    return {
+      data: {
+        viewer: { login: 'me' },
+        repository: {
+          pullRequest: {
+            [connection]: {
+              pageInfo: { hasNextPage: end < all.length, endCursor: String(end) },
+              nodes: all.slice(start, end),
+            },
+          },
+        },
+      },
+    };
+  };
+  return { graphql, calls };
+}
+const at = (i) => new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString();
+/** A PR connection that never advances past its first page. */
+const stuck = () => ({
+  data: {
+    viewer: { login: 'me' },
+    repository: {
+      pullRequest: {
+        reviewThreads: { pageInfo: { hasNextPage: true, endCursor: null }, nodes: [] },
+      },
+    },
+  },
+});
+
+describe('readThreadData', () => {
+  const vars = { owner: 'o', name: 'r', pr: 7 };
+
+  it('reads every page: the body finding of the oldest review is still found after 250 reviews', () => {
+    const f = { path: '.gitattributes', severity: 'minor', title: 'File-level', body: 'd' };
+    const id = findingId(f);
+    // every thread reply is a review of its own (with an empty body)
+    const replies = Array.from({ length: 249 }, (_, i) => review('me', '', at(i + 1)));
+    const { graphql, calls } = server({ reviews: [review('me', bodyOf(f, 1), at(0)), ...replies] });
+    expect(parseThreads(readThreadData(graphql, vars))).toMatchObject([
+      { id, threadId: null, resolved: false },
+    ]);
+    expect(calls.filter((c) => c.connection === 'reviews').map((c) => c.after)).toEqual([
+      undefined,
+      '100',
+      '200',
+    ]);
+
+    // its resolution, in the oldest of 150 PR comments, is found too
+    const resolution = review(
+      'me',
+      resolutionComment([{ id, status: 'wontfix' }], 'abc1234'),
+      at(300),
+    );
+    const chatter = Array.from({ length: 149 }, (_, i) => review('me', 'hi', at(301 + i)));
+    const resolved = server({
+      reviews: [review('me', bodyOf(f, 1), at(0)), ...replies],
+      comments: [resolution, ...chatter],
+    });
+    expect(parseThreads(readThreadData(resolved.graphql, vars))).toEqual([]);
+    expect(parseThreads(readThreadData(resolved.graphql, vars), { all: true })).toMatchObject([
+      { id, resolved: true, wontfix: true },
+    ]);
+  });
+
+  it('fails instead of returning a partial list', () => {
+    expect(() => readThreadData(() => ({ data: null }), vars)).toThrow('could not read');
+    expect(() => readThreadData(stuck, vars)).toThrow('did not advance');
   });
 });
 
