@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// The Node and pnpm versions are pinned in several places. They must agree, or
-// pnpm silently downloads a different version (breaking offline Docker installs)
-// and "works on my machine" bugs appear. Renovate bumps them together.
+// The Node and pnpm versions are pinned in several places (.prototools, .node-version,
+// package.json#packageManager, the ARGs of apps/*/Dockerfile and packages/*/Dockerfile).
+// They must agree, or pnpm silently downloads a different version (breaking offline Docker
+// installs) and "works on my machine" bugs appear. Bump them together; this check fails when
+// they disagree.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

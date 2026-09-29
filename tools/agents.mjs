@@ -19,7 +19,8 @@
 //            pre-commit hook changed in the commit (see healIndex); then sync the working tree
 //            from its own sources (see healWorkingTree)
 //   install-hooks  install the git hooks (lefthook); the root `prepare` script runs it on
-//            `pnpm install`. Skipped when CI is set, like lefthook's own postinstall
+//            `pnpm install`. Skipped when CI is set, like lefthook's own postinstall, and in
+//            linked worktrees (the hooks are shared by every worktree)
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -423,8 +424,10 @@ const enabled = (value) => Boolean(value) && value !== '0' && value !== 'false';
 /**
  * Install the git hooks (lefthook.yml), which lefthook's own postinstall does not do reliably:
  * pnpm skips it when lefthook was already built into its store (side-effects cache). Never throws:
- * an install must not fail over hooks. Skipped when CI is set (as lefthook's postinstall does), so
- * CI and agent worktrees (`CI=1 pnpm install`) leave the hooks that every worktree shares alone.
+ * an install must not fail over hooks. Skipped when CI is set (as lefthook's postinstall does),
+ * and in linked worktrees: the hooks live in the git dir that every worktree shares, and would
+ * point into this worktree's node_modules. pnpm re-runs `prepare` before later `pnpm <script>` and
+ * `pnpm exec` calls (verifyDepsBeforeRun) without CI, so CI=1 on the first install is not enough.
  * Returns what it did.
  */
 function installHooks(
@@ -433,11 +436,18 @@ function installHooks(
 ) {
   if (enabled(env.CI) && !enabled(env.LEFTHOOK)) return 'skipped (CI is set)';
   if (!lefthook) return 'skipped (lefthook is not installed)';
+  let dirs;
   try {
-    git(root, ['rev-parse', '--git-dir'], { stdio: 'ignore' });
+    dirs = git(root, ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .trim()
+      .split('\n');
   } catch {
     return 'skipped (not a git repository)';
   }
+  if (dirs[0] !== dirs[1])
+    return 'skipped (linked worktree: install the hooks from the main checkout, they are shared)';
   const [cmd, ...args] = lefthook;
   const res = spawnSync(cmd, [...args, 'install'], { cwd: root, encoding: 'utf8' });
   return res.status === 0

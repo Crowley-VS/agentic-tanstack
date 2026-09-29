@@ -209,7 +209,7 @@ function main(argv) {
         console.error(`dev-ports: unknown key "${key}"`);
         process.exit(1);
       }
-      console.log(value);
+      console.log(String(value)); // a port is a number: never colored, even with FORCE_COLOR
       return;
     }
     case '--env':
@@ -224,6 +224,11 @@ function main(argv) {
       // Existing env wins, so callers (CI, e2e targets) can override anything.
       const env = { ...toEnv(info), ...process.env };
       const child = spawn(cmd[0], cmd.slice(1), { stdio: 'inherit', env, shell: false });
+      // e.g. not on PATH: a clear message and the shell's "command not found" code, not a stack
+      child.on('error', (err) => {
+        console.error(`dev-ports: could not start ${cmd[0]}: ${err.message}`);
+        process.exit(127);
+      });
       for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill(sig));
       child.on('exit', (code, signal) => process.exit(signal ? 1 : (code ?? 0)));
       return;

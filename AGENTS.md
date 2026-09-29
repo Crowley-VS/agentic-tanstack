@@ -70,10 +70,10 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 
 ## Repo map
 
-| Path                  | What                                                          | Tags                        |
-| --------------------- | ------------------------------------------------------------- | --------------------------- |
-| `packages/validators` | Zod schemas + limits shared by api and web                    | `scope:shared`, `type:util` |
-| `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync | `scope:tooling`             |
+| Path                  | What                                                          | Tags                            |
+| --------------------- | ------------------------------------------------------------- | ------------------------------- |
+| `packages/validators` | Zod schemas + limits shared by api and web                    | `scope:shared`, `type:util`     |
+| `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync | `scope:tooling`, `type:tooling` |
 
 `tools` is plain `.mjs` with no `typecheck` target: its gates are lint, boundaries and tests.
 
@@ -92,7 +92,7 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 
 <!-- stack:start:invariants -->
 
-- Boundary rules (`eslint.config.mjs`): `scope:web` → web/shared only; `scope:server` → server/shared only; `type:util` imports no frameworks.
+- Boundary rules (full list in `eslint.config.mjs`): `scope:shared` → shared only; `scope:tooling` → tooling only; `scope:web` → web/shared; `scope:api` → api/server/shared; `scope:server` → server/shared; `type:util` → util only, and imports no frameworks, Drizzle or `pg`.
 
 <!-- stack:end -->
 
@@ -102,9 +102,10 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 
 1. Finish the phase; `pnpm check` must pass.
 2. Commit on a branch (never directly on `main`) and open a PR with a summary and a test plan.
-3. The **review loop** (skill `review-loop`) starts automatically when a PR is opened from Claude Code (hook
-   `tools/agent-hooks/pr-opened.mjs`; drafts start on `gh pr ready`; opt out with `REVIEW_LOOP_AUTO=0`): review →
-   post findings → fix → re-review the fixes until no blocker/major issue is open.
+3. Run the **review loop** (skill `review-loop`): review → post findings → fix → re-review the fixes until no
+   blocker/major issue is open. When a PR is opened from Claude Code (drafts: on `gh pr ready`), the hook
+   `tools/agent-hooks/pr-opened.mjs` has Claude offer it and start it once the user agrees; `REVIEW_LOOP_AUTO=1`
+   (the user's opt-in) starts it without asking, `REVIEW_LOOP_AUTO=0` turns the hook off.
 4. A human merges.
 
 <!-- kit:end -->

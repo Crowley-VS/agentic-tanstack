@@ -20,6 +20,7 @@ import {
   prNumber,
   resolutionComment,
   resolvedIn,
+  severityFromBody,
   titleFromBody,
   trustedInfo,
   unknownIds,
@@ -222,6 +223,14 @@ describe('commentBody round trip', () => {
     const body = commentBody(f, 2);
     expect(titleFromBody(body)).toBe(title);
     expect(markerId(body)).toBe(f.id);
+    expect(severityFromBody(body)).toBe('major');
+  });
+
+  it('reads back every severity, and none that the loop does not use', () => {
+    for (const severity of ['blocker', 'major', 'minor', 'nit'])
+      expect(severityFromBody(commentBody(finding('T', { severity }), 1))).toBe(severity);
+    expect(severityFromBody(commentBody(finding('T', { severity: undefined }), 1))).toBeUndefined();
+    expect(severityFromBody('🟠 **constructor: T**')).toBeUndefined();
   });
 
   it('takes the id from the trailing marker, not from a marker quoted in the text', () => {
@@ -304,6 +313,7 @@ describe('parseThreads', () => {
         path: 'tools/a.mjs',
         line: 12,
         title: 'Mine',
+        severity: 'major',
         body: commentBody(mine, 1),
       },
     ]);
@@ -341,6 +351,7 @@ describe('parseThreads', () => {
         path: 'tools/unchanged.mjs',
         line: 5,
         title: 'Elsewhere',
+        severity: 'minor',
         resolved: false,
       },
       {
@@ -349,6 +360,7 @@ describe('parseThreads', () => {
         path: '.gitattributes',
         line: null,
         title: 'File-level',
+        severity: 'minor',
         resolved: false,
       },
     ]);
@@ -492,11 +504,34 @@ describe('readThreadData', () => {
 });
 
 describe('briefThreads', () => {
-  it('drops bodies and counts the threads', () => {
+  it('drops bodies and counts the threads, keeping the severity the loop decides on', () => {
     const t = { id: 'rl-1', threadId: 'T', commentId: 3, resolved: false, wontfix: false };
-    expect(briefThreads([{ ...t, path: 'a', line: 2, title: 'x', body: 'long' }])).toEqual({
-      count: 1,
-      threads: [{ id: 'rl-1', title: 'x', path: 'a', line: 2, resolved: false, wontfix: false }],
+    const listed = [
+      { ...t, path: 'a', line: 2, title: 'x', severity: 'major', body: 'long' },
+      { ...t, id: 'rl-2', path: 'b', line: 1, title: 'y', body: 'no severity' },
+    ];
+    expect(briefThreads(listed)).toEqual({
+      count: 2,
+      threads: [
+        {
+          id: 'rl-1',
+          title: 'x',
+          severity: 'major',
+          path: 'a',
+          line: 2,
+          resolved: false,
+          wontfix: false,
+        },
+        {
+          id: 'rl-2',
+          title: 'y',
+          severity: null,
+          path: 'b',
+          line: 1,
+          resolved: false,
+          wontfix: false,
+        },
+      ],
     });
   });
 });
@@ -570,6 +605,7 @@ describe('planResolutions', () => {
 
 const meta = (extra = {}) => ({
   number: 7,
+  state: 'OPEN',
   headRefOid: 'a'.repeat(40),
   headRefName: 'feature/x',
   isCrossRepository: false,
@@ -594,6 +630,12 @@ describe('headOf', () => {
     });
     expect(() => headOf(fork)).toThrow('comes from a fork (mallory/repo)');
     expect(() => headOf(meta({ isCrossRepository: undefined }))).toThrow('unknown repository');
+  });
+
+  it('refuses closed and merged PRs, whose branch may still exist', () => {
+    expect(() => headOf(meta({ state: 'CLOSED' }))).toThrow('PR #7 is closed');
+    expect(() => headOf(meta({ state: 'MERGED' }))).toThrow('PR #7 is merged');
+    expect(() => headOf(meta({ state: undefined }))).toThrow('only runs on open pull requests');
   });
 
   it('refuses branch names that are not plain ref names', () => {

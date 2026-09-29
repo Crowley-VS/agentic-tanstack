@@ -28,7 +28,7 @@ import {
 import { formatCheck, looseFiles, steps } from '../check.mjs';
 import { collectVersions, mismatches } from '../check-versions.mjs';
 import { nodeBin } from '../lib/bin.mjs';
-import { commitAll, makeRepo, writeFile } from './helpers.mjs';
+import { commitAll, makeRepo, tempDir, writeFile } from './helpers.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const git = (root, ...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
@@ -406,6 +406,58 @@ describe('sync --stage (pre-commit)', () => {
     expect(git(root, 'status', '--porcelain')).toBe('');
   }, 30_000);
 
+  it('a rebase replays a commit whose skill copy was stale without the post-commit breaking the next pick', () => {
+    const root = lefthookRepo({ install: true });
+    git(root, 'checkout', '-q', '-b', 'feature');
+    // commit 1 changes the source without its copy (no pre-commit); its post-commit then syncs
+    // the working-tree copy, and commit 2 commits the source and the copy
+    writeFile(root, '.agents/skills/demo/SKILL.md', skill('demo', 'Use when demoing.'));
+    git(root, 'add', '.agents/skills/demo/SKILL.md');
+    commit(root, '--no-verify');
+    writeFile(root, '.agents/skills/demo/SKILL.md', skill('demo', 'Use when showing things.'));
+    git(root, 'add', '-A');
+    commit(root);
+    expect(git(root, 'status', '--porcelain')).toBe('');
+    // main moves on, so the rebase replays both commits
+    git(root, 'checkout', '-q', 'main');
+    writeFile(root, 'notes.txt', 'x\n');
+    git(root, 'add', 'notes.txt');
+    commit(root);
+    git(root, 'checkout', '-q', 'feature');
+    // a post-commit sync after pick 1 would leave the copy modified, and pick 2 would refuse to
+    // overwrite it
+    const res = spawnSync('git', ['rebase', 'main'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: hookEnv(),
+    });
+    expect(res.status, `${res.stdout}${res.stderr}`).toBe(0);
+    expect(git(root, 'status', '--porcelain')).toBe('');
+    expect(committed(root, '.claude/skills/demo/SKILL.md')).toBe(
+      skill('demo', 'Use when showing things.'),
+    );
+  }, 60_000);
+
+  it('install-hooks (the `prepare` script) leaves the shared hooks alone in a linked worktree', () => {
+    const root = lefthookRepo();
+    const wt = join(tempDir(), 'wt');
+    git(root, 'worktree', 'add', '-q', '--detach', wt);
+    symlinkSync(join(REPO, 'node_modules'), join(wt, 'node_modules'), 'dir');
+    const env = hookEnv();
+    delete env.CI; // what pnpm re-runs before a later `pnpm <script>` in the worktree
+    const prepare = (cwd) =>
+      spawnSync(process.execPath, ['tools/agents.mjs', 'install-hooks'], {
+        cwd,
+        encoding: 'utf8',
+        env,
+      });
+    expect(prepare(wt).stdout).toContain('git hooks skipped (linked worktree');
+    expect(existsSync(join(root, '.git/hooks/pre-commit'))).toBe(false);
+    // the main checkout installs them
+    expect(prepare(root).stdout).toContain('git hooks installed');
+    expect(existsSync(join(root, '.git/hooks/pre-commit'))).toBe(true);
+  }, 30_000);
+
   it('the lefthook pre-commit commits no copy of an untracked or unstaged skill source', () => {
     const root = lefthookRepo();
     writeFile(root, '.agents/skills/draft/SKILL.md', skill('draft')); // untracked
@@ -542,6 +594,14 @@ describe('pnpm check gates', () => {
       expect(reported['agent config']).toContain(`${file} is out of date`);
       expect(reported['generated files']).toContain(`${file} was out of date`);
     }
+  });
+
+  it('check Nx sync (tsconfig project references) in a gate of its own: Nx skips it when CI is set', () => {
+    expect(steps([]).find((s) => s.name === 'nx sync')?.command).toEqual([
+      'pnpm',
+      'nx',
+      'sync:check',
+    ]);
   });
 });
 
@@ -712,6 +772,17 @@ describe('check', () => {
       [...existing].filter((t) => !rules.has(t)),
       'targets without a rule',
     ).toEqual([]);
+    // Nx infers these targets from config files: a change to one must make this (cached) test
+    // run again, and count tools as affected
+    expect(show('project', 'tools').targets.test.inputs).toEqual(
+      expect.arrayContaining([
+        '{workspaceRoot}/**/{vite,vitest,eslint,oxlint}.config.*',
+        '{workspaceRoot}/**/.oxlintrc.json*',
+        '{workspaceRoot}/**/tsconfig*.json',
+        '{workspaceRoot}/**/project.json',
+        '{workspaceRoot}/**/package.json',
+      ]),
+    );
   }, 60_000);
 
   it('flags a workflow named like a skill (Claude Code would list only the workflow)', () => {

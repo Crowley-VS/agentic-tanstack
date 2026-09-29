@@ -25,7 +25,9 @@
           "{workspaceRoot}/nx.json",
           "{workspaceRoot}/**/package.json",
           "{workspaceRoot}/**/project.json",
-          "{workspaceRoot}/**/tsconfig*.json"
+          "{workspaceRoot}/**/tsconfig*.json",
+          "{workspaceRoot}/**/{vite,vitest,eslint,oxlint}.config.*",
+          "{workspaceRoot}/**/.oxlintrc.json*"
         ]
       }
     }

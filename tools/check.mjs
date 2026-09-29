@@ -4,9 +4,9 @@
 //   pnpm check          affected projects only (fast; what agents run before saying "done")
 //   pnpm check --all    every project (what CI's template smoke test runs)
 //
-// Gates: lint (oxlint) · eslint (module boundaries) · typecheck · test · lint of the files no
-// project owns · formatting (oxfmt --check) · agent-config hygiene · Nx's agent config · generated-
-// file drift · pinned version consistency.
+// Gates: lint (oxlint) · eslint (module boundaries) · typecheck · test · Nx sync (tsconfig
+// project references) · lint of the files no project owns · formatting (oxfmt --check) ·
+// agent-config hygiene · Nx's agent config · generated-file drift · pinned version consistency.
 //
 //   node tools/check.mjs --lint-loose   one gate: oxlint on the files no project owns
 //   node tools/check.mjs --format       one gate: every file oxfmt formats is formatted
@@ -46,6 +46,9 @@ function hasBaseCommit() {
  */
 export const steps = (nxMode) => [
   { name: 'nx', command: ['pnpm', 'nx', ...nxMode, '-t', ...TARGETS, '--outputStyle=static'] },
+  // Nx skips its sync generators (tsconfig project references) when CI is set: check them here,
+  // so CI and local runs agree
+  { name: 'nx sync', command: ['pnpm', 'nx', 'sync:check'] },
   { name: 'lint outside projects', command: ['node', 'tools/check.mjs', '--lint-loose'] },
   // the hooks format edits and commits, but a commit made without them (--no-verify, a web edit,
   // a bot, a clone without hooks) is only caught here

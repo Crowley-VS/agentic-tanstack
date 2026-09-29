@@ -60,11 +60,16 @@ async function runLoop(responders = {}, args = { pr: 7, maxRounds: 3 }) {
   const agent = async (prompt, opts = {}) => {
     const call = { kind: String(opts.label).split(':')[0], label: opts.label, prompt, opts, state };
     // Verifiers run in batches: answer each ITEM as its own `verify:<kind>:<path>:<title>` call, so
-    // tests can script one verdict per finding and assert on per-finding labels.
+    // tests can script one verdict per finding and assert on per-finding labels (a null verdict is
+    // left out of the batch). `verifyBatch` answers a whole batch instead.
     if (call.kind === 'verify' && opts.schema?.properties?.verdicts) {
       const items = JSON.parse(prompt.slice(prompt.indexOf('ITEMS (')).replace(/^[^\n]*\n/, ''));
+      if (responders.verifyBatch) {
+        calls.push(call);
+        return responders.verifyBatch({ ...call, items });
+      }
       const verdicts = [];
-      for (const { kind, ...f } of items) {
+      for (const { kind, index, ...f } of items) {
         const itemCall = {
           ...call,
           label: `verify:${kind}:${f.path}:${f.title}`.slice(0, 80),
@@ -72,7 +77,8 @@ async function runLoop(responders = {}, args = { pr: 7, maxRounds: 3 }) {
           batchLabel: opts.label,
         };
         calls.push(itemCall);
-        verdicts.push(await (responders.verify ?? DEFAULTS.verify)(itemCall));
+        const verdict = await (responders.verify ?? DEFAULTS.verify)(itemCall);
+        if (verdict) verdicts.push({ index, ...verdict });
       }
       return { verdicts };
     }
@@ -156,9 +162,9 @@ describe('review-loop workflow', () => {
   it("never re-verifies or re-posts a won't-fix finding, and still converges", async () => {
     const { result, summary, of } = await runLoop({
       review: reviewerFinds(),
-      fix: ({ state }) => ({
+      fix: (call) => ({
         checkPassed: true,
-        commit: state.sha, // nothing changed, nothing pushed
+        commit: push(call), // it fixed something else, so round 2 reviews the fix commits
         resolutions: [{ path: finding.path, title: finding.title, status: 'wontfix', note: 'n/a' }],
       }),
     });
@@ -208,6 +214,8 @@ describe('review-loop workflow', () => {
     expect(of('verify')).toHaveLength(0);
     expect(of('post')).toHaveLength(0);
     expect(of('fix')).toHaveLength(1);
+    // the thread carries no severity: it counts as blocking, so its fix is reviewed in round 2
+    expect(of('review').filter(inRound(2))).toHaveLength(4);
     expect(summary).toContain('✅');
     expect(result.complete).toBe(true);
     expect(commentBody({ ...finding, id }, 1)).toContain(id); // same id scheme as the threads
@@ -223,9 +231,11 @@ describe('review-loop workflow', () => {
     for (const c of codeAgents) {
       expect(c.opts.isolation, c.label).toBe('worktree');
       expect(c.prompt, c.label).toContain(
-        `git fetch -q origin "pull/7/head" && git checkout -q --detach ${SHA}`,
+        `  git fetch -q origin "pull/7/head"\n  git checkout -q --detach ${SHA}\n`,
       );
       expect(c.prompt, c.label).not.toMatch(/checkout --detach "origin\//);
+      // the diff also for a PR too large for `gh pr diff` (HTTP 406)
+      expect(c.prompt, c.label).toContain('node tools/pr-review.mjs diff --pr 7');
     }
     expect(of('fix')[0]?.prompt).toContain('git push origin HEAD:refs/heads/feature');
     expect(of('fix')[0]?.prompt).not.toContain('git switch');
@@ -394,17 +404,20 @@ describe('review-loop: the hands-on tester shows what it ran', () => {
         evidence: 'no browser tools in this session',
       },
     ];
-    const { result, summary } = await runLoop({ tester: () => ({ findings: [], tested }) });
+    const { result, summary, of } = await runLoop({ tester: () => ({ findings: [], tested }) });
     expect(summary).toContain('tester could not run: the notes page');
     expect(summary).not.toContain('✅');
-    expect(summary).toContain('**Hands-on testing** (round 3, at aaaaaaa):');
+    // it would not run on the same head either: no second round of every reviewer
+    expect(of('review')).toHaveLength(4);
+    expect(summary).toContain("the tester's report would repeat at the same head");
+    expect(summary).toContain('**Hands-on testing** (round 1, at aaaaaaa):');
     expect(summary).toContain(
       '- pass · pnpm check --all · `pnpm check --all` · ✓ pnpm check passed',
     );
     expect(summary).toContain(
       '- **could not run** · the notes page · `open http://localhost:3000/notes` · no browser tools',
     );
-    expect(result).toMatchObject({ complete: false, tested: { round: 3, sha: SHA, tested } });
+    expect(result).toMatchObject({ complete: false, tested: { round: 1, sha: SHA, tested } });
   });
 
   it('posts ✅ with the evidence once everything ran', async () => {
@@ -583,6 +596,9 @@ describe('review-loop: worktree setup', () => {
     // ... and the root `prepare` script (tools/agents.mjs install-hooks)
     const lefthook = nodeBin(REPO, 'lefthook');
     expect(installHooks(wt, { env: { ...base, ...assigned }, lefthook })).toMatch(/^skipped/);
+    // pnpm re-runs `prepare` before a later `pnpm <script>` / `pnpm exec` in the worktree,
+    // without CI (verifyDepsBeforeRun): a linked worktree never installs the shared hooks
+    expect(installHooks(wt, { env: base, lefthook })).toMatch(/^skipped \(linked worktree/);
     expect(hooks()).toEqual([]);
     // Control: without that environment the same postinstall writes the shared hooks.
     const res = postinstall(base);
@@ -616,7 +632,9 @@ describe('review-loop convergence rules', () => {
     expect(of('fix')).toHaveLength(1);
     expect(of('review').some((c) => c.label.endsWith(':r2'))).toBe(false);
     expect(summary).toContain('✅');
-    expect(summary).toContain('suggestions fixed');
+    expect(summary).toContain(
+      "fix pass for suggestions (1 fixed, 0 won't fix, 0 left open); fixes not re-reviewed",
+    );
     expect(result.complete).toBe(true);
   });
 
@@ -632,6 +650,9 @@ describe('review-loop convergence rules', () => {
     });
     expect(result.complete).toBe(true);
     expect(summary).toContain('optional suggestion');
+    // says what the fixer reported, never "fixed" for what it left open
+    expect(summary).toContain("(0 fixed, 0 won't fix, 1 left open)");
+    expect(summary).not.toContain('suggestions fixed');
   });
 
   it('stops for a human when blocking findings do not decrease', async () => {
@@ -708,13 +729,201 @@ describe('review-loop round-5 fixes', () => {
       verify: () => ({ valid: false, reason: 'could not reproduce' }),
     });
     expect(result.complete).toBe(false);
-    expect(summary).toContain('tester saw a failure with no confirmed finding');
+    expect(summary).toContain('tester saw a failure: pnpm check --all');
   });
 
   it('tells worktree agents to restore their starting commit so the worktree is auto-removed', async () => {
     const { of } = await runLoop();
     const reviewer = of('review')[0];
-    expect(reviewer.prompt).toContain('ORIG=$(git rev-parse HEAD)');
-    expect(reviewer.prompt).toContain('git checkout -q --detach "$ORIG"');
+    expect(reviewer.prompt).toContain('\n  git rev-parse HEAD\n');
+    expect(reviewer.prompt).toContain('git checkout -q --detach <the starting sha you noted>');
+    // no shell variable (it does not survive between an agent's commands) and one command per line
+    expect(reviewer.prompt).not.toMatch(/\$ORIG|ORIG=/);
+    const setup = reviewer.prompt.slice(reviewer.prompt.indexOf('throwaway git worktree'));
+    for (const line of setup.split('\n').filter((l) => /^ {2}(git|CI=)/.test(l)))
+      expect(line).not.toMatch(/&&|;|\|/);
+  });
+});
+
+/** The fixer fixes every open finding its prompt lists, and pushes. */
+const fixOpen = (call) => {
+  const start = call.prompt.indexOf('[', call.prompt.indexOf('Open findings (JSON'));
+  const open = JSON.parse(call.prompt.slice(start, call.prompt.indexOf('\n\n1. Address')));
+  return {
+    checkPassed: true,
+    commit: push(call),
+    resolutions: open.map((f) => ({ path: f.path, title: f.title, status: 'fixed' })),
+  };
+};
+
+describe('review-loop round-1 fixes', () => {
+  const minor = { ...finding, severity: 'minor', title: 'Wording could be clearer' };
+
+  it('keeps every hands-on failure a gap, even next to an unrelated confirmed tester finding', async () => {
+    const failing = { ...finding, title: 'pnpm check --all fails' };
+    const agentsMd = { ...minor, path: 'AGENTS.md', title: 'Stale wording' };
+    const { result, summary } = await runLoop({
+      tester: ({ label }) => ({
+        findings: label.endsWith(':r1') ? [failing, agentsMd] : [],
+        tested: [{ ...TESTED[0], result: 'fail', evidence: 'exit 1' }],
+      }),
+      verify: ({ label }) =>
+        label.includes(failing.title)
+          ? { valid: false, reason: 'could not reproduce' }
+          : { valid: true, reason: 'confirmed' },
+      fix: fixOpen,
+    });
+    expect(result.rounds[0]?.gaps).toContain('tester saw a failure: pnpm check --all');
+    expect(result.complete).toBe(false);
+    expect(summary).not.toContain('✅');
+    expect(summary).toContain('- **FAIL** · pnpm check --all');
+  });
+
+  it('has a reviewer that gave no answer review the WHOLE PR in the next round, after fixes too', async () => {
+    const { result, of } = await runLoop({
+      review: (call) => (call.label === 'review:consistency:r1' ? null : reviewerFinds([1])(call)),
+      fix: fixOpen,
+    });
+    const r2 = (key) => of('review').find((c) => c.label === `review:${key}:r2`)?.prompt;
+    expect(r2('correctness')).toContain('FOLLOW-UP round');
+    expect(r2('consistency')).not.toContain('FOLLOW-UP round');
+    expect(r2('consistency')).toContain('Review ONLY what this PR changes');
+    expect(result.rounds.map((r) => r.kind)).toEqual(['full', 'fixes only; whole PR: consistency']);
+    expect(result.rounds[1]?.gaps).toEqual([]);
+    expect(result.complete).toBe(true);
+  });
+
+  it('verifies a finding that got no verdict again next round, even when no reviewer repeats it', async () => {
+    const other = { ...finding, title: 'Another bug' };
+    let verdicts = 0;
+    const { result, of } = await runLoop({
+      review: ({ label }) =>
+        label === 'review:correctness:r1' ? { findings: [finding, other] } : { findings: [] },
+      verify: ({ label }) =>
+        label.includes(finding.title) && ++verdicts === 1 ? null : { valid: true, reason: 'ok' },
+      fix: fixOpen,
+    });
+    expect(of('verify').filter((c) => c.label.includes(finding.title))).toHaveLength(2);
+    expect(of('post').map((c) => c.label)).toEqual(['post:r1', 'post:r2']);
+    expect(of('post')[1]?.prompt).toContain(finding.title);
+    expect(result.complete).toBe(true);
+  });
+
+  it("counts a thread's severity from an earlier run, and an unknown one as blocking", async () => {
+    for (const [severity, complete] of [
+      ['major', false],
+      [null, false],
+      ['minor', true],
+    ]) {
+      const { result, summary } = await runLoop({
+        threads: () => ({
+          count: 1,
+          threads: [
+            {
+              id: 'rl-old',
+              title: 'Old finding',
+              severity,
+              path: 'tools/a.mjs',
+              line: 3,
+              resolved: false,
+              wontfix: false,
+            },
+          ],
+        }),
+        fix: ({ state }) => ({
+          checkPassed: true,
+          commit: state.sha, // nothing done
+          resolutions: [{ path: 'tools/a.mjs', title: 'Old finding', status: 'not-done' }],
+        }),
+      });
+      expect(result.complete, String(severity)).toBe(complete);
+      expect(summary.includes('✅'), String(severity)).toBe(complete);
+    }
+  });
+
+  it('reopens a RESOLVED finding that a reviewer reports again in other words', async () => {
+    const { result, of } = await runLoop({
+      threads: () => ({
+        count: 1,
+        threads: [
+          {
+            id: 'rl-1',
+            title: finding.title,
+            severity: 'major',
+            path: finding.path,
+            line: null,
+            resolved: true,
+            wontfix: false,
+          },
+        ],
+      }),
+      review: ({ label }) =>
+        label === 'review:correctness:r1'
+          ? {
+              findings: [
+                { ...finding, severity: 'blocker', title: 'Drift still hidden after the fix' },
+              ],
+            }
+          : { findings: [] },
+      verify: () => ({
+        valid: true,
+        severity: 'blocker',
+        reason: 'still present',
+        duplicateOf: `known: ${finding.path}: ${finding.title}`,
+      }),
+      fix: () => ({ checkPassed: false, resolutions: [] }),
+    });
+    expect(of('post')).toHaveLength(1);
+    expect(of('post')[0]?.prompt).toContain('STILL present');
+    expect(of('post')[0]?.prompt).toContain(`"title": "${finding.title}"`);
+    expect(of('fix')[0]?.prompt).toContain(finding.title);
+    expect(result.complete).toBe(false);
+  });
+
+  it('matches batched verdicts to findings by index, and never shifts them', async () => {
+    const [a, b] = [
+      { ...finding, title: 'Real bug' },
+      { ...finding, title: 'False positive' },
+    ];
+    const review = ({ label }) =>
+      label === 'review:correctness:r1' ? { findings: [a, b] } : { findings: [] };
+    // in another order, with the indices: each verdict still lands on its own finding
+    const reordered = await runLoop({
+      review,
+      verifyBatch: () => ({
+        verdicts: [
+          { index: 2, valid: false, reason: 'not a bug' },
+          { index: 1, valid: true, reason: 'confirmed' },
+        ],
+      }),
+      fix: () => ({ checkPassed: false, resolutions: [] }),
+    });
+    expect(reordered.of('post')[0]?.prompt).toContain('Real bug');
+    expect(reordered.of('post')[0]?.prompt).not.toContain('False positive');
+    // one verdict short and without indices: nothing is judged, nothing misassigned
+    const short = await runLoop({
+      review,
+      verifyBatch: () => ({ verdicts: [{ valid: false, reason: 'merged the two' }] }),
+    });
+    expect(short.of('post')).toHaveLength(0);
+    expect(short.result.rounds[0]?.gaps).toEqual([
+      'verifier of tools/check.mjs: Real bug',
+      'verifier of tools/check.mjs: False positive',
+    ]);
+  });
+
+  it('stops when the fix pass changed nothing, instead of re-reviewing the same head', async () => {
+    const { result, summary, of } = await runLoop({
+      review: reviewerFinds([1]),
+      fix: ({ state }) => ({
+        checkPassed: true,
+        commit: state.sha,
+        resolutions: [{ path: finding.path, title: finding.title, status: 'wontfix', note: 'n/a' }],
+      }),
+    });
+    expect(of('review').filter(inRound(2))).toHaveLength(0);
+    expect(summary).toContain("the fix pass changed nothing (0 fixed, 1 won't fix, 0 left open)");
+    expect(summary).toContain('✅');
+    expect(result.complete).toBe(true);
   });
 });

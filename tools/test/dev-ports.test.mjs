@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -14,6 +14,30 @@ import {
 import { commitAll, makeRepo, tempDir } from './helpers.mjs';
 
 const DEV_PORTS = resolve(import.meta.dirname, '../dev-ports.mjs');
+/**
+ * The test's environment without the overrides dev-ports honours: a developer's exported WEB_PORT
+ * (see .env.example), or a run under `dev-ports --exec`, must not change what the CLI tests see.
+ */
+const CLEAN_ENV = Object.fromEntries(
+  Object.entries(process.env).filter(
+    ([k]) =>
+      ![
+        'WEB_PORT',
+        'API_PORT',
+        'DB_PORT',
+        'WEB_E2E_PORT',
+        'API_E2E_PORT',
+        'COMPOSE_PROJECT_NAME',
+      ].includes(k),
+  ),
+);
+/** Run the CLI in `cwd` (a primary checkout when it is no git repository). */
+const cli = (args, { cwd, env = {} } = {}) =>
+  spawnSync(process.execPath, [DEV_PORTS, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...CLEAN_ENV, ...env },
+  });
 const worktreeNames = Array.from(
   { length: 60 },
   (_, i) => `/home/u/app/.claude/worktrees/agent-${i}`,
@@ -148,8 +172,7 @@ describe('detectCheckout', () => {
     }
     const webPorts = pair.map((wt) => {
       execFileSync('git', ['worktree', 'add', '-q', '--detach', wt], { cwd: root });
-      return JSON.parse(execFileSync(process.execPath, [DEV_PORTS, '--json'], { cwd: wt })).ports
-        .web;
+      return JSON.parse(cli(['--json'], { cwd: wt }).stdout).ports.web;
     });
     expect(webPorts[0]).not.toBe(webPorts[1]);
     // ...because the CLI recorded each worktree's block in the registry both worktrees share.
@@ -158,6 +181,43 @@ describe('detectCheckout', () => {
       [pair[0]]: (webPorts[0] - 20000) / 100,
       [pair[1]]: (webPorts[1] - 20000) / 100,
     });
+  });
+});
+
+describe('CLI modes', () => {
+  // outside any git repository: the primary checkout's fixed ports
+  it('--get prints one value and fails on an unknown key', () => {
+    const cwd = tempDir();
+    expect(cli(['--get', 'web'], { cwd }).stdout).toBe('http://localhost:3000\n');
+    expect(cli(['--get', 'db'], { cwd }).stdout).toBe('5432\n');
+    const unknown = cli(['--get', 'nope'], { cwd });
+    expect(unknown.status).toBe(1);
+    expect(unknown.stderr).toContain('dev-ports: unknown key "nope"');
+  });
+
+  it('--env prints KEY=VALUE lines, overrides included', () => {
+    const cwd = tempDir();
+    const lines = cli(['--env'], { cwd, env: { API_PORT: '4999' } }).stdout.split('\n');
+    expect(lines).toEqual(expect.arrayContaining(['WEB_PORT=3000', 'API_PORT=4999']));
+  });
+
+  it('--exec runs the command with the env (existing env wins) and passes its exit code on', () => {
+    const cwd = tempDir();
+    const port = [process.execPath, '-e', 'console.log(process.env.WEB_PORT)'];
+    expect(cli(['--exec', '--', ...port], { cwd }).stdout).toBe('3000\n');
+    expect(cli(['--exec', '--', ...port], { cwd, env: { WEB_PORT: '9999' } }).stdout).toBe(
+      '9999\n',
+    );
+    expect(cli(['--exec', '--', process.execPath, '-e', 'process.exit(3)'], { cwd }).status).toBe(
+      3,
+    );
+  });
+
+  it('--exec reports a command it cannot start, with exit code 127', () => {
+    const res = cli(['--exec', '--', 'no-such-command-for-dev-ports'], { cwd: tempDir() });
+    expect(res.status).toBe(127);
+    expect(res.stderr).toContain('dev-ports: could not start no-such-command-for-dev-ports:');
+    expect(res.stderr).not.toContain('    at ');
   });
 });
 

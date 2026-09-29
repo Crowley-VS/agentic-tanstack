@@ -5,14 +5,17 @@
 //   node tools/pr-review.mjs info    --pr <n>                      PR metadata, description and the
 //        discussion by the PR author and your `gh` user (JSON); other people's comments are left out
 //   node tools/pr-review.mjs head    --pr <n>                      { sha, branch, crossRepository }
-//        → fails for fork PRs and for branch names that are not plain ref names
+//        → fails for fork PRs, PRs that are not open, and branch names that are not plain ref names
+//   node tools/pr-review.mjs diff    --pr <n>                      the PR's diff, from its per-file
+//        patches: works where `gh pr diff` fails (HTTP 406, too large to render); files without a
+//        patch (removed, binary, huge) are left out
 //   node tools/pr-review.mjs post    --pr <n> --round <r>   < findings.json
 //        findings: [{ id?, path, line?, severity, title, body, suggestion? }]
 //        → one PR review (event COMMENT) with inline comments on diff lines; findings that
 //          can't be anchored to a changed line (file-level ones, files the PR does not change)
 //          go into the review body. Prints { posted: [ids], inline }.
 //   node tools/pr-review.mjs threads --pr <n> [--all] [--brief]    review-loop findings (JSON)
-//        → [{ id, title, path, line, resolved, wontfix, body, ... }]: the review threads YOU
+//        → [{ id, title, severity, path, line, resolved, wontfix, body, ... }]: the threads YOU
 //          started, plus the findings you posted in a review body (threadId null);
 //          --brief: { count, threads } without bodies (what the workflow relays)
 //   node tools/pr-review.mjs resolve --pr <n> --commit <sha>  < resolutions.json
@@ -177,6 +180,7 @@ export function bodyFindings(reviewBody) {
       path: typeof at?.path === 'string' ? at.path : null,
       line: Number.isInteger(at?.line) ? at.line : null,
       title: titleFromBody(section),
+      severity: severityFromBody(section),
       body: section,
     });
   }
@@ -223,6 +227,13 @@ export function titleFromBody(body) {
   return first.match(/\*\*[a-z]+: (.+)\*\*\s*$/)?.[1];
 }
 
+/** The severity on that first line (blocker, major, minor or nit), or undefined. */
+export function severityFromBody(body) {
+  const first = String(body ?? '').split('\n', 1)[0] ?? '';
+  const severity = first.match(/\*\*([a-z]+): .+\*\*\s*$/)?.[1];
+  return severity && Object.hasOwn(SEVERITY_ICON, severity) ? severity : undefined;
+}
+
 /** Validate `--pr`: a pull request NUMBER (a URL or `owner/repo#n` could target another repository). */
 export function prNumber(value) {
   if (!/^[1-9]\d*$/.test(String(value ?? '')))
@@ -262,6 +273,11 @@ export function headOf(meta) {
       `PR #${meta?.number} comes from ${meta?.isCrossRepository ? `a fork${fork}` : 'an unknown repository'}: the review loop pushes fixes and runs the PR's code, so it only runs on branches of this repository`,
     );
   }
+  // a closed or merged PR's branch may still exist: never review, fix and push it
+  if (meta.state !== 'OPEN')
+    throw new Error(
+      `PR #${meta.number} is ${String(meta.state ?? 'in an unknown state').toLowerCase()}: the review loop only runs on open pull requests`,
+    );
   if (!/^[0-9a-f]{40}$/.test(meta.headRefOid ?? ''))
     throw new Error(`PR #${meta.number} has no head commit`);
   if (!isSafeBranch(meta.headRefName))
@@ -338,6 +354,7 @@ function bodyThreads(pr, viewer) {
     path: f.path,
     line: f.line,
     title: f.title,
+    severity: f.severity,
     body: f.body,
   }));
 }
@@ -372,6 +389,7 @@ export function parseThreads(data, { all = false } = {}) {
       path: t.path,
       line: t.line,
       title: titleFromBody(first.body),
+      severity: severityFromBody(first.body),
       body: first.body,
     });
   }
@@ -415,9 +433,10 @@ export function bodyResolutions(resolutions, list) {
 export function briefThreads(list) {
   return {
     count: list.length,
-    threads: list.map(({ id, title, path, line, resolved, wontfix }) => ({
+    threads: list.map(({ id, title, severity, path, line, resolved, wontfix }) => ({
       id,
       title: title ?? null,
+      severity: severity ?? null,
       path: path ?? null,
       line: line ?? null,
       resolved,
@@ -580,9 +599,12 @@ function arg(argv, name) {
 // ---------- CLI ----------
 function main(argv) {
   const [cmd] = argv;
-  const known = ['info', 'head', 'post', 'threads', 'resolve', 'comment'];
+  const known = ['info', 'head', 'diff', 'post', 'threads', 'resolve', 'comment'];
   const pr = known.includes(cmd) ? prNumber(arg(argv, 'pr')) : undefined;
   switch (cmd) {
+    case 'diff':
+      console.log(prDiff(pr));
+      return;
     case 'info':
       console.log(
         JSON.stringify(trustedInfo(prInfo(pr, ',body,comments,reviews'), viewerLogin()), null, 2),
@@ -667,7 +689,7 @@ function main(argv) {
     }
     default:
       console.error(
-        'usage: node tools/pr-review.mjs <info|head|post|threads|resolve|comment> --pr <n> ...',
+        'usage: node tools/pr-review.mjs <info|head|diff|post|threads|resolve|comment> --pr <n> ...',
       );
       process.exitCode = 1;
   }

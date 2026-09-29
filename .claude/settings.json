@@ -33,6 +33,7 @@
       "Bash(git status *)",
       "Bash(node tools/pr-review.mjs info *)",
       "Bash(node tools/pr-review.mjs head *)",
+      "Bash(node tools/pr-review.mjs diff *)",
       "Bash(node tools/pr-review.mjs threads *)",
       "Bash(gh pr diff *)",
       "Bash(gh pr checks *)",

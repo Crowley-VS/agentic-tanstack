@@ -12,13 +12,14 @@ human to merge. The human still merges; the loop never merges.
 
 ## How (Claude Code)
 
-**Automatic start:** the PostToolUse hook `tools/agent-hooks/pr-opened.mjs` sees a successful `gh pr create` (or
-`gh pr ready` for a draft) and tells Claude to start the loop on that PR. The hook is the user's standing opt-in;
-opt out per machine with `REVIEW_LOOP_AUTO=0` (e.g. `env` in `.claude/settings.local.json`).
+The workflow spawns many agents and pushes to the PR branch, so confirm with the user first if they haven't already
+asked for the loop. Then run the saved workflow **`review-loop-run`** (`.claude/workflows/review-loop-run.js`) with
+`args: { pr: <number> }` (optional `maxRounds`, default 5).
 
-**Manual start:** the workflow spawns many agents and pushes to the PR branch, so confirm with the user first if they
-haven't already asked for the loop. Then run the saved workflow **`review-loop-run`**
-(`.claude/workflows/review-loop-run.js`) with `args: { pr: <number> }` (optional `maxRounds`, default 5).
+**When a PR is opened:** the PostToolUse hook `tools/agent-hooks/pr-opened.mjs` sees a successful `gh pr create` (or
+`gh pr ready` for a draft) that opened a PR of THIS repository, and has Claude offer the loop on it. Only the user can
+skip the question: `REVIEW_LOOP_AUTO=1` in their own environment (e.g. `env` in `.claude/settings.local.json`, never
+the committed settings) starts the loop right away; `REVIEW_LOOP_AUTO=0` turns the hook off.
 
 Each round:
 
@@ -29,7 +30,8 @@ Each round:
    throwaway copies; for app changes it runs the app and clicks through the changed pages in a browser). It
    reports what it ran, with the result and evidence of each; the summary comment lists them.
 2. **Verify**: new and reopened findings are checked against the code in batches of up to 6 (false positives,
-   duplicates and reworded repeats of known findings dropped; severity re-graded).
+   duplicates and reworded repeats of known findings dropped, except that a reworded repeat of a resolved finding
+   that is still present reopens it; severity re-graded).
 3. **Post**: confirmed findings become one GitHub review with inline comments (`tools/pr-review.mjs post`); a
    finding that cannot be anchored to a changed line goes into the review body. If posting fails, the loop stops.
 4. **Fix**: a fixer addresses every open finding with the **smallest change** that resolves it (large changes become
@@ -40,17 +42,20 @@ Each round:
 Every agent that reads or changes code works in its own git worktree checked out at the PR head, so the main
 checkout is never touched (each agent restores its worktree at the end so it is removed automatically).
 
-**Convergence rules** (why the loop ends): only **blocker/major** findings keep it going. Minor/nit findings are
-posted once as suggestions and fixed in the same pass, without another review round. It stops ✅ when a complete
-round (every reviewer and verifier answered, the tester ran everything and every failure it saw is a confirmed
-finding) leaves no blocker/major open, and stops early for a human when blocking findings stop decreasing. Anything else
-(an agent that returned nothing, a tester that reports nothing it ran or something it could not run, a push that
-did not land, `maxRounds`) ends with ⚠️ and the open findings.
+**Convergence rules** (why the loop ends): only **blocker/major** findings keep it going (a finding of unknown
+severity counts as one). Minor/nit findings are posted once as suggestions and fixed in the same pass, without
+another review round. It stops ✅ when a complete round (every reviewer and verifier answered, the tester ran
+everything and saw it pass) leaves no blocker/major open; what a round missed is made up in the next one (a reviewer
+that did not answer reviews the whole PR, a finding without a verdict is verified again). It stops early for a human
+when blocking findings stop decreasing. A fix pass that changed nothing ends the run. Anything else (an agent that
+returned nothing, a tester that reports nothing it ran, something it could not run or a failure, a push that did not
+land, `maxRounds`) ends with ⚠️ and the open findings.
 
 ## Manual fallback (other agents / no workflows)
 
 ```bash
-node tools/pr-review.mjs info --pr <n> && gh pr checks <n> && gh pr diff <n>   # review the whole PR
+node tools/pr-review.mjs info --pr <n>; gh pr checks <n>; gh pr diff <n>   # review the whole PR
+node tools/pr-review.mjs diff --pr <n>                             # the diff, when gh pr diff fails (HTTP 406)
 node tools/pr-review.mjs post --pr <n> --round 1 <<'JSON'         # post findings
 [{"path":"tools/x.mjs","line":12,"severity":"major","title":"…","body":"…","suggestion":"…"}]
 JSON
