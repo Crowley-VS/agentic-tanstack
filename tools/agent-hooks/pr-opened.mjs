@@ -40,7 +40,7 @@ export function reviewLoopContext(input, env = process.env) {
     '(AGENTS.md → "Pull requests"; the user enabled this hook to start it without asking).',
     `Now: run the saved workflow \`review-loop\` with args ${args} and tell the user it started.`,
     'It reviews (3 lenses + a hands-on tester), posts findings as inline comments, fixes them, and re-reviews',
-    'until nothing new or open remains. Do not edit this checkout while it runs; do not merge the PR.',
+    'until nothing new or open remains. It works in its own git worktrees, so the user can keep working; never merge the PR.',
   ].join('\n');
 }
 

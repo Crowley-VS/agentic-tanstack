@@ -299,11 +299,15 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
     `${CONTEXT}\n\nYou are the FIXER for review-loop round ${round}. Open findings (JSON; "threadId" = has a GitHub review thread):
 ${JSON.stringify(open, null, 2)}
 
-1. Make sure you are on the PR branch and up to date: \`gh pr view ${PR} --json headRefName\`, then \`git switch <branch>\` and \`git pull --ff-only\`.
+1. You are in your OWN throwaway git worktree (the user's checkout is never touched). Check out the PR head, detached:
+   \`git fetch origin && git checkout --detach "origin/$(gh pr view ${PR} --json headRefName -q .headRefName)"\`
+   then \`pnpm install --frozen-lockfile\`.
 2. Address EVERY open finding. Prefer a real fix. Only if a finding is wrong or out of scope, mark it "wontfix" with a specific, evidence-based note.
    Follow AGENTS.md (never hand-edit generated files; regenerate instead; add or adjust tests for behavior you change).
 3. Run \`pnpm check\` until it passes. Never weaken a test or rule to make it pass.
-4. Commit (conventional commit message listing the finding ids, ending with the repo's Co-Authored-By line if the repo uses one) and \`git push\`.
+4. Commit (conventional commit message listing the finding ids, ending with the repo's Co-Authored-By line if the repo uses one)
+   and push to the PR branch: \`git push origin "HEAD:$(gh pr view ${PR} --json headRefName -q .headRefName)"\`.
+   If the push is rejected because the branch moved, \`git fetch\`, rebase onto it, re-run \`pnpm check\`, and push again.
 5. Resolve the threads: pipe [{"id","status":"fixed"|"wontfix","note"}] for findings WITH a threadId to
    \`node tools/pr-review.mjs resolve --pr ${PR} --commit <sha>\` (get each thread's review-loop "id" from
    \`node tools/pr-review.mjs threads --pr ${PR}\`). Findings without a thread need no GitHub call.
@@ -311,6 +315,7 @@ Return one resolution per finding (path + title exactly as given).`,
     {
       label: `fix:r${round}`,
       phase: 'Fix',
+      isolation: 'worktree',
       schema: {
         type: 'object',
         properties: {

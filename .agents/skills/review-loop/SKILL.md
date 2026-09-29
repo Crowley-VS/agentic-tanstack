@@ -27,7 +27,8 @@ Each round:
 2. **Verify**: each new finding is independently checked against the code (false positives dropped).
 3. **Post**: confirmed findings become one GitHub review with inline comments (`tools/pr-review.mjs post`).
 4. **Fix**: a fixer addresses every open finding (or replies with an evidence-based won't-fix), runs
-   `pnpm check`, commits, pushes, and resolves the threads.
+   `pnpm check`, commits, pushes, and resolves the threads. The fixer and the tester work in their own git worktrees,
+   so your checkout is never touched and several loops can run at once.
 
 It stops when a round finds **no new issues and nothing is open**, then posts a summary comment.
 
