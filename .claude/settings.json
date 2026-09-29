@@ -11,6 +11,7 @@
       "Bash(pnpm regen *)",
       "Bash(pnpm agents:sync *)",
       "Bash(pnpm agents:check *)",
+      "Bash(pnpm agents:nx-check *)",
       "Bash(pnpm nx run *)",
       "Bash(pnpm nx run-many *)",
       "Bash(pnpm nx affected *)",
@@ -92,5 +93,14 @@
     "context7@claude-plugins-official": true,
     "railway@railway-skills": true,
     "nx@nx-claude-plugins": true
+  },
+  "sandbox": {
+    "filesystem": {
+      "allowRead": ["/tmp/.nx", "~/.nx"],
+      "allowWrite": ["/tmp/.nx", "~/.nx"]
+    },
+    "network": {
+      "allowUnixSockets": ["/tmp/.nx", "~/.nx"]
+    }
   }
 }

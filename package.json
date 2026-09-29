@@ -10,7 +10,8 @@
     "regen": "node tools/agents.mjs regen",
     "agents:sync": "node tools/agents.mjs sync",
     "agents:check": "node tools/agents.mjs check",
-    "agents:nx": "NX_AI_FILES_USE_LOCAL=true nx configure-ai-agents --agents claude --no-interactive"
+    "agents:nx": "NX_AI_FILES_USE_LOCAL=true nx configure-ai-agents --agents claude --no-interactive",
+    "agents:nx-check": "NX_AI_FILES_USE_LOCAL=true nx configure-ai-agents --check"
   },
   "devDependencies": {
     "@nx/eslint": "catalog:",
