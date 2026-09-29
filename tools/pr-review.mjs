@@ -1,0 +1,274 @@
+#!/usr/bin/env node
+// Deterministic GitHub plumbing for the review loop (.claude/workflows/review-loop.js).
+// Agents call these subcommands instead of improvising `gh api` requests.
+//
+//   node tools/pr-review.mjs info    --pr <n>                      PR metadata (JSON)
+//   node tools/pr-review.mjs post    --pr <n> --round <r>   < findings.json
+//        findings: [{ id?, path, line?, severity, title, body, suggestion? }]
+//        → one PR review (event COMMENT) with inline comments on diff lines; findings that
+//          can't be anchored to a changed line go into the review body. Prints posted ids.
+//   node tools/pr-review.mjs threads --pr <n> [--all]              review-loop threads (JSON)
+//   node tools/pr-review.mjs resolve --pr <n> --commit <sha>  < resolutions.json
+//        resolutions: [{ id, status: "fixed" | "wontfix", note }]
+//        → replies on each thread and resolves it.
+//   node tools/pr-review.mjs comment --pr <n>                 < markdown   plain PR comment
+//
+// Every comment carries a hidden marker `<!-- review-loop:id=<id> -->` so later rounds can
+// find, dedupe and resolve their own threads. Posting uses your `gh` login.
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export const MARKER = 'review-loop:id=';
+
+/** Stable id for a finding: same file + same title → same id across rounds. */
+export function findingId(finding) {
+  const key = `${finding.path ?? ''}::${String(finding.title ?? '')
+    .trim()
+    .toLowerCase()}`;
+  return `rl-${createHash('sha256').update(key).digest('hex').slice(0, 8)}`;
+}
+
+/**
+ * Parse a unified diff into { path → Set(line numbers on the RIGHT side that can take a comment) }.
+ * Added and context lines inside hunks are commentable; removed lines are not.
+ */
+export function commentableLines(diff) {
+  const map = new Map();
+  let path;
+  let right = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++ ')) {
+      const p = line.slice(4).trim();
+      path = p === '/dev/null' ? undefined : p.replace(/^b\//, '');
+      if (path && !map.has(path)) map.set(path, new Set());
+      continue;
+    }
+    if (line.startsWith('--- ') || line.startsWith('diff --git') || line.startsWith('index '))
+      continue;
+    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      right = Number(hunk[1]);
+      continue;
+    }
+    if (!path) continue;
+    if (line.startsWith('+') || line.startsWith(' ')) {
+      map.get(path).add(right);
+      right++;
+    }
+    // '-' lines and '\ No newline' do not advance the right side
+  }
+  return map;
+}
+
+/** Nearest commentable line in the same file (so a slightly-off line still anchors inline). */
+export function anchorLine(lines, wanted) {
+  if (!lines || lines.size === 0) return undefined;
+  if (wanted && lines.has(wanted)) return wanted;
+  if (!wanted) return undefined;
+  let best;
+  for (const l of lines)
+    if (best === undefined || Math.abs(l - wanted) < Math.abs(best - wanted)) best = l;
+  return best !== undefined && Math.abs(best - wanted) <= 5 ? best : undefined;
+}
+
+const SEVERITY_ICON = { blocker: '🛑', major: '🟠', minor: '🟡', nit: '⚪' };
+
+export function commentBody(f, round) {
+  return [
+    `${SEVERITY_ICON[f.severity] ?? '•'} **${f.severity ?? 'issue'}: ${f.title}**`,
+    '',
+    f.body,
+    f.suggestion ? `\n**Suggested fix:** ${f.suggestion}` : '',
+    '',
+    `<sub>review-loop round ${round} · \`${f.id}\`</sub>`,
+    `<!-- ${MARKER}${f.id} -->`,
+  ]
+    .filter((x) => x !== undefined)
+    .join('\n')
+    .trim();
+}
+
+/** Build the GitHub review payload from findings and the PR diff. Pure. */
+export function buildReview({ findings, diff, round, commitId }) {
+  const lines = commentableLines(diff);
+  const inline = [];
+  const unanchored = [];
+  for (const raw of findings) {
+    const f = { ...raw, id: raw.id ?? findingId(raw) };
+    const line = anchorLine(lines.get(f.path), f.line);
+    if (line) inline.push({ path: f.path, line, side: 'RIGHT', body: commentBody(f, round) });
+    else unanchored.push(f);
+  }
+  const body = [
+    `### 🔁 Review loop — round ${round}`,
+    findings.length === 0
+      ? 'No new issues found.'
+      : `${findings.length} new finding(s): ${inline.length} inline, ${unanchored.length} below.`,
+    ...unanchored.map(
+      (f) =>
+        `\n---\n${commentBody(f, round)}${f.path ? `\n\n\`${f.path}${f.line ? `:${f.line}` : ''}\`` : ''}`,
+    ),
+  ].join('\n');
+  return { commit_id: commitId, event: 'COMMENT', body, comments: inline };
+}
+
+// ---------- gh helpers ----------
+function gh(args, input) {
+  return execFileSync('gh', args, {
+    encoding: 'utf8',
+    input,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+}
+
+function repoSlug() {
+  return JSON.parse(gh(['repo', 'view', '--json', 'nameWithOwner'])).nameWithOwner;
+}
+
+function prInfo(pr) {
+  return JSON.parse(
+    gh([
+      'pr',
+      'view',
+      String(pr),
+      '--json',
+      'number,url,headRefName,headRefOid,baseRefName,state,title',
+    ]),
+  );
+}
+
+function threads(pr, all = false) {
+  const [owner, name] = repoSlug().split('/');
+  const query = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved path line comments(first:20){nodes{databaseId body}}}}}}}`;
+  const res = JSON.parse(
+    gh([
+      'api',
+      'graphql',
+      '-f',
+      `query=${query}`,
+      '-F',
+      `owner=${owner}`,
+      '-F',
+      `name=${name}`,
+      '-F',
+      `pr=${pr}`,
+    ]),
+  );
+  return res.data.repository.pullRequest.reviewThreads.nodes
+    .map((t) => {
+      const first = t.comments.nodes[0];
+      const id = first?.body.match(/review-loop:id=(rl-[0-9a-f]+)/)?.[1];
+      return id
+        ? {
+            id,
+            threadId: t.id,
+            commentId: first.databaseId,
+            resolved: t.isResolved,
+            path: t.path,
+            line: t.line,
+            body: first.body,
+          }
+        : undefined;
+    })
+    .filter(Boolean)
+    .filter((t) => all || !t.resolved);
+}
+
+function readStdinJson() {
+  const text = readFileSync(0, 'utf8').trim();
+  return text ? JSON.parse(text) : [];
+}
+
+function arg(argv, name) {
+  const i = argv.indexOf(`--${name}`);
+  return i === -1 ? undefined : argv[i + 1];
+}
+
+// ---------- CLI ----------
+function main(argv) {
+  const [cmd] = argv;
+  const pr = arg(argv, 'pr');
+  if (!pr && cmd !== 'help') throw new Error('--pr <number> is required');
+  switch (cmd) {
+    case 'info':
+      console.log(JSON.stringify(prInfo(pr), null, 2));
+      return;
+    case 'post': {
+      const round = Number(arg(argv, 'round') ?? 1);
+      const findings = readStdinJson();
+      const info = prInfo(pr);
+      const diff = gh(['pr', 'diff', String(pr)]);
+      const review = buildReview({ findings, diff, round, commitId: info.headRefOid });
+      gh(
+        ['api', `repos/${repoSlug()}/pulls/${pr}/reviews`, '-X', 'POST', '--input', '-'],
+        JSON.stringify(review),
+      );
+      console.log(
+        JSON.stringify({
+          posted: findings.map((f) => f.id ?? findingId(f)),
+          inline: review.comments.length,
+        }),
+      );
+      return;
+    }
+    case 'threads':
+      console.log(JSON.stringify(threads(pr, argv.includes('--all')), null, 2));
+      return;
+    case 'resolve': {
+      const commit = arg(argv, 'commit');
+      if (!commit) throw new Error('--commit <sha> is required');
+      const resolutions = readStdinJson();
+      const open = new Map(threads(pr).map((t) => [t.id, t]));
+      const slug = repoSlug();
+      const done = [];
+      for (const r of resolutions) {
+        const t = open.get(r.id);
+        if (!t) continue;
+        const verb = r.status === 'wontfix' ? "Won't fix" : `Addressed in ${commit.slice(0, 7)}`;
+        gh([
+          'api',
+          `repos/${slug}/pulls/${pr}/comments/${t.commentId}/replies`,
+          '-X',
+          'POST',
+          '-f',
+          `body=**${verb}.** ${r.note ?? ''}`.trim(),
+        ]);
+        gh([
+          'api',
+          'graphql',
+          '-f',
+          'query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}',
+          '-F',
+          `id=${t.threadId}`,
+        ]);
+        done.push(r.id);
+      }
+      console.log(JSON.stringify({ resolved: done }));
+      return;
+    }
+    case 'comment': {
+      const body = readFileSync(0, 'utf8');
+      gh(['pr', 'comment', String(pr), '--body-file', '-'], body);
+      console.log(JSON.stringify({ commented: true }));
+      return;
+    }
+    default:
+      console.error(
+        'usage: node tools/pr-review.mjs <info|post|threads|resolve|comment> --pr <n> ...',
+      );
+      process.exitCode = 1;
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    main(process.argv.slice(2));
+  } catch (err) {
+    console.error(`pr-review: ${err.message}`);
+    process.exitCode = 1;
+  }
+}

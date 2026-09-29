@@ -14,10 +14,14 @@
     "tools/test/hooks.test.mjs",
     "tools/test/agents.test.mjs",
     "lefthook.yml",
-    ".worktreeinclude"
+    ".worktreeinclude",
+    "tools/pr-review.mjs",
+    "tools/test/pr-review.test.mjs",
+    ".claude/workflows/review-loop.js",
+    ".agents/skills/review-loop/SKILL.md"
   ],
   "sections": {
-    "AGENTS.md": ["done", "commands", "navigation", "invariants", "workflow"]
+    "AGENTS.md": ["done", "commands", "navigation", "invariants", "workflow", "pull-requests"]
   },
   "merged": {
     ".claude/settings.json": "kit provides env, hooks, base permissions and plugins; stacks may add permissions and plugins",

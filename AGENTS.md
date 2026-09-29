@@ -75,6 +75,17 @@ Never claim "done" without running these. If a check fails, fix the cause; never
 
 <!-- kit:end -->
 
+<!-- kit:start:pull-requests -->
+
+## Pull requests (one per phase)
+
+1. Finish the phase; `pnpm check` must pass.
+2. Commit on a branch (never directly on `main`) and open a PR with a summary and a test plan.
+3. Run the **review loop** (skill `review-loop`): review → post findings → fix → re-review until nothing new or open.
+4. A human merges.
+
+<!-- kit:end -->
+
 <!-- kit:start:workflow -->
 
 ## Working style

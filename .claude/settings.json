@@ -22,7 +22,12 @@
       "Bash(pnpm exec intent load *)",
       "Bash(git status *)",
       "Bash(git diff *)",
-      "Bash(git log *)"
+      "Bash(git log *)",
+      "Bash(node tools/pr-review.mjs *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr diff *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh run view *)"
     ],
     "ask": [
       "Bash(pnpm nx exec *)",

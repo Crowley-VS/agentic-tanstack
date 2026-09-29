@@ -133,3 +133,24 @@ describe('check-versions', () => {
     expect(problems).toContain('apps/api/Dockerfile=11.27.1');
   });
 });
+
+describe('regen --check', () => {
+  it('passes when regen is a no-op (even for uncommitted outputs) and reports real drift', async () => {
+    const { regen } = await import('../agents.mjs');
+    const root = makeRepo({
+      '.agents/generated.json': {
+        artifacts: [{ id: 'out', paths: ['gen/**'], regen: 'node make.mjs' }],
+      },
+      'make.mjs':
+        "import {mkdirSync,writeFileSync} from 'node:fs';mkdirSync('gen',{recursive:true});writeFileSync('gen/a.txt','v1');",
+    });
+    expect(regen(root, { checkOnly: true })).toEqual([
+      expect.stringContaining('gen/a.txt was out of date'),
+    ]);
+    expect(regen(root, { checkOnly: true })).toEqual([]); // uncommitted but up to date → fine
+    writeFile(root, 'gen/a.txt', 'hand-edited');
+    expect(regen(root, { checkOnly: true })).toEqual([
+      expect.stringContaining('gen/a.txt was out of date'),
+    ]);
+  });
+});

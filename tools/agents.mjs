@@ -9,6 +9,7 @@
 //   regen    run every regen command from .agents/generated.json; --check = fail on drift
 //   staged   pre-commit: format + lint the given staged files, skipping generated ones
 import { execFileSync, execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -295,24 +296,42 @@ function check(root = ROOT) {
 }
 
 // ---------- regen ----------
-function regen(root = ROOT, { checkOnly = false } = {}) {
-  const { artifacts } = loadManifest(root);
-  const commands = [...new Set(artifacts.map((a) => a.regen))];
-  for (const cmd of commands) {
-    console.log(`regen: ${cmd}`);
-    execSync(cmd, { cwd: root, stdio: 'inherit' });
-  }
-  if (!checkOnly) return [];
-  const paths = artifacts.flatMap((a) => a.paths.map((p) => `:(glob)${p}`));
-  if (paths.length === 0) return [];
-  const status = execFileSync('git', ['status', '--porcelain', '--', ...paths], {
+/** Snapshot { path: sha256 } of every file (tracked or untracked, not ignored) matching the manifest. */
+function snapshotGenerated(root, artifacts) {
+  const res = execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], {
     cwd: root,
     encoding: 'utf8',
   });
-  return status
-    .split('\n')
-    .filter(Boolean)
-    .map((l) => `generated file out of date: ${l.slice(3)} — commit the output of \`pnpm regen\``);
+  const snap = new Map();
+  for (const f of res.split('\0').filter(Boolean)) {
+    if (!findArtifact({ artifacts }, f) || !existsSync(join(root, f))) continue;
+    snap.set(
+      f,
+      createHash('sha256')
+        .update(readFileSync(join(root, f)))
+        .digest('hex'),
+    );
+  }
+  return snap;
+}
+
+/** Run every regen command; with checkOnly, report files that regen changed (= drift). */
+function regen(root = ROOT, { checkOnly = false } = {}) {
+  const { artifacts } = loadManifest(root);
+  const before = checkOnly ? snapshotGenerated(root, artifacts) : undefined;
+  for (const cmd of new Set(artifacts.map((a) => a.regen))) {
+    console.log(`regen: ${cmd}`);
+    execSync(cmd, { cwd: root, stdio: 'inherit' });
+  }
+  if (!before) return [];
+  const after = snapshotGenerated(root, artifacts);
+  const problems = [];
+  for (const [f, hash] of after)
+    if (before.get(f) !== hash)
+      problems.push(`${f} was out of date (regen changed it) — commit the regenerated file`);
+  for (const f of before.keys())
+    if (!after.has(f)) problems.push(`${f} is stale (regen removed it) — delete it`);
+  return problems;
 }
 
 // ---------- staged (pre-commit) ----------
