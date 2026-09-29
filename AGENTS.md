@@ -102,7 +102,9 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 
 1. Finish the phase; `pnpm check` must pass.
 2. Commit on a branch (never directly on `main`) and open a PR with a summary and a test plan.
-3. Run the **review loop** (skill `review-loop`): review → post findings → fix → re-review until nothing new or open.
+3. The **review loop** (skill `review-loop`) starts automatically when a PR is opened from Claude Code (hook
+   `tools/agent-hooks/pr-opened.mjs`; drafts start on `gh pr ready`; opt out with `REVIEW_LOOP_AUTO=0`): review →
+   post findings → fix → re-review the fixes until no blocker/major issue is open.
 4. A human merges.
 
 <!-- kit:end -->

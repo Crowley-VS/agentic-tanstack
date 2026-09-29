@@ -21,7 +21,9 @@
     "tools/test/pr-review.test.mjs",
     ".claude/workflows/review-loop-run.js",
     "tools/test/review-loop.test.mjs",
-    ".agents/skills/review-loop/SKILL.md"
+    ".agents/skills/review-loop/SKILL.md",
+    "tools/agent-hooks/pr-opened.mjs",
+    "tools/test/pr-opened.test.mjs"
   ],
   "notYetGeneric": {
     "tools/dev-ports.mjs": "its services (web/api/db ports, the /graphql path, Postgres URLs and database names) are this stack's; it joins the kit once they come from stack config",
