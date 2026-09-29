@@ -1,17 +1,21 @@
 #!/usr/bin/env node
 // Agent-layer maintenance. One script, several modes:
 //
-//   sync     copy .agents/skills/* → .claude/skills/* (byte-identical copies, Windows-safe),
-//            remove the copies of deleted skills, and render generated-file protections from
-//            .agents/generated.json into .oxfmtrc.json, .oxlintrc.json and .claude/settings.json
-//            (Edit deny rules); --stage (pre-commit, after formatting) also syncs the INDEX from
-//            the staged sources, so a commit never carries copies of unstaged or untracked files
+//   sync     copy .agents/skills/* → .claude/skills/* (byte-identical copies, no symlinks), remove
+//            the copies of deleted skills, and render generated-file protections from
+//            .agents/generated.json into .oxfmtrc.json, .oxlintrc.json, .gitattributes and
+//            .claude/settings.json (Edit deny rules); --stage (pre-commit, after formatting) also
+//            syncs the INDEX from the staged sources, so a commit never carries copies of unstaged
+//            or untracked files
 //   check    fail if sync is stale, or on agent-config hygiene problems (CI); --staged checks
 //            what the next commit contains instead of the working tree (pre-commit)
 //   adopt    move skills that tools wrote directly into .claude/skills into .agents/skills
 //   regen    run every regen command from .agents/generated.json; --check = fail when regen
 //            changes ANY file (generated outputs and the configs sync renders)
-//   staged   pre-commit: format + lint the given staged files, skipping generated ones
+//   staged   pre-commit: format + lint the given staged files (skipping generated ones), and
+//            re-stage them at once so the jobs after it see the formatted content
+//   heal     post-commit: after `git commit -- <paths>`, put back in the index what the
+//            pre-commit hook changed in the commit (see healIndex)
 import { execFileSync, execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -29,6 +33,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { nodeBin } from './lib/bin.mjs';
 import { findArtifact, isTracked, loadManifest, toRepoPath } from './lib/generated.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -57,14 +62,15 @@ const SYNC_PATHS = [
   '.agents',
   '.claude/settings.json',
   '.claude/skills',
+  '.gitattributes',
   '.oxfmtrc.json',
   '.oxlintrc.json',
 ];
 /** A .claude/skills copy that no source explains and sync cannot fix on its own. */
 const NO_SOURCE = 'has no source in .agents/skills';
-// Commands that look read-only but write files through a flag (`git diff --output=<file>`,
-// `git log --output=<file>`): a wildcard allow rule would auto-approve those writes.
-const WRITES_THROUGH_FLAGS = /^Bash\(git (?:diff|log|show|whatchanged|format-patch)\b.*\*/;
+/** The block of .gitattributes that sync renders from the manifest (the rest is hand-written). */
+const ATTR_START = '# agents:generated:start';
+const ATTR_END = '# agents:generated:end';
 
 // ---------- helpers ----------
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
@@ -154,8 +160,40 @@ export function parseFrontmatter(text) {
 }
 
 // ---------- desired state (pure) ----------
-/** Everything `sync` would write, as { path: desired JSON object } plus the skill list. */
-export function desiredState(root = ROOT) {
+/** The manifest's globs in commit `rev` ([] when there is no such commit or manifest). */
+function manifestGlobsAt(root, rev) {
+  try {
+    const text = git(root, ['show', `${rev}:.agents/generated.json`], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return (JSON.parse(text).artifacts ?? []).flatMap((a) => a.paths ?? []);
+  } catch {
+    return [];
+  }
+}
+
+/** .gitattributes with its managed block (between the markers) listing `globs` as generated. */
+export function renderGitattributes(text, globs) {
+  const block = [
+    ATTR_START,
+    ...[...new Set(globs)].map((g) => `${g} linguist-generated=true`),
+    ATTR_END,
+  ];
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => l.trim() === ATTR_START);
+  const end = lines.findIndex((l, i) => i > start && l.trim() === ATTR_END);
+  if (start !== -1 && end !== -1)
+    return [...lines.slice(0, start), ...block, ...lines.slice(end + 1)].join('\n');
+  const kept = text.replace(/\s+$/, '');
+  return `${kept ? `${kept}\n\n` : ''}${block.join('\n')}\n`;
+}
+
+/**
+ * Everything `sync` would write: { files: { path: desired JSON }, texts: { path: desired text },
+ * skills }. `previousGlobs`: the manifest globs of the last commit, whose `Edit(/…)` deny rules
+ * sync also owns (so removing an artifact from the manifest removes its rule).
+ */
+export function desiredState(root = ROOT, { previousGlobs = manifestGlobsAt(root, 'HEAD') } = {}) {
   const manifest = loadManifest(root);
   const generatedGlobs = manifest.artifacts.flatMap((a) => a.paths);
   const alwaysGlobs = manifest.artifacts
@@ -163,6 +201,7 @@ export function desiredState(root = ROOT) {
     .flatMap((a) => a.paths);
 
   const files = {};
+  const texts = {};
   const oxfmtPath = join(root, '.oxfmtrc.json');
   if (existsSync(oxfmtPath)) {
     const cfg = readJson(oxfmtPath);
@@ -179,18 +218,26 @@ export function desiredState(root = ROOT) {
   if (existsSync(settingsPath)) {
     const cfg = readJson(settingsPath);
     cfg.permissions ??= {};
-    // Convention: root-anchored `Edit(/...)` deny rules are OWNED by this script and re-derived
-    // from the manifest on every sync. Hand-written Edit rules use the unanchored form.
+    // This script owns exactly the `Edit(/<glob>)` deny rules of the manifest's globs (now or in
+    // the last commit) and re-derives them on every sync. Every other deny rule, root-anchored
+    // (`Edit(/.github/**)`) or absolute (`Edit(//etc/**)`) ones included, is hand-written and kept.
+    const owned = new Set([...generatedGlobs, ...previousGlobs].map((g) => `Edit(/${g})`));
     const managed = [...new Set(alwaysGlobs.map((g) => `Edit(/${g})`))].toSorted((a, b) =>
       a.localeCompare(b),
     );
-    const handWritten = (cfg.permissions.deny ?? []).filter((r) => !r.startsWith('Edit(/'));
+    const handWritten = (cfg.permissions.deny ?? []).filter((r) => !owned.has(r));
     cfg.permissions.deny = [...handWritten, ...managed];
     files[settingsPath] = cfg;
   }
+  const attributesPath = join(root, '.gitattributes');
+  if (existsSync(attributesPath))
+    texts[attributesPath] = renderGitattributes(
+      readFileSync(attributesPath, 'utf8'),
+      generatedGlobs,
+    );
 
   const skills = listDirs(join(root, '.agents', 'skills'));
-  return { files, skills, manifest };
+  return { files, texts, skills, manifest };
 }
 
 // ---------- sync ----------
@@ -199,21 +246,34 @@ function sync(root = ROOT, opts = {}) {
 }
 
 /**
+ * Whether `.claude/skills/<name>` is in the last commit: a copy an earlier sync made. HEAD, not
+ * the index: a copy that is only staged may still be one a tool wrote there (see adopt).
+ */
+function committedCopy(root, name) {
+  try {
+    git(root, ['cat-file', '-e', `HEAD:.claude/skills/${name}`], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Pre-commit: sync the working tree from its own sources, and the INDEX from the STAGED sources.
  * The commit then holds copies and configs that match the committed sources, even when a skill
  * source has unstaged edits or is untracked (it is not in the commit, so neither is its copy).
- * Runs AFTER the formatter (lefthook `piped`), so a source oxfmt just reformatted and re-staged
- * is copied as committed.
+ * Runs AFTER the formatter (lefthook `piped`), which re-stages what it formatted, so a source
+ * oxfmt just reformatted is copied as committed.
  */
 function syncAndStage(root = ROOT) {
-  // Working tree first: whether a copy without a source is a removed skill depends on it still
-  // being tracked, which the index update below may change.
+  // Working tree first, then the index: each is synced from its own sources.
   const working = syncWithWrites(root);
   const snapshot = exportIndex(root, SYNC_PATHS);
   try {
     const index = syncWithWrites(snapshot, {
-      tracked: () => true, // everything in the snapshot came from the index
-      oxfmt: join(root, 'node_modules', '.bin', 'oxfmt'),
+      tracked: (name) => committedCopy(root, name),
+      previousGlobs: manifestGlobsAt(root, 'HEAD'),
+      oxfmt: nodeBin(root, 'oxfmt'),
     });
     stageFrom(root, snapshot, index.written);
     return [...new Set([...index.problems, ...working.problems])];
@@ -224,35 +284,44 @@ function syncAndStage(root = ROOT) {
 
 /**
  * sync, also returning the repo-relative paths it wrote (files and skill directories).
- * `tracked(name)`: whether `.claude/skills/<name>` is tracked, i.e. a copy an earlier sync made.
+ * `tracked(name)`: whether `.claude/skills/<name>` is a copy an earlier sync made and committed.
+ * `oxfmt`: `[command, ...args]` that runs oxfmt (see nodeBin), or undefined to skip formatting.
  */
 function syncWithWrites(
   root,
   {
     write = true,
-    tracked = (name) => isTracked(root, `.claude/skills/${name}`),
-    oxfmt = join(root, 'node_modules', '.bin', 'oxfmt'),
+    tracked = (name) => committedCopy(root, name),
+    previousGlobs,
+    oxfmt = nodeBin(root, 'oxfmt'),
   } = {},
 ) {
   const problems = [];
-  const { files, skills } = desiredState(root);
+  const { files, texts, skills } = desiredState(root, previousGlobs ? { previousGlobs } : {});
   const written = [];
   const writtenPaths = [];
+  const record = (path) => {
+    problems.push(`${relative(root, path)} is out of date`);
+    if (!write) return false;
+    writtenPaths.push(relative(root, path).split(sep).join('/'));
+    return true;
+  };
   for (const [path, desired] of Object.entries(files)) {
     // Compare content, not formatting: oxfmt may lay the JSON out differently.
     const current = existsSync(path) ? readJson(path) : undefined;
-    if (JSON.stringify(current) !== JSON.stringify(desired)) {
-      problems.push(`${relative(root, path)} is out of date`);
-      if (write) {
-        writeFileSync(path, `${JSON.stringify(desired, null, 2)}\n`);
-        written.push(path);
-        writtenPaths.push(relative(root, path).split(sep).join('/'));
-      }
+    if (JSON.stringify(current) !== JSON.stringify(desired) && record(path)) {
+      writeFileSync(path, `${JSON.stringify(desired, null, 2)}\n`);
+      written.push(path);
     }
   }
-  if (written.length && existsSync(oxfmt)) {
+  for (const [path, desired] of Object.entries(texts)) {
+    const current = existsSync(path) ? readFileSync(path, 'utf8') : undefined;
+    if (current !== desired && record(path)) writeFileSync(path, desired);
+  }
+  if (written.length && oxfmt) {
     try {
-      execFileSync(oxfmt, ['--no-error-on-unmatched-pattern', ...written], {
+      const [cmd, ...args] = oxfmt;
+      execFileSync(cmd, [...args, '--no-error-on-unmatched-pattern', ...written], {
         cwd: root,
         stdio: 'ignore',
       });
@@ -289,20 +358,40 @@ function syncWithWrites(
   for (const name of listDirs(dst)) {
     if (skills.includes(name)) continue;
     if (tracked(name)) {
-      // Synced earlier and its source is gone: the skill was deleted.
+      // Synced and committed earlier, and its source is gone: the skill was deleted.
       problems.push(`.claude/skills/${name} is the copy of a deleted skill`);
       if (write) {
         rmSync(join(dst, name), { recursive: true, force: true });
         writtenPaths.push(`.claude/skills/${name}`);
       }
     } else {
-      // Untracked: a tool wrote it there. Only a human can say whether to keep it.
+      // Never committed (untracked, or only staged): a tool wrote it there. Only a human can say
+      // whether to keep it.
       problems.push(
         `.claude/skills/${name} ${NO_SOURCE}: a tool wrote it there. Run \`node tools/agents.mjs adopt\` to keep it, or delete .claude/skills/${name}`,
       );
     }
   }
   return { problems, written: writtenPaths };
+}
+
+/**
+ * Post-commit. `git commit -- <paths>` runs the pre-commit hook on a TEMPORARY index: what the
+ * hook changes there (a formatted source, the re-synced skill copy) reaches the commit, while the
+ * real index keeps the old versions, which then show as a staged revert of the commit. Put the
+ * committed version back in the index for every file of the commit whose index entry differs from
+ * it while the working tree matches it. After any other commit (and every rebase or merge step)
+ * the index equals HEAD, so this changes nothing.
+ */
+function healIndex(root = ROOT) {
+  const z = (args) => new Set(lines0(git(root, [...args, '-z'])));
+  const inIndex = z(['diff', '--cached', '--name-only', 'HEAD']);
+  if (inIndex.size === 0) return [];
+  const committed = z(['diff-tree', '--root', '--no-commit-id', '-r', '--name-only', 'HEAD']);
+  const differsInTree = z(['diff', '--name-only', 'HEAD']);
+  const heal = [...inIndex].filter((f) => committed.has(f) && !differsInTree.has(f));
+  if (heal.length) git(root, ['reset', '-q', 'HEAD', '--', ...heal]);
+  return heal;
 }
 
 // ---------- adopt ----------
@@ -322,9 +411,47 @@ function adopt(root = ROOT) {
 }
 
 // ---------- check (hygiene) ----------
-function check(root = ROOT, { tracked } = {}) {
-  const problems = sync(root, { write: false, tracked }).map((p) =>
-    p.includes(NO_SOURCE) ? p : `${p} — run \`pnpm agents:sync\``,
+const GIT_OUTPUT_COMMANDS = ['diff', 'log', 'show', 'whatchanged', 'format-patch'];
+const NX_RUNNERS = ['nx', 'pnpm nx', 'pnpm exec nx', 'pnpm dlx nx', 'npx nx'];
+// nx subcommands that only read. Every other one runs or writes something: run, run-many,
+// affected, exec and the `nx <target> <project>` shorthand run targets (nx:run-commands takes
+// --command/--args, and other arguments are forwarded to the tool), --graph=<file> writes a file.
+const NX_READ_ONLY = new Set(['show', 'list', 'report']);
+
+/**
+ * Why a wildcard allow rule auto-approves more than it seems to, or undefined when it does not
+ * (or is not a wildcard). `Bash(git log *)` also approves `git log --output=<any file>`, and
+ * `Bash(pnpm nx run *)` also approves `pnpm nx run p:t --command="<anything>"`.
+ */
+export function unsafeAllowRule(rule) {
+  const content = String(rule).match(/^Bash\((.*)\)$/s)?.[1];
+  if (content === undefined) return undefined;
+  const pattern = content.replace(/:\*$/, ' *'); // legacy `cmd:*` = `cmd *`
+  const star = pattern.indexOf('*');
+  if (star === -1) return undefined;
+  const prefix = pattern.slice(0, star);
+  // the wildcard can complete the prefix to `command …`, or the prefix already is `command …`
+  const covers = (command) => `${command} `.startsWith(prefix) || prefix.startsWith(`${command} `);
+  if (GIT_OUTPUT_COMMANDS.some((c) => covers(`git ${c}`)))
+    return 'also approves writing any file (git diff/log/show --output=<file>); drop it (read-only git diff/log need no rule)';
+  for (const runner of NX_RUNNERS) {
+    if (!covers(runner)) continue;
+    const rest = prefix.startsWith(`${runner} `) ? prefix.slice(runner.length + 1) : '';
+    const sub = rest.match(/^(\S+) /)?.[1]; // undefined: the wildcard can still pick the subcommand
+    if (sub === undefined || !NX_READ_ONLY.has(sub))
+      return 'also approves any shell command (nx:run-commands --command/--args, arguments forwarded to the tool) and writing any file (--graph=<file>); allow exact commands instead, e.g. `Bash(pnpm nx run tools:test)`';
+  }
+  return undefined;
+}
+
+/** `meta.name` of a workflow script (.claude/workflows/*.js), if it declares one. */
+function workflowName(text) {
+  return text.match(/export const meta\s*=\s*\{[\s\S]*?\bname:\s*(['"`])([^'"`]+)\1/)?.[2];
+}
+
+function check(root = ROOT, { tracked, previousGlobs, fix = '`pnpm agents:sync`' } = {}) {
+  const problems = sync(root, { write: false, tracked, previousGlobs }).map((p) =>
+    p.includes(NO_SOURCE) ? p : `${p} — run ${fix}`,
   );
 
   // AGENTS.md / CLAUDE.md
@@ -370,6 +497,17 @@ function check(root = ROOT, { tracked } = {}) {
     }
   }
 
+  // Claude Code lists a workflow as a skill named after its meta.name: a workflow and a skill with
+  // the same name show up once (as the workflow), so the skill never loads.
+  const workflowsDir = join(root, '.claude', 'workflows');
+  for (const file of listFiles(workflowsDir).filter((f) => /\.[cm]?js$/.test(f))) {
+    const name = workflowName(readFileSync(join(workflowsDir, file), 'utf8'));
+    if (name && skillNames.includes(name))
+      problems.push(
+        `.claude/workflows/${file.split(sep).join('/')} is named "${name}", like the skill .agents/skills/${name}: Claude Code lists only the workflow, so the skill never loads; rename the workflow`,
+      );
+  }
+
   // Hooks referenced from settings exist
   const settingsPath = join(root, '.claude', 'settings.json');
   if (existsSync(settingsPath)) {
@@ -385,11 +523,10 @@ function check(root = ROOT, { tracked } = {}) {
         }
       }
     }
-    for (const rule of settings.permissions?.allow ?? [])
-      if (WRITES_THROUGH_FLAGS.test(rule))
-        problems.push(
-          `.claude/settings.json allows ${rule}, which also auto-approves writing any file (--output=<file>); drop the rule (read-only git diff/log need none)`,
-        );
+    for (const rule of settings.permissions?.allow ?? []) {
+      const why = unsafeAllowRule(rule);
+      if (why) problems.push(`.claude/settings.json allows ${rule}, which ${why}`);
+    }
   }
 
   // No machine-specific paths or promotional instructions in agent-facing files
@@ -463,7 +600,12 @@ function kitLeaks(root, kit) {
 function checkStaged(root = ROOT) {
   const snapshot = exportIndex(root);
   try {
-    return check(snapshot, { tracked: () => true }).map((p) => `staged: ${p}`);
+    return check(snapshot, {
+      tracked: (name) => committedCopy(root, name),
+      previousGlobs: manifestGlobsAt(root, 'HEAD'),
+      // re-syncs the index from the staged sources (and the working tree from its own)
+      fix: '`pnpm agents:sync --stage`',
+    }).map((p) => `staged: ${p}`);
   } finally {
     rmSync(snapshot, { recursive: true, force: true });
   }
@@ -515,14 +657,29 @@ function staged(files, root = ROOT) {
     (f) => existsSync(join(root, f)) && !findArtifact(manifest, toRepoPath(root, f)),
   );
   if (keep.length === 0) return;
-  const bin = (n) => join(root, 'node_modules', '.bin', n);
-  execFileSync(bin('oxfmt'), ['--no-error-on-unmatched-pattern', ...keep], {
+  const tool = (name) => {
+    const cmd = nodeBin(root, name);
+    if (!cmd) throw new Error(`${name} is not installed: run \`pnpm install\``);
+    return cmd;
+  };
+  // Files with unstaged changes are left to lefthook's `stage_fixed` (under lefthook there are
+  // none: it hides the unstaged changes of partially staged files while the hook runs).
+  const unstaged = new Set(lines0(git(root, ['diff', '--name-only', '-z', '--', ...keep])));
+  const [oxfmt, ...oxfmtArgs] = tool('oxfmt');
+  execFileSync(oxfmt, [...oxfmtArgs, '--no-error-on-unmatched-pattern', ...keep], {
     cwd: root,
     stdio: 'inherit',
   });
   const lintable = keep.filter((f) => /\.(?:[cm]?[jt]sx?)$/.test(f));
-  if (lintable.length)
-    execFileSync(bin('oxlint'), ['--fix', ...lintable], { cwd: root, stdio: 'inherit' });
+  if (lintable.length) {
+    const [oxlint, ...oxlintArgs] = tool('oxlint');
+    execFileSync(oxlint, [...oxlintArgs, '--fix', ...lintable], { cwd: root, stdio: 'inherit' });
+  }
+  // Re-stage them now: the next pre-commit job copies skills from the INDEX, and lefthook's
+  // `stage_fixed` only re-stages after the whole piped run, which would commit a copy of the
+  // unformatted source next to the formatted source.
+  const restage = keep.filter((f) => !unstaged.has(f));
+  if (restage.length) git(root, ['add', '--', ...restage]);
 }
 
 // ---------- CLI ----------
@@ -563,14 +720,26 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       );
       break;
     case 'staged':
-      staged(rest);
+      try {
+        staged(rest);
+      } catch (err) {
+        // a formatter or linter that failed has already printed why
+        if (typeof err.status !== 'number') console.error(`✗ staged: ${err.message}`);
+        process.exitCode = err.status || 1;
+      }
       break;
+    case 'heal': {
+      const healed = healIndex();
+      if (healed.length)
+        console.log(`agents: restored the committed ${healed.join(', ')} in the index`);
+      break;
+    }
     default:
       console.error(
-        'usage: node tools/agents.mjs <sync [--stage]|check [--staged]|adopt|regen [--check]|staged <files...>>',
+        'usage: node tools/agents.mjs <sync [--stage]|check [--staged]|adopt|regen [--check]|staged <files...>|heal>',
       );
       process.exitCode = 1;
   }
 }
 
-export { adopt, check, checkStaged, regen, sync, syncAndStage, isTracked };
+export { adopt, check, checkStaged, healIndex, regen, sync, syncAndStage, isTracked };

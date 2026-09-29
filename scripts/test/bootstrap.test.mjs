@@ -59,6 +59,15 @@ function snapshot(root, dir = root, out = {}) {
 }
 
 const renamedCount = (out) => Number(out.match(/→ smoke-app \((\d+) files\)/)?.[1]);
+/** A dry run in a copy whose git origin is `url`. */
+function withOrigin(url) {
+  const copy = archiveCopy();
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: copy });
+  execFileSync('git', ['remote', 'add', 'origin', url], { cwd: copy });
+  return bootstrap(copy, [...PROJECT, '--dry-run']);
+}
+const secret = (root) =>
+  readFileSync(join(root, '.env'), 'utf8').match(/^INTERNAL_API_SECRET=(.*)$/m)?.[1];
 
 describe('bootstrap', () => {
   it('turns a tarball copy into a project with no template leftovers', () => {
@@ -80,6 +89,54 @@ describe('bootstrap', () => {
     const pkg = JSON.parse(readFileSync(join(copy, 'package.json'), 'utf8'));
     expect(pkg.name).toBe('@smoke/source');
     expect(pkg.template.repo).toBeTruthy();
+
+    // .env: a copy of .env.example with a fresh random secret (never the placeholder)
+    expect(secret(copy)).toMatch(/^[0-9a-f]{64}$/);
+    const example = readFileSync(join(copy, '.env.example'), 'utf8');
+    expect(readFileSync(join(copy, '.env'), 'utf8')).toBe(
+      example.replace(/^INTERNAL_API_SECRET=.*$/m, `INTERNAL_API_SECRET=${secret(copy)}`),
+    );
+    const other = archiveCopy();
+    expect(bootstrap(other, [...PROJECT, '--no-install', '--no-commit']).code).toBe(0);
+    expect(secret(other)).not.toBe(secret(copy));
+
+    // --yes replaces the LICENSE copyright (no git identity here, and no --author)
+    expect(readFileSync(join(copy, 'LICENSE'), 'utf8')).toContain(
+      `\nCopyright (c) ${new Date().getFullYear()} the project authors\n`,
+    );
+    const authored = archiveCopy();
+    const res2 = bootstrap(authored, [
+      ...PROJECT,
+      '--no-install',
+      '--no-commit',
+      '--author',
+      'Ada L',
+    ]);
+    expect(res2.code, res2.out).toBe(0);
+    expect(readFileSync(join(authored, 'LICENSE'), 'utf8')).toMatch(
+      /^Copyright \(c\) \d{4} Ada L$/m,
+    );
+  });
+
+  it('refuses to run in the template itself, whatever the case, but not in repos named like it', () => {
+    const template = JSON.parse(readFileSync(join(REPO, 'template.json'), 'utf8')).repo;
+    const [owner, name] = template.split('/');
+    for (const url of [
+      `https://github.com/${template}.git`,
+      `git@github.com:${owner.toLowerCase()}/${name.toUpperCase()}.git`,
+      `ssh://git@github.com/${template}`,
+    ]) {
+      const res = withOrigin(url);
+      expect(res.code, url).toBe(1);
+      expect(res.out, url).toContain("this checkout's origin is the template itself");
+    }
+    for (const url of [
+      `https://github.com/${template}-demo.git`,
+      `git@github.com:someone-else/${name}.git`,
+    ]) {
+      const res = withOrigin(url);
+      expect(res.code, `${url}\n${res.out}`).toBe(0);
+    }
   });
 
   it('only suggests next steps that exist', () => {

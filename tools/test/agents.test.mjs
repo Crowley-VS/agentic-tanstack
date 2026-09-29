@@ -7,17 +7,46 @@ import {
   adopt,
   check,
   checkStaged,
+  healIndex,
   parseFrontmatter,
   regen,
+  renderGitattributes,
   sync,
   syncAndStage,
+  unsafeAllowRule,
 } from '../agents.mjs';
-import { steps } from '../check.mjs';
+import { looseFiles, steps } from '../check.mjs';
 import { collectVersions, mismatches } from '../check-versions.mjs';
+import { nodeBin } from '../lib/bin.mjs';
 import { commitAll, makeRepo, writeFile } from './helpers.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const git = (root, ...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
+
+/** Environment in which git hooks run (a parent's LEFTHOOK=0 would skip them). */
+function hookEnv() {
+  const env = { ...process.env };
+  delete env.LEFTHOOK;
+  return env;
+}
+const committed = (root, path) => git(root, 'show', `HEAD:${path}`);
+function lefthook(root, ...args) {
+  // lefthook is a root devDependency: a missing binary is a broken install, never a skip
+  const bin = nodeBin(REPO, 'lefthook');
+  expect(bin, 'lefthook is not installed: run `pnpm install`').toBeDefined();
+  const [cmd = '', ...pre] = bin ?? [];
+  return spawnSync(cmd, [...pre, ...args], { cwd: root, encoding: 'utf8', env: hookEnv() });
+}
+/** A real `git commit`, with the installed hooks. */
+function commit(root, ...args) {
+  const res = spawnSync('git', ['commit', '-q', '-m', 'test', ...args], {
+    cwd: root,
+    encoding: 'utf8',
+    env: hookEnv(),
+  });
+  expect(res.status, `${res.stdout}${res.stderr}`).toBe(0);
+}
+const workflow = (name) => `export const meta = {\n  name: '${name}',\n  description: 'x',\n};\n`;
 
 const skill = (name, description = 'Use when testing things.') =>
   `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
@@ -39,11 +68,15 @@ function repo(extra = {}) {
     },
     '.oxfmtrc.json': { singleQuote: true, ignorePatterns: [] },
     '.oxlintrc.json': { rules: {}, ignorePatterns: [] },
-    '.claude/settings.json': { permissions: { deny: ['Read(./.env)', 'Edit(/stale/**)'] } },
+    '.claude/settings.json': {
+      permissions: { deny: ['Read(./.env)', 'Edit(/.github/workflows/**)', 'Edit(//etc/**)'] },
+    },
     '.agents/skills/verify/SKILL.md': skill('verify'),
     ...extra,
   });
 }
+const denyRules = (root) =>
+  JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf8')).permissions.deny;
 
 describe('parseFrontmatter', () => {
   it('reads single-line and folded values', () => {
@@ -64,9 +97,13 @@ describe('sync', () => {
       skill('verify'),
     );
 
-    const settings = JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf8'));
-    // hand-written rule kept, stale managed rule dropped, only "always" artifacts denied
-    expect(settings.permissions.deny).toEqual(['Read(./.env)', 'Edit(/apps/web/src/gql/**)']);
+    // hand-written rules kept (root-anchored and absolute ones too), only "always" artifacts denied
+    expect(denyRules(root)).toEqual([
+      'Read(./.env)',
+      'Edit(/.github/workflows/**)',
+      'Edit(//etc/**)',
+      'Edit(/apps/web/src/gql/**)',
+    ]);
 
     const oxfmt = JSON.parse(readFileSync(join(root, '.oxfmtrc.json'), 'utf8'));
     expect(oxfmt.ignorePatterns).toContain('apps/web/src/gql/**');
@@ -74,6 +111,72 @@ describe('sync', () => {
     expect(oxfmt.singleQuote).toBe(true);
 
     expect(sync(root)).toEqual([]); // idempotent
+  });
+
+  it('drops the deny rule of an artifact removed from the manifest, and no hand-written rule', () => {
+    const root = repo();
+    const manifest = JSON.parse(readFileSync(join(root, '.agents/generated.json'), 'utf8'));
+    writeFile(root, '.agents/generated.json', {
+      artifacts: [...manifest.artifacts, { id: 'old', paths: ['old/**'], regen: 'true' }],
+    });
+    sync(root);
+    commitAll(root);
+    expect(denyRules(root)).toContain('Edit(/old/**)');
+
+    writeFile(root, '.agents/generated.json', manifest); // the artifact is gone
+    expect(check(root)).toContain('.claude/settings.json is out of date — run `pnpm agents:sync`');
+    sync(root);
+    expect(denyRules(root)).toEqual([
+      'Read(./.env)',
+      'Edit(/.github/workflows/**)',
+      'Edit(//etc/**)',
+      'Edit(/apps/web/src/gql/**)',
+    ]);
+  });
+
+  it('keeps hand-written Edit(/…) deny rules through the pre-commit sync', () => {
+    const root = repo();
+    sync(root);
+    commitAll(root);
+    const settings = JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf8'));
+    settings.permissions.deny.push('Edit(/secrets/**)'); // after the managed rules
+    writeFile(root, '.claude/settings.json', settings);
+    git(root, 'add', '.claude/settings.json');
+    syncAndStage(root); // puts it before the managed rules, and keeps it
+    expect(check(root)).toEqual([]);
+    expect(checkStaged(root)).toEqual([]);
+    const staged = JSON.parse(git(root, 'show', ':.claude/settings.json'));
+    expect(staged.permissions.deny).toContain('Edit(/secrets/**)');
+    expect(staged.permissions.deny).toContain('Edit(//etc/**)');
+  });
+
+  it('renders the manifest into the linguist-generated block of .gitattributes', () => {
+    const attributes = '* text=auto eol=lf\n\npnpm-lock.yaml linguist-generated=true\n';
+    const root = repo({ '.gitattributes': attributes });
+    expect(check(root).join('\n')).toContain('.gitattributes is out of date');
+    sync(root);
+    const text = readFileSync(join(root, '.gitattributes'), 'utf8');
+    expect(text.startsWith(attributes)).toBe(true); // hand-written lines kept
+    expect(text).toContain(
+      '# agents:generated:start\napps/web/src/gql/** linguist-generated=true\npackages/db/migrations/** linguist-generated=true\n# agents:generated:end\n',
+    );
+    commitAll(root);
+    const attr = git(root, 'check-attr', 'linguist-generated', '--', 'apps/web/src/gql/a.ts');
+    expect(attr).toBe('apps/web/src/gql/a.ts: linguist-generated: true\n');
+    expect(sync(root)).toEqual([]); // idempotent
+
+    // a hand edit inside the block is re-rendered; one outside it is kept
+    writeFile(root, '.gitattributes', `${text.replace('apps/web/src/gql/**', 'apps/**')}x -diff\n`);
+    expect(check(root).join('\n')).toContain('.gitattributes is out of date');
+    sync(root);
+    expect(readFileSync(join(root, '.gitattributes'), 'utf8')).toBe(`${text}x -diff\n`);
+  });
+
+  it('renderGitattributes replaces only its own block', () => {
+    const text = 'a\n# agents:generated:start\nold\n# agents:generated:end\nb\n';
+    expect(renderGitattributes(text, ['x/**', 'x/**'])).toBe(
+      'a\n# agents:generated:start\nx/** linguist-generated=true\n# agents:generated:end\nb\n',
+    );
   });
 
   it('treats a reformatted but equivalent JSON config as in sync', () => {
@@ -106,9 +209,9 @@ describe('sync --stage (pre-commit)', () => {
     const root = repo();
     sync(root);
     commitAll(root);
-    const committed = readFileSync(join(root, '.agents/skills/verify/SKILL.md'), 'utf8');
+    const original = readFileSync(join(root, '.agents/skills/verify/SKILL.md'), 'utf8');
     writeFile(root, '.agents/skills/draft/SKILL.md', skill('draft')); // untracked
-    writeFile(root, '.agents/skills/verify/SKILL.md', `${committed}- WIP note\n`); // unstaged
+    writeFile(root, '.agents/skills/verify/SKILL.md', `${original}- WIP note\n`); // unstaged
     const manifest = JSON.parse(readFileSync(join(root, '.agents/generated.json'), 'utf8'));
     manifest.artifacts.push({ id: 'wip', paths: ['wip/**'], regen: 'true' }); // unstaged
     writeFile(root, '.agents/generated.json', manifest);
@@ -146,14 +249,32 @@ describe('sync --stage (pre-commit)', () => {
     git(root, 'add', '.agents/skills');
     sync(root); // the working tree copy is fine, the staged one is stale
     expect(check(root)).toEqual([]);
-    expect(checkStaged(root)).toEqual([
-      expect.stringMatching(/^staged: \.claude\/skills\/verify differs/),
-    ]);
+    const problems = checkStaged(root);
+    expect(problems).toEqual([expect.stringMatching(/^staged: \.claude\/skills\/verify differs/)]);
+    // the fix it names repairs the index (plain `pnpm agents:sync` only touches the working tree)
+    expect(problems[0]).toContain('run `pnpm agents:sync --stage`');
+    syncAndStage(root);
+    expect(checkStaged(root)).toEqual([]);
   });
 
-  const lefthook = join(REPO, 'node_modules', '.bin', 'lefthook');
-  /** A repo with this repo's pre-commit (lefthook.yml + the tools it runs) and node_modules. */
-  function lefthookRepo() {
+  it('calls a staged copy that was never committed a tool-made skill, not a deleted one', () => {
+    const root = repo();
+    sync(root);
+    commitAll(root);
+    writeFile(root, '.claude/skills/tool-made/SKILL.md', skill('tool-made'));
+    git(root, 'add', '-A', '.claude/skills');
+    for (const problems of [check(root), checkStaged(root)]) {
+      expect(problems.join('\n')).toContain('a tool wrote it there');
+      expect(problems.join('\n')).not.toContain('deleted skill');
+    }
+    sync(root);
+    syncAndStage(root);
+    expect(existsSync(join(root, '.claude/skills/tool-made/SKILL.md'))).toBe(true);
+    expect(git(root, 'status', '--porcelain')).toBe('A  .claude/skills/tool-made/SKILL.md\n');
+  });
+
+  /** A repo with this repo's git hooks (lefthook.yml + the tools it runs) and node_modules. */
+  function lefthookRepo({ install = false } = {}) {
     const root = makeRepo({
       'AGENTS.md': '# Agents\n',
       'CLAUDE.md': '@AGENTS.md\n',
@@ -163,8 +284,14 @@ describe('sync --stage (pre-commit)', () => {
       '.oxfmtrc.json': { singleQuote: true, ignorePatterns: [] },
       '.oxlintrc.json': { ignorePatterns: [] },
       '.claude/settings.json': { permissions: { deny: [] } },
+      '.agents/skills/demo/SKILL.md': skill('demo'),
     });
-    for (const f of ['lefthook.yml', 'tools/agents.mjs', 'tools/lib/generated.mjs']) {
+    for (const f of [
+      'lefthook.yml',
+      'tools/agents.mjs',
+      'tools/lib/generated.mjs',
+      'tools/lib/bin.mjs',
+    ]) {
       mkdirSync(dirname(join(root, f)), { recursive: true });
       copyFileSync(join(REPO, f), join(root, f));
     }
@@ -172,52 +299,101 @@ describe('sync --stage (pre-commit)', () => {
     writeFile(root, '.gitignore', 'node_modules\n');
     sync(root);
     commitAll(root);
+    if (install) {
+      const res = lefthook(root, 'install');
+      expect(res.status, `${res.stdout}${res.stderr}`).toBe(0);
+    }
     return root;
   }
-  function preCommit(root) {
-    const env = { ...process.env };
-    delete env.LEFTHOOK;
-    return spawnSync(lefthook, ['run', 'pre-commit'], { cwd: root, encoding: 'utf8', env });
-  }
+  // oxfmt rewrites this (a blank line after a heading, `*` bullets as `-`, single spaces)
+  const unformatted = `${skill('demo').trimEnd()}\n## When\n*   Right   after a heading.\n`;
 
-  it.skipIf(!existsSync(lefthook))(
-    'the lefthook pre-commit never commits a skill copy older than its formatted source',
-    () => {
-      const root = lefthookRepo();
-      // An author writes a skill oxfmt will reformat, syncs it, and commits both.
-      const unformatted = `${skill('demo').trimEnd()}\n## When\nRight after a heading.\n`;
-      writeFile(root, '.agents/skills/demo/SKILL.md', unformatted);
-      sync(root);
-      git(root, 'add', '-A');
-      const res = preCommit(root);
-      expect(res.status, `${res.stdout}${res.stderr}`).toBe(0);
+  it('the lefthook pre-commit never commits a skill copy older than its formatted source', () => {
+    const root = lefthookRepo();
+    // An author writes a skill oxfmt will reformat, syncs it, and commits both.
+    writeFile(root, '.agents/skills/demo/SKILL.md', unformatted);
+    sync(root);
+    git(root, 'add', '-A');
+    const res = lefthook(root, 'run', 'pre-commit');
+    expect(res.status, `${res.stdout}${res.stderr}`).toBe(0);
 
-      const source = git(root, 'show', ':.agents/skills/demo/SKILL.md');
-      expect(source).not.toBe(unformatted); // oxfmt did reformat it
-      expect(git(root, 'show', ':.claude/skills/demo/SKILL.md')).toBe(source);
-      expect(git(root, 'status', '--porcelain')).not.toMatch(/^.[MD]/m); // nothing left unstaged
-    },
-    30_000,
-  );
+    const source = git(root, 'show', ':.agents/skills/demo/SKILL.md');
+    expect(source).not.toBe(unformatted); // oxfmt did reformat it
+    expect(git(root, 'show', ':.claude/skills/demo/SKILL.md')).toBe(source);
+    expect(git(root, 'status', '--porcelain')).not.toMatch(/^.[MD]/m); // nothing left unstaged
+  }, 30_000);
 
-  it.skipIf(!existsSync(lefthook))(
-    'the lefthook pre-commit commits no copy of an untracked or unstaged skill source',
-    () => {
-      const root = lefthookRepo();
-      writeFile(root, '.agents/skills/demo/SKILL.md', skill('demo'));
-      sync(root);
-      commitAll(root);
-      writeFile(root, '.agents/skills/draft/SKILL.md', skill('draft')); // untracked
-      writeFile(root, '.agents/skills/demo/SKILL.md', `${skill('demo')}- WIP note\n`); // unstaged
-      writeFile(root, '.agents/kit.json', { files: [] });
-      git(root, 'add', '.agents/kit.json');
-      const res = preCommit(root);
-      expect(res.status, `${res.stdout}${res.stderr}`).toBe(0);
-      expect(git(root, 'diff', '--cached', '--name-only')).toBe('.agents/kit.json\n');
-      expect(checkStaged(root)).toEqual([]);
-    },
-    30_000,
-  );
+  it('a real commit of ONLY an unformatted skill source commits the formatted source and its copy', () => {
+    const root = lefthookRepo({ install: true });
+    writeFile(root, '.agents/skills/demo/SKILL.md', unformatted);
+    git(root, 'add', '.agents/skills/demo/SKILL.md'); // no sync, no copy staged
+    commit(root);
+    const source = committed(root, '.agents/skills/demo/SKILL.md');
+    expect(source).not.toBe(unformatted);
+    expect(committed(root, '.claude/skills/demo/SKILL.md')).toBe(source);
+    expect(git(root, 'status', '--porcelain')).toBe('');
+    expect(check(root)).toEqual([]);
+  }, 30_000);
+
+  it('pathspec (`git commit -- <source>`) and `git commit -a` commits leave the index clean', () => {
+    const root = lefthookRepo({ install: true });
+    // `-- <path>`: the hook runs on a temporary index; the real one must not keep old copies
+    writeFile(root, '.agents/skills/demo/SKILL.md', skill('demo', 'Use when demoing.'));
+    commit(root, '--', '.agents/skills/demo/SKILL.md');
+    expect(committed(root, '.claude/skills/demo/SKILL.md')).toBe(
+      committed(root, '.agents/skills/demo/SKILL.md'),
+    );
+    expect(git(root, 'status', '--porcelain')).toBe('');
+
+    // the same with a source the hook reformats
+    writeFile(root, '.agents/skills/demo/SKILL.md', unformatted);
+    commit(root, '--', '.agents/skills/demo/SKILL.md');
+    expect(committed(root, '.agents/skills/demo/SKILL.md')).not.toBe(unformatted);
+    expect(committed(root, '.claude/skills/demo/SKILL.md')).toBe(
+      committed(root, '.agents/skills/demo/SKILL.md'),
+    );
+    expect(git(root, 'status', '--porcelain')).toBe('');
+
+    // the next, unrelated commit is not blocked
+    writeFile(root, 'notes.txt', 'x\n');
+    git(root, 'add', 'notes.txt');
+    commit(root);
+
+    writeFile(root, '.agents/skills/demo/SKILL.md', skill('demo', 'Use when showing things.'));
+    commit(root, '-a');
+    expect(committed(root, '.claude/skills/demo/SKILL.md')).toBe(
+      skill('demo', 'Use when showing things.'),
+    );
+    expect(git(root, 'status', '--porcelain')).toBe('');
+  }, 60_000);
+
+  it('the lefthook pre-commit commits no copy of an untracked or unstaged skill source', () => {
+    const root = lefthookRepo();
+    writeFile(root, '.agents/skills/draft/SKILL.md', skill('draft')); // untracked
+    writeFile(root, '.agents/skills/demo/SKILL.md', `${skill('demo')}- WIP note\n`); // unstaged
+    writeFile(root, '.agents/kit.json', { files: [] });
+    git(root, 'add', '.agents/kit.json');
+    const res = lefthook(root, 'run', 'pre-commit');
+    expect(res.status, `${res.stdout}${res.stderr}`).toBe(0);
+    expect(git(root, 'diff', '--cached', '--name-only')).toBe('.agents/kit.json\n');
+    expect(checkStaged(root)).toEqual([]);
+  }, 30_000);
+});
+
+describe('heal (post-commit)', () => {
+  it('leaves staged work alone: files outside the last commit, or changed in the working tree', () => {
+    const root = makeRepo({ 'a.txt': 'a1\n', 'b.txt': 'b1\n' });
+    commitAll(root);
+    writeFile(root, 'a.txt', 'a2\n');
+    writeFile(root, 'b.txt', 'b2\n');
+    commitAll(root); // HEAD changes a.txt and b.txt
+    writeFile(root, 'a.txt', 'a3\n');
+    git(root, 'add', 'a.txt'); // staged, and the working tree has it too
+    writeFile(root, 'c.txt', 'c\n');
+    git(root, 'add', 'c.txt'); // not in the last commit
+    expect(healIndex(root)).toEqual([]);
+    expect(git(root, 'status', '--porcelain')).toBe('M  a.txt\nA  c.txt\n');
+  });
 });
 
 describe('deleting a skill', () => {
@@ -320,6 +496,59 @@ describe('check', () => {
     expect(problems).not.toContain('git status');
   });
 
+  it('flags wildcard allow rules for nx commands that run targets (--command, --args, --graph)', () => {
+    for (const rule of [
+      'Bash(pnpm nx run *)',
+      'Bash(pnpm nx run-many *)',
+      'Bash(pnpm nx affected *)',
+      'Bash(pnpm nx affected -t lint *)',
+      'Bash(pnpm nx exec *)',
+      'Bash(pnpm nx test *)', // `nx <target> <project>` shorthand
+      'Bash(pnpm nx *)',
+      'Bash(pnpm nx s*)',
+      'Bash(pnpm *)',
+      'Bash(nx run:*)',
+      'Bash(pnpm exec nx run *)',
+      'Bash(git *)',
+      'Bash(*)',
+    ])
+      expect(unsafeAllowRule(rule), rule).toBeDefined();
+    for (const rule of [
+      'Bash(pnpm nx show *)',
+      'Bash(pnpm nx run tools:test)',
+      'Bash(pnpm nx affected -t lint eslint typecheck test)',
+      'Bash(pnpm check *)',
+      'Bash(git status *)',
+      'Read(./**)',
+    ])
+      expect(unsafeAllowRule(rule), rule).toBeUndefined();
+
+    const root = repo({
+      '.claude/settings.json': {
+        permissions: { allow: ['Bash(pnpm nx run *)', 'Bash(pnpm nx show *)'] },
+      },
+    });
+    sync(root);
+    const problems = check(root).join('\n');
+    expect(problems).toContain('allows Bash(pnpm nx run *), which also approves any shell command');
+    expect(problems).not.toContain('nx show');
+  });
+
+  it("this repository's allow rules approve no hidden writes or commands", () => {
+    const settings = JSON.parse(readFileSync(join(REPO, '.claude/settings.json'), 'utf8'));
+    expect(settings.permissions.allow.filter((r) => unsafeAllowRule(r))).toEqual([]);
+  });
+
+  it('flags a workflow named like a skill (Claude Code would list only the workflow)', () => {
+    const root = repo({ '.claude/workflows/verify.js': workflow('verify') });
+    sync(root);
+    expect(check(root)).toEqual([
+      expect.stringMatching(/^\.claude\/workflows\/verify\.js is named "verify", like the skill/),
+    ]);
+    writeFile(root, '.claude/workflows/verify.js', workflow('verify-run'));
+    expect(check(root)).toEqual([]);
+  });
+
   it('flags kit-owned files and sections that mention stack-only files or their scripts', () => {
     const agentsMd = [
       '<!-- kit:start:commands -->',
@@ -365,6 +594,32 @@ describe('check', () => {
     const root = repo({ '.agents/skills/verify/SKILL.md': skill('other') });
     sync(root);
     expect(check(root).join('\n')).toContain('frontmatter name is "other"');
+  });
+});
+
+describe('lint outside projects', () => {
+  it('lists the JS/TS files no project owns, leaving out generated ones', () => {
+    const root = makeRepo({
+      '.agents/generated.json': {
+        artifacts: [{ id: 'skills', paths: ['.claude/skills/**'], regen: 'true' }],
+      },
+      'eslint.config.mjs': '',
+      '.claude/workflows/run.js': '',
+      '.claude/skills/x/helper.mjs': '',
+      'tools/package.json': '{}',
+      'tools/lib/a.mjs': '',
+      'scripts/project.json': '{}',
+      'scripts/b.ts': '',
+      'docs/c.md': '',
+    });
+    expect(looseFiles(root)).toEqual(['.claude/workflows/run.js', 'eslint.config.mjs']);
+  });
+
+  it('covers the review-loop workflow and the root ESLint config in this repository', () => {
+    expect(looseFiles(REPO)).toEqual(
+      expect.arrayContaining(['.claude/workflows/review-loop-run.js', 'eslint.config.mjs']),
+    );
+    expect(steps([]).map((s) => s.name)).toContain('lint outside projects');
   });
 });
 

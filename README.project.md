@@ -6,6 +6,7 @@ An Nx monorepo created from the [agentic-tanstack](https://github.com/Crowley-VS
 ## Getting started
 
 ```bash
+test -f .env || cp .env.example .env   # a fresh clone: then set the values it lists; never commit .env
 pnpm install
 pnpm check   # the definition of done: lint, module boundaries, typecheck, tests, generated files, agent config
 pnpm ports   # this checkout's ports and database URLs (every git worktree gets its own)

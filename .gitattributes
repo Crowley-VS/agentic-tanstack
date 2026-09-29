@@ -1,8 +1,10 @@
 * text=auto eol=lf
 
-# Generated files: collapsed in GitHub diffs. Never edit by hand (see .agents/generated.json).
-**/src/gql/** linguist-generated=true
-**/routeTree.gen.ts linguist-generated=true
-packages/graphql/schema.graphql linguist-generated=true
-packages/db/migrations/**/snapshot.json linguist-generated=true
+# Generated files: collapsed in GitHub diffs, never edited by hand. The block below is rendered from
+# .agents/generated.json by `pnpm agents:sync` (add new artifacts there, not here).
+# agents:generated:start
+.claude/skills/** linguist-generated=true
+# agents:generated:end
+
+# Generated, but not a regenerable artifact of .agents/generated.json.
 pnpm-lock.yaml linguist-generated=true

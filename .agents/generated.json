@@ -1,5 +1,5 @@
 {
-  "$comment": "Single source of truth for generated files. Read by the guard hook, `pnpm regen`, the drift check, the pre-commit formatter filter, and `node tools/agents.mjs sync` (which renders oxfmt/oxlint ignores and Claude deny rules). Add an entry whenever a tool starts generating files; never hand-edit a listed path.",
+  "$comment": "Single source of truth for generated files. Read by the guard hook, `pnpm regen`, the drift check, the pre-commit formatter filter, eslint.config.mjs, and `node tools/agents.mjs sync` (which renders the oxfmt/oxlint ignores, the linguist-generated block of .gitattributes and the Claude Edit deny rules). Add an entry whenever a tool starts generating files; never hand-edit a listed path.",
   "artifacts": [
     {
       "id": "claude-skills",

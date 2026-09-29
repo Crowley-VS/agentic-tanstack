@@ -1,9 +1,12 @@
+// Named differently from the `review-loop` skill on purpose: Claude Code lists a workflow as a skill
+// under its meta.name, and a workflow with the skill's name would hide the skill (and its "confirm
+// with the user first" step). `pnpm agents:check` fails on such a clash.
 export const meta = {
-  name: 'review-loop',
+  name: 'review-loop-run',
   description:
-    'Review a PR, post findings as inline comments, fix them, re-review until no open or new issues remain',
+    'The multi-agent run behind the review-loop skill: review a PR, post findings as inline comments, fix them, re-review until no open or new issues remain',
   whenToUse:
-    'After a phase/milestone PR is opened and `pnpm check` is green. Pass args {pr: <number>, maxRounds?: 5}.',
+    'Only when the review-loop skill says to, after the user confirmed the run (it spawns many agents and pushes to the PR branch). Pass args {pr: <number>, maxRounds?: 5}.',
   phases: [
     {
       title: 'Review',
@@ -25,8 +28,9 @@ export const meta = {
 // ---------------------------------------------------------------------------------------------
 // Loop: review → verify → post → fix, until a COMPLETE round (every reviewer and verifier answered)
 // has no new confirmed findings AND nothing is open, or maxRounds is hit. GitHub is the durable
-// record (threads carry stable ids, and only threads started by the `gh` user running the loop
-// count); this script keeps per-run memory so rejected and won't-fix findings are not
+// record (every posted finding carries a stable id: inline ones as review threads, the rest in the
+// review body, which `pr-review.mjs threads` lists too; only what the `gh` user running the loop
+// posted counts); this script keeps per-run memory so rejected and won't-fix findings are not
 // re-litigated. Every agent that reads or changes code works in its own git worktree checked out
 // at the PR head, never in the main checkout. An agent that returns nothing (it died, timed out
 // or was skipped) is a gap, never a clean answer: only a converged run posts ✅.
@@ -183,9 +187,19 @@ const HEAD = {
   },
 };
 
+// `pr-review.mjs post` prints {posted: [ids], inline}; the relay adds {error} when it failed.
+const POSTED = {
+  type: 'object',
+  properties: {
+    posted: { type: 'array', items: { type: 'string' }, description: 'the "posted" ids' },
+    inline: { type: 'integer', description: 'the "inline" count' },
+    error: { type: 'string', description: 'the error message, if the command failed' },
+  },
+};
+
 const keyOf = (f) => `${f.path}::${String(f.title).trim().toLowerCase()}`;
 const short = (sha) => String(sha ?? '?').slice(0, 7);
-// key → { status: 'open' | 'resolved' | 'wontfix' | 'rejected', finding }
+// key → { status: 'open' | 'resolved' | 'wontfix' | 'rejected' | 'duplicate', finding }
 const seen = new Map();
 const history = [];
 const STATUS_LABEL = {
@@ -193,7 +207,43 @@ const STATUS_LABEL = {
   resolved: 'resolved',
   wontfix: "won't fix — do not re-report",
   rejected: 'rejected — do not re-report',
+  duplicate: 'duplicate of a posted finding — do not re-report',
 };
+
+const norm = (t) =>
+  String(t ?? '')
+    .trim()
+    .toLowerCase();
+
+/**
+ * What the verdicts of this round's NEW findings add up to, once all are in: 'confirmed',
+ * 'rejected', 'duplicate' (of a finding confirmed this round), or 'unjudged' (no verdict, or a
+ * duplicate of an unjudged finding). A valid duplicate of a rejected finding stands on its own: the
+ * earlier report may have been rejected for its evidence or framing, not because the issue is
+ * not real. `duplicateOf` counts only when it names an EARLIER finding of the list.
+ */
+function resolveVerdicts(fresh, verdicts) {
+  const earlier = (i, ref) => {
+    const r = norm(ref).replace(/^\d+\.\s*/, '');
+    return fresh.findIndex(
+      (x, j) => j < i && (norm(x.title) === r || norm(`${x.path}: ${x.title}`) === r),
+    );
+  };
+  const out = [];
+  fresh.forEach((_, i) => {
+    const v = verdicts[i];
+    if (typeof v?.valid !== 'boolean') out.push('unjudged');
+    else if (!v.valid) out.push('rejected');
+    else {
+      const j = v.duplicateOf ? earlier(i, v.duplicateOf) : -1;
+      const original = j === -1 ? undefined : out[j];
+      if (original === 'confirmed' || original === 'duplicate') out.push('duplicate');
+      else if (original === 'unjudged') out.push('unjudged');
+      else out.push('confirmed'); // not a duplicate, or one of a rejected finding
+    }
+  });
+  return out;
+}
 
 /**
  * Review-loop threads on the PR (started by our `gh` user), resolved ones included, or undefined
@@ -353,6 +403,7 @@ ${JSON.stringify(f, null, 2)}`,
   );
   const confirmedNew = [];
   const reopened = [];
+  const outcomes = resolveVerdicts(fresh, verdicts);
   candidates.forEach(({ f, kind }, i) => {
     const v = verdicts[i];
     // No verdict is not a rejection: the finding stays unjudged, and the next round re-checks it
@@ -361,8 +412,14 @@ ${JSON.stringify(f, null, 2)}`,
       gaps.push(`verifier of ${f.path}: ${f.title}`);
       return;
     }
-    if (!v.valid || v.duplicateOf) {
-      if (kind === 'new') seen.set(keyOf(f), { status: 'rejected', finding: f });
+    const outcome = kind === 'new' ? outcomes[i] : v.valid ? 'confirmed' : 'rejected';
+    if (outcome === 'unjudged') {
+      // a duplicate of a finding that got no verdict: judged with it when it is reported again
+      gaps.push(`${f.path}: ${f.title} (a duplicate of a finding that got no verdict)`);
+      return;
+    }
+    if (outcome !== 'confirmed') {
+      if (kind === 'new') seen.set(keyOf(f), { status: outcome, finding: f });
       return;
     }
     const finding = { ...f, severity: v.severity ?? f.severity };
@@ -372,24 +429,37 @@ ${JSON.stringify(f, null, 2)}`,
 
   // ---- 3. Post -------------------------------------------------------------------------------
   phase('Post');
-  if (confirmedNew.length || reopened.length) {
+  const toPost = [...confirmedNew, ...reopened];
+  let postError;
+  if (toPost.length) {
     const reopenNote = reopened.length
       ? `\nAlso, these previously resolved findings are STILL present — include them in the same post (same path/title, body prefixed with "Still present: " and the reason):\n${JSON.stringify(reopened, null, 2)}`
       : '';
-    await agent(
+    const out = await agent(
       `Post these review findings to pull request #${PR} by piping the JSON array to:
 \`node tools/pr-review.mjs post --pr ${PR} --round ${round}\` (use a heredoc: <<'JSON' ... JSON).
-Do not change the findings' wording. Report the command output.
+Do not change the findings' wording. Return the command's JSON output verbatim ({posted, inline}). If the command
+fails, return {error} with its error message instead.
 FINDINGS:
 ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
-      { label: `post:r${round}`, phase: 'Post', effort: 'low' },
+      { label: `post:r${round}`, phase: 'Post', effort: 'low', schema: POSTED },
     );
+    // One review holds every finding, so it is posted whole or not at all.
+    if (!Array.isArray(out?.posted) || out.error || out.posted.length !== toPost.length)
+      postError =
+        out?.error ??
+        `the post step reported ${out?.posted?.length ?? 'no'} of ${toPost.length} findings posted`;
   }
-  for (const f of [...confirmedNew, ...reopened])
-    seen.set(keyOf(f), { status: 'open', finding: f });
+  // Posted or not, confirmed findings are open: the summary lists them if they never reach GitHub.
+  for (const f of toPost) seen.set(keyOf(f), { status: 'open', finding: f });
+  if (postError) {
+    log(`round ${round}: posting the findings failed (${postError}) — stopping for a human`);
+    history.push({ round, stoppedBy: `posting the round's findings failed: ${postError}` });
+    break;
+  }
 
   // ---- 4. Stop condition ---------------------------------------------------------------------
-  // Body-level findings have no thread, so the run's memory counts as much as GitHub does.
+  // What this run confirmed counts as much as GitHub does (a listing can lag behind a post).
   const threads = await listThreads(`threads:r${round}`, 'Post');
   if (!threads) {
     history.push({ round, stoppedBy: 'could not list the review threads' });
@@ -530,7 +600,7 @@ ${verdict}${list('Open', stillOpen)}${list("Won't fix", wontfix)}
 | --- | --- | --- | --- | --- | --- |
 ${table}
 
-<sub>Posted by the review-loop workflow (\`.claude/workflows/review-loop.js\`).</sub>`,
+<sub>Posted by the review-loop workflow (\`.claude/workflows/review-loop-run.js\`).</sub>`,
   { label: 'summary', phase: 'Summary', effort: 'low' },
 );
 return {

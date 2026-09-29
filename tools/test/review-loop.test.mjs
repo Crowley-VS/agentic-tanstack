@@ -1,4 +1,4 @@
-// Runs .claude/workflows/review-loop.js against scripted agents: the script's control flow
+// Runs .claude/workflows/review-loop-run.js against scripted agents: the script's control flow
 // (what is posted, fixed, re-reported and summarized) is plain JavaScript and testable here.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { commentBody, findingId } from '../pr-review.mjs';
 import { commitAll, makeRepo, tempDir } from './helpers.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
-const SOURCE = readFileSync(join(REPO, '.claude/workflows/review-loop.js'), 'utf8');
+const SOURCE = readFileSync(join(REPO, '.claude/workflows/review-loop-run.js'), 'utf8');
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const SHA = 'a'.repeat(40);
 
@@ -18,12 +18,18 @@ const push = ({ state }) => {
   return state.sha;
 };
 
+/** What `pr-review.mjs post` prints for the findings in a post prompt (one id per finding). */
+const posted = ({ prompt }) => ({
+  posted: [...prompt.matchAll(/"title": /g)].map((_, i) => `rl-${i}`),
+  inline: 0,
+});
+
 const DEFAULTS = {
   head: ({ state }) => ({ sha: state.sha, branch: 'feature', crossRepository: false }),
   threads: () => ({ count: 0, threads: [] }),
   review: () => ({ findings: [] }),
   verify: () => ({ valid: true, reason: 'confirmed' }),
-  post: () => 'posted',
+  post: posted,
   fix: (call) => ({ checkPassed: true, commit: push(call), resolutions: [] }),
   summary: () => 'commented',
 };
@@ -69,6 +75,14 @@ const reviewerFinds =
 const inRound = (round) => (call) => call.label.endsWith(`:r${round}`);
 
 describe('review-loop workflow', () => {
+  it('is named apart from the review-loop skill, which starts it', () => {
+    const name = SOURCE.match(/export const meta = \{\s*name: '([^']+)'/)?.[1];
+    expect(name).toBe('review-loop-run');
+    const skill = readFileSync(join(REPO, '.agents/skills/review-loop/SKILL.md'), 'utf8');
+    expect(skill).toContain(`**\`${name}\`**`);
+    expect(skill).toContain('confirm with the user first');
+  });
+
   it('reports open findings when the fixer cannot get pnpm check green', async () => {
     const { result, summary, of } = await runLoop({
       review: reviewerFinds([1]),
@@ -179,6 +193,50 @@ describe('review-loop workflow', () => {
     expect(of('fix')[0]?.prompt).not.toContain('git switch');
   });
 
+  it('re-posts a fixed finding that is STILL present, and fixes it again', async () => {
+    const { result, summary, of } = await runLoop({
+      review: reviewerFinds([1, 2]),
+      fix: (call) => ({
+        checkPassed: true,
+        commit: push(call),
+        resolutions: [{ path: finding.path, title: finding.title, status: 'fixed' }],
+      }),
+    });
+    expect(of('verify').map((c) => c.label)).toEqual([
+      expect.stringMatching(/^verify:new:/),
+      expect.stringMatching(/^verify:reopen:tools\/check\.mjs/),
+    ]);
+    expect(of('post').map((c) => c.label)).toEqual(['post:r1', 'post:r2']);
+    expect(of('post')[1]?.prompt).toContain('STILL present');
+    expect(of('post')[1]?.prompt).toContain('Gate order hides drift');
+    expect(of('fix').map((c) => c.label)).toEqual(['fix:r1', 'fix:r2']);
+    expect(of('fix')[1]?.prompt).toContain('Gate order hides drift');
+    expect(summary).toContain('✅');
+    expect(result).toMatchObject({ complete: true, open: [] });
+  });
+
+  it('posts nothing when the verifier says a reported fixed finding is gone', async () => {
+    const { result, of } = await runLoop({
+      review: reviewerFinds([1, 2]),
+      verify: ({ label }) =>
+        label.startsWith('verify:reopen')
+          ? { valid: false, reason: 'the fix holds' }
+          : { valid: true, reason: 'confirmed' },
+      fix: (call) => ({
+        checkPassed: true,
+        commit: push(call),
+        resolutions: [{ path: finding.path, title: finding.title, status: 'fixed' }],
+      }),
+    });
+    expect(of('verify').map((c) => c.label)).toEqual([
+      expect.stringMatching(/^verify:new:/),
+      expect.stringMatching(/^verify:reopen:/),
+    ]);
+    expect(of('post').map((c) => c.label)).toEqual(['post:r1']);
+    expect(of('fix')).toHaveLength(1);
+    expect(result.complete).toBe(true);
+  });
+
   it('refers the tester to what the repository can actually run', async () => {
     const { of } = await runLoop();
     const tester = of('review').find((c) => c.label === 'review:tester:r1');
@@ -265,6 +323,94 @@ describe('review-loop: an agent that returns nothing is never a clean answer', (
   });
 });
 
+describe('review-loop: duplicates are resolved once every verdict is in', () => {
+  const a = { ...finding, title: 'Leak A (wrong framing)' };
+  const b = { ...finding, title: 'Leak B (correct)', body: 'the real problem' };
+  const twoReports = ({ label }) =>
+    label === 'review:correctness:r1'
+      ? { findings: [a] }
+      : label === 'review:tests:r1'
+        ? { findings: [b] }
+        : { findings: [] };
+  const verdicts =
+    (forA) =>
+    ({ label }) =>
+      label.includes(a.title)
+        ? forA
+        : { valid: true, reason: 'confirmed', duplicateOf: 'Leak A (wrong framing)' };
+  const fixAll = (call) => ({
+    checkPassed: true,
+    commit: push(call),
+    resolutions: [a, b].map((f) => ({ path: f.path, title: f.title, status: 'fixed' })),
+  });
+
+  it('keeps a valid finding whose "original" was rejected', async () => {
+    const { result, of } = await runLoop({
+      review: twoReports,
+      verify: verdicts({ valid: false, reason: 'not like that' }),
+      fix: fixAll,
+    });
+    expect(of('post')).toHaveLength(1);
+    expect(of('post')[0]?.prompt).toContain('Leak B (correct)');
+    expect(of('post')[0]?.prompt).not.toContain('Leak A');
+    expect(of('fix')[0]?.prompt).toContain('Leak B (correct)');
+    expect(result.complete).toBe(true);
+  });
+
+  it('drops a duplicate of a finding confirmed in the same round', async () => {
+    const { of } = await runLoop({
+      review: twoReports,
+      verify: verdicts({ valid: true, reason: 'confirmed' }),
+      fix: (call) => ({
+        checkPassed: true,
+        commit: push(call),
+        resolutions: [{ path: a.path, title: a.title, status: 'fixed' }],
+      }),
+    });
+    expect(of('fix')[0]?.prompt).not.toContain('Leak B');
+    expect(of('post')[0]?.prompt).toContain('Leak A');
+    expect(of('post')[0]?.prompt).not.toContain('Leak B');
+    const round2 = of('review').find((c) => c.label === 'review:correctness:r2');
+    expect(round2?.prompt).toContain('[duplicate of a posted finding — do not re-report]');
+  });
+
+  it('leaves a duplicate of an unjudged finding unjudged: a gap, never a rejection', async () => {
+    const { result, summary, of } = await runLoop({
+      review: twoReports,
+      verify: verdicts(null),
+    });
+    expect(of('post')).toHaveLength(0);
+    expect(result.rounds[0]?.gaps).toEqual([
+      'verifier of tools/check.mjs: Leak A (wrong framing)',
+      'tools/check.mjs: Leak B (correct) (a duplicate of a finding that got no verdict)',
+    ]);
+    const round2 = of('review').find((c) => c.label === 'review:tests:r2');
+    expect(round2?.prompt).not.toContain('Leak B');
+    expect(summary).toContain('Leak B (correct) (a duplicate');
+  });
+});
+
+describe('review-loop: a post that did not land', () => {
+  it('stops with ⚠️ and the unposted findings instead of fixing or claiming them posted', async () => {
+    for (const post of [
+      () => ({ error: 'HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000)' }),
+      () => null,
+      () => ({ posted: [], inline: 0 }),
+    ]) {
+      const { result, summary, of } = await runLoop({ review: reviewerFinds([1]), post });
+      expect(of('fix')).toHaveLength(0);
+      expect(summary).toContain('⚠️');
+      expect(summary).toContain('posting the round');
+      expect(summary).toContain('`tools/check.mjs`: Gate order hides drift');
+      expect(summary).not.toContain('✅');
+      expect(result).toMatchObject({
+        complete: false,
+        open: ['tools/check.mjs: Gate order hides drift'],
+      });
+    }
+  });
+});
+
 describe('review-loop: untrusted input', () => {
   it('refuses a fork PR before any agent reads or runs its code', async () => {
     for (const head of [
@@ -300,45 +446,43 @@ describe('review-loop: untrusted input', () => {
 
 const POSTINSTALL = join(REPO, 'node_modules', 'lefthook', 'postinstall.js');
 describe('review-loop: worktree setup', () => {
-  it.skipIf(!existsSync(POSTINSTALL))(
-    'installs dependencies in a worktree without rewriting the git hooks every worktree shares',
-    async () => {
-      const { of } = await runLoop({
-        review: reviewerFinds([1]),
-        fix: () => ({ checkPassed: false, resolutions: [] }),
-      });
-      const codeAgents = [...of('review'), ...of('verify'), ...of('fix')];
-      const installs = new Set(
-        codeAgents.map((c) => c.prompt.match(/^\s*(.*pnpm install --frozen-lockfile)\s*$/m)?.[1]),
-      );
-      expect([...installs]).toHaveLength(1);
-      const [install = ''] = installs;
-      const assigned = Object.fromEntries(
-        [...install.slice(0, install.indexOf('pnpm install')).matchAll(/([A-Z_]+)=(\S+)/g)].map(
-          ([, k, v]) => [k, v],
-        ),
-      );
+  it('installs dependencies in a worktree without rewriting the git hooks every worktree shares', async () => {
+    // lefthook is a root devDependency: a missing postinstall is a broken install, not a skip
+    expect(existsSync(POSTINSTALL), 'lefthook is not installed: run `pnpm install`').toBe(true);
+    const { of } = await runLoop({
+      review: reviewerFinds([1]),
+      fix: () => ({ checkPassed: false, resolutions: [] }),
+    });
+    const codeAgents = [...of('review'), ...of('verify'), ...of('fix')];
+    const installs = new Set(
+      codeAgents.map((c) => c.prompt.match(/^\s*(.*pnpm install --frozen-lockfile)\s*$/m)?.[1]),
+    );
+    expect([...installs]).toHaveLength(1);
+    const [install = ''] = installs;
+    const assigned = Object.fromEntries(
+      [...install.slice(0, install.indexOf('pnpm install')).matchAll(/([A-Z_]+)=(\S+)/g)].map(
+        ([, k, v]) => [k, v],
+      ),
+    );
 
-      // A repo with a lefthook config and a linked worktree, like the loop's agent worktrees.
-      const root = makeRepo({ 'lefthook.yml': 'pre-commit:\n  jobs:\n    - run: "true"\n' });
-      commitAll(root);
-      const wt = join(tempDir(), 'wt');
-      execFileSync('git', ['worktree', 'add', '-q', '--detach', wt], { cwd: root });
-      const hooks = () =>
-        readdirSync(join(root, '.git', 'hooks')).filter((f) => !f.endsWith('.sample'));
-      const base = { ...process.env, INIT_CWD: wt };
-      delete base.CI;
-      delete base.LEFTHOOK;
-      // What `pnpm install` runs for lefthook (an allowed build) in a fresh worktree:
-      const postinstall = (env) =>
-        spawnSync(process.execPath, [POSTINSTALL], { cwd: wt, env, encoding: 'utf8' });
+    // A repo with a lefthook config and a linked worktree, like the loop's agent worktrees.
+    const root = makeRepo({ 'lefthook.yml': 'pre-commit:\n  jobs:\n    - run: "true"\n' });
+    commitAll(root);
+    const wt = join(tempDir(), 'wt');
+    execFileSync('git', ['worktree', 'add', '-q', '--detach', wt], { cwd: root });
+    const hooks = () =>
+      readdirSync(join(root, '.git', 'hooks')).filter((f) => !f.endsWith('.sample'));
+    const base = { ...process.env, INIT_CWD: wt };
+    delete base.CI;
+    delete base.LEFTHOOK;
+    // What `pnpm install` runs for lefthook (an allowed build) in a fresh worktree:
+    const postinstall = (env) =>
+      spawnSync(process.execPath, [POSTINSTALL], { cwd: wt, env, encoding: 'utf8' });
 
-      postinstall({ ...base, ...assigned });
-      expect(hooks()).toEqual([]);
-      // Control: without that environment the same postinstall writes the shared hooks.
-      const res = postinstall(base);
-      expect(hooks(), `${res.stdout}${res.stderr}`).toContain('pre-commit');
-    },
-    30_000,
-  );
+    postinstall({ ...base, ...assigned });
+    expect(hooks()).toEqual([]);
+    // Control: without that environment the same postinstall writes the shared hooks.
+    const res = postinstall(base);
+    expect(hooks(), `${res.stdout}${res.stderr}`).toContain('pre-commit');
+  }, 30_000);
 });

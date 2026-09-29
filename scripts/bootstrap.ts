@@ -146,6 +146,10 @@ function fail(message: string): never {
 
 const step = (title: string) => console.log(`\n▶ ${title}`);
 
+// On Windows `pnpm` (from corepack or `npm i -g`) is a .cmd shim, which only starts through a
+// shell. The arguments passed here are fixed words that need no quoting.
+const SHELL = process.platform === 'win32';
+
 function run(
   cmd: string,
   args: string[],
@@ -155,6 +159,7 @@ function run(
     cwd: ROOT,
     stdio: 'inherit',
     env: { ...process.env, ...opts.env },
+    shell: SHELL,
   });
   if (res.status !== 0 && !opts.allowFail)
     fail(`\`${cmd} ${args.join(' ')}\` failed (exit ${res.status})`);
@@ -178,7 +183,12 @@ function tryGit(args: string[]): string | undefined {
 }
 
 function hasCommand(cmd: string): boolean {
-  return spawnSync(cmd, ['--version'], { stdio: 'ignore' }).status === 0;
+  return spawnSync(cmd, ['--version'], { stdio: 'ignore', shell: SHELL }).status === 0;
+}
+
+/** `owner/repo` of a GitHub remote URL (https, ssh or scp-like), or undefined. */
+function githubSlug(url: string | undefined): string | undefined {
+  return url?.trim().match(/github\.com[:/]+([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i)?.[1];
 }
 
 async function ask(question: string, fallback: string, yes: boolean): Promise<string> {
@@ -266,7 +276,10 @@ async function main() {
     );
   }
   const origin = tryGit(['remote', 'get-url', 'origin']);
-  if (template?.repo && origin?.includes(template.repo) && !opts.force) {
+  const originSlug = githubSlug(origin);
+  // GitHub owner and repository names are case-insensitive; `<template>-demo` is another repo.
+  const isTemplate = originSlug?.toLowerCase() === String(template?.repo ?? '').toLowerCase();
+  if (template?.repo && isTemplate && !opts.force) {
     fail(
       `this checkout's origin is the template itself (${template.repo}). Bootstrap is for copies of the ` +
         'template; pass --force if you really mean to run it here.',
@@ -298,10 +311,7 @@ async function main() {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(name))
       fail(`"${name}" is not a valid project name (use a-z, 0-9, -).`);
 
-    const repoSlug =
-      opts.repo ??
-      origin?.match(/github\.com[:/](.+?)(?:\.git)?$/)?.[1] ??
-      `${scope.slice(1)}/${name}`;
+    const repoSlug = opts.repo ?? originSlug ?? `${scope.slice(1)}/${name}`;
     let changed = 0;
     for (const file of projectFiles()) {
       const full = join(ROOT, file);

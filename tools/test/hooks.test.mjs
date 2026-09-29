@@ -1,4 +1,4 @@
-import { chmodSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { commitAll, makeRepo, runHook, tempDir, writeFile } from './helpers.mjs';
@@ -54,10 +54,14 @@ function linkTo(root) {
   return link;
 }
 
-/** A fake oxfmt that overwrites the file it is given, so a test can see whether it ran. */
+/** A fake oxfmt package that overwrites the file it is given, so a test can see whether it ran. */
 function fakeOxfmt(root) {
-  writeFile(root, 'node_modules/.bin/oxfmt', '#!/bin/sh\necho formatted > "$2"\n');
-  chmodSync(join(root, 'node_modules/.bin/oxfmt'), 0o755);
+  writeFile(root, 'node_modules/oxfmt/package.json', { name: 'oxfmt', bin: { oxfmt: 'cli.mjs' } });
+  writeFile(
+    root,
+    'node_modules/oxfmt/cli.mjs',
+    "import { writeFileSync } from 'node:fs';\nwriteFileSync(process.argv.at(-1), 'formatted\\n');\n",
+  );
 }
 
 describe('guard-paths hook', () => {

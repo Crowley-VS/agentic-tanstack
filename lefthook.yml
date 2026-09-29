@@ -1,9 +1,12 @@
 # Pre-commit, in this order (`piped`: lefthook otherwise runs commands alphabetically):
-#   1. format + lint staged files (generated files are skipped via .agents/generated.json)
+#   1. format + lint staged files (generated files are skipped via .agents/generated.json) and
+#      re-stage them right away, so the jobs below read the formatted content from the index
 #   2. re-sync agent config from the (now formatted) sources: the index from the STAGED sources,
 #      so a commit never carries copies of unstaged or untracked skill files, and the working
-#      tree from its own
+#      tree from its own. Staged generated copies are re-synced too (never committed stale).
 #   3. check agent-config hygiene of what is about to be committed (the index)
+# Post-commit: `git commit -- <paths>` runs the pre-commit on a temporary index; put what it
+# changed in the commit back in the real index (a no-op after any other commit).
 # Heavier checks (typecheck, tests, boundaries) run in `pnpm check` and CI.
 pre-commit:
   piped: true
@@ -13,8 +16,12 @@ pre-commit:
       run: node tools/agents.mjs staged {staged_files}
       stage_fixed: true
     - name: agent-sync
-      glob: '{.agents/**,.claude/settings.json,.oxfmtrc.json,.oxlintrc.json}'
+      glob: '{.agents/**,.claude/settings.json,.claude/skills/**,.gitattributes,.oxfmtrc.json,.oxlintrc.json}'
       run: node tools/agents.mjs sync --stage
     - name: agent-config
-      glob: '{.agents/**,.claude/**,AGENTS.md,CLAUDE.md}'
+      glob: '{.agents/**,.claude/**,.gitattributes,AGENTS.md,CLAUDE.md}'
       run: node tools/agents.mjs check --staged
+post-commit:
+  jobs:
+    - name: heal-index
+      run: node tools/agents.mjs heal

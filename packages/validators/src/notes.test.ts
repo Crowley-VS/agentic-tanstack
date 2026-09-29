@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CommentInput, NOTE_LIMITS, NoteInput } from './notes';
+import { CommentInput, NOTE_LIMITS, NoteInput, PageArgs } from './notes';
 
 describe('NoteInput', () => {
   it('trims and accepts a valid note', () => {
@@ -36,5 +36,69 @@ describe('CommentInput', () => {
 
   it('rejects an invalid note id', () => {
     expect(CommentInput.safeParse({ noteId: 'nope', body: 'x' }).success).toBe(false);
+  });
+});
+
+const NOTE_ID = '0198f3c0-0000-7000-8000-000000000000';
+
+describe('length limits', () => {
+  it.each([
+    [
+      'NoteInput.title',
+      NOTE_LIMITS.titleMax,
+      (v: string) => NoteInput.safeParse({ title: v, body: 'b' }),
+    ],
+    [
+      'NoteInput.body',
+      NOTE_LIMITS.bodyMax,
+      (v: string) => NoteInput.safeParse({ title: 't', body: v }),
+    ],
+    [
+      'CommentInput.authorName',
+      NOTE_LIMITS.authorNameMax,
+      (v: string) => CommentInput.safeParse({ noteId: NOTE_ID, authorName: v, body: 'b' }),
+    ],
+    [
+      'CommentInput.body',
+      NOTE_LIMITS.commentBodyMax,
+      (v: string) => CommentInput.safeParse({ noteId: NOTE_ID, body: v }),
+    ],
+  ])('%s accepts %i characters and rejects one more', (_, max, parse) => {
+    expect(parse('x'.repeat(max)).success).toBe(true);
+    const over = parse('x'.repeat(max + 1));
+    expect(over.success).toBe(false);
+    expect(over.error?.issues[0]?.message).toBe(`Must be at most ${max} characters`);
+  });
+
+  it('keeps the limits the web UI and the API share', () => {
+    expect(NOTE_LIMITS).toEqual({
+      titleMax: 120,
+      bodyMax: 5000,
+      authorNameMax: 40,
+      commentBodyMax: 1000,
+      pageSizeMax: 50,
+    });
+  });
+
+  it('requires a comment body', () => {
+    const result = CommentInput.safeParse({ noteId: NOTE_ID, body: '  ' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]).toMatchObject({
+      path: ['body'],
+      message: 'Comment is required',
+    });
+    expect(CommentInput.safeParse({ noteId: NOTE_ID }).success).toBe(false);
+  });
+});
+
+describe('PageArgs', () => {
+  it('defaults to 20 and accepts 1 to pageSizeMax', () => {
+    expect(PageArgs.parse({})).toEqual({ first: 20 });
+    expect(PageArgs.parse({ first: 1 })).toEqual({ first: 1 });
+    expect(PageArgs.parse({ first: NOTE_LIMITS.pageSizeMax })).toEqual({ first: 50 });
+  });
+
+  it.each([0, -1, NOTE_LIMITS.pageSizeMax + 1, 1.5, '10'])('rejects first = %j', (first) => {
+    expect(PageArgs.safeParse({ first }).success).toBe(false);
   });
 });

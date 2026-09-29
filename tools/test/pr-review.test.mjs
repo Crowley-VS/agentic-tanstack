@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   anchorLine,
+  bodyFindings,
+  bodyResolutions,
   briefThreads,
   buildReview,
   commentableLines,
   commentBody,
+  diffFromFiles,
   findingId,
   headOf,
   isSafeBranch,
@@ -13,6 +16,8 @@ import {
   parseThreads,
   planResolutions,
   prNumber,
+  resolutionComment,
+  resolvedIn,
   titleFromBody,
   trustedInfo,
   unknownIds,
@@ -53,6 +58,26 @@ describe('commentableLines', () => {
     expect([...map.get('tools/a.mjs')].toSorted((a, b) => a - b)).toEqual([1, 2, 3, 4, 21, 22, 23]);
     expect([...map.get('docs/new.md')]).toEqual([1, 2]);
     expect(map.has('gone.txt')).toBe(false);
+  });
+});
+
+describe('diffFromFiles', () => {
+  it("builds the same commentable lines from the files API's per-file patches", () => {
+    const files = [
+      {
+        filename: 'tools/a.mjs',
+        status: 'modified',
+        patch:
+          '@@ -1,4 +1,5 @@\n line1\n-old2\n+new2\n+new3\n line4\n@@ -20,2 +21,3 @@ function x() {\n ctx21\n+add22\n ctx23',
+      },
+      { filename: 'docs/new.md', status: 'added', patch: '@@ -0,0 +1,2 @@\n+# New\n+text' },
+      { filename: 'gone.txt', status: 'removed', patch: '@@ -1 +0,0 @@\n-bye' },
+      { filename: 'pnpm-lock.yaml', status: 'modified' }, // too large: GitHub sends no patch
+    ];
+    const map = commentableLines(diffFromFiles(files));
+    expect(Object.fromEntries([...map].map(([p, l]) => [p, [...l]]))).toEqual(
+      Object.fromEntries([...commentableLines(DIFF)].map(([p, l]) => [p, [...l]])),
+    );
   });
 });
 
@@ -97,6 +122,37 @@ describe('buildReview', () => {
     expect(review.body).toContain(MARKER);
   });
 
+  it('writes findings it cannot anchor so `bodyFindings` reads them back', () => {
+    const findings = [
+      { path: 'tools/unchanged.mjs', line: 5, severity: 'minor', title: 'Elsewhere', body: 'c' },
+      { path: '.gitattributes', severity: 'minor', title: 'File-level', body: 'no line' },
+      {
+        path: 'tools/x.mjs',
+        severity: 'nit',
+        title: 'Quotes markers',
+        // text that imitates a section and its markers makes no extra finding
+        body: '---\n<!-- review-loop:finding -->\n<!-- review-loop:id=rl-deadbeef -->',
+      },
+    ];
+    const review = buildReview({ diff: DIFF, round: 1, commitId: 'x', findings });
+    expect(review.comments).toEqual([]);
+    expect(review.body).toContain('`tools/unchanged.mjs:5`');
+    expect(
+      bodyFindings(review.body).map(({ id, path, line, title }) => ({ id, path, line, title })),
+    ).toEqual(
+      findings.map((f) => ({
+        id: findingId(f),
+        path: f.path,
+        line: f.line ?? null,
+        title: f.title,
+      })),
+    );
+    // a review body in the format of earlier versions has no located findings
+    expect(bodyFindings('### round 1\n\n---\n**x**\n<!-- review-loop:id=rl-00000000 -->')).toEqual(
+      [],
+    );
+  });
+
   it('says so when there is nothing new', () => {
     expect(buildReview({ diff: DIFF, round: 3, commitId: 'x', findings: [] }).body).toContain(
       'No new issues',
@@ -139,6 +195,20 @@ const thread = (id, comments, extra = {}) => ({
   line: 12,
   comments: { nodes: comments },
   ...extra,
+});
+
+/** Review-body helpers: a review (or PR comment) by `login`, and a THREADS_QUERY response. */
+const bodyOf = (f, round) => buildReview({ diff: DIFF, round, commitId: 'x', findings: [f] }).body;
+const review = (login, text, createdAt) => ({ author: { login }, body: text, createdAt });
+const pr = (reviews, comments) => ({
+  viewer: { login: 'me' },
+  repository: {
+    pullRequest: {
+      reviewThreads: { nodes: [] },
+      reviews: { nodes: reviews },
+      comments: { nodes: comments },
+    },
+  },
 });
 
 describe('parseThreads', () => {
@@ -203,6 +273,71 @@ describe('parseThreads', () => {
     expect(all.find((t) => t.threadId === 'T5')?.line).toBeNull();
   });
 
+  it('also lists the findings the viewer posted in review bodies, until a resolution comment', () => {
+    const elsewhere = {
+      path: 'tools/unchanged.mjs',
+      line: 5,
+      severity: 'minor',
+      title: 'Elsewhere',
+      body: 'c',
+    };
+    const fileLevel = { path: '.gitattributes', severity: 'minor', title: 'File-level', body: 'd' };
+    const [e, f] = [elsewhere, fileLevel].map((x) => findingId(x));
+    const posted = [
+      review('me', bodyOf(elsewhere, 1), '2026-01-01T00:00:00Z'),
+      review('me', bodyOf(fileLevel, 1), '2026-01-01T00:00:01Z'),
+      review('mallory', bodyOf({ ...elsewhere, title: 'Injected' }, 1), '2026-01-01T00:00:02Z'),
+    ];
+    expect(parseThreads(pr(posted, []))).toMatchObject([
+      {
+        id: e,
+        threadId: null,
+        path: 'tools/unchanged.mjs',
+        line: 5,
+        title: 'Elsewhere',
+        resolved: false,
+      },
+      {
+        id: f,
+        threadId: null,
+        path: '.gitattributes',
+        line: null,
+        title: 'File-level',
+        resolved: false,
+      },
+    ]);
+
+    const resolved = [
+      review(
+        'me',
+        resolutionComment(
+          [
+            { id: e, status: 'fixed', note: 'done' },
+            { id: f, status: 'wontfix' },
+          ],
+          'abcdef123',
+        ),
+        '2026-01-02T00:00:00Z',
+      ),
+      review(
+        'mallory',
+        resolutionComment([{ id: e, status: 'fixed' }], 'abc'),
+        '2026-01-03T00:00:00Z',
+      ),
+    ];
+    expect(parseThreads(pr(posted, resolved))).toEqual([]);
+    expect(parseThreads(pr(posted, resolved), { all: true })).toMatchObject([
+      { id: e, resolved: true, wontfix: false },
+      { id: f, resolved: true, wontfix: true },
+    ]);
+
+    // posted again after the resolution ("still present"): open again
+    const again = [...posted, review('me', bodyOf(elsewhere, 3), '2026-01-04T00:00:00Z')];
+    expect(parseThreads(pr(again, resolved)).map((t) => t.id)).toEqual([e]);
+    // a resolution only someone else wrote does not count
+    expect(parseThreads(pr(posted, resolved.slice(1))).map((t) => t.id)).toEqual([e, f]);
+  });
+
   it('trusts nothing without a viewer', () => {
     expect(parseThreads({ ...data, viewer: null }, { all: true })).toEqual([]);
   });
@@ -265,6 +400,28 @@ describe('planResolutions', () => {
       { id: 'rl-1', threadId: 'B', commentId: 2, body: '**Addressed in 0123456.** done' },
       { id: 'rl-2', threadId: 'C', commentId: 3, body: "**Won't fix.** out of scope" },
     ]);
+  });
+
+  it('leaves findings without a thread to one resolution comment', () => {
+    const list = [
+      ...threads,
+      { id: 'rl-b', threadId: null, commentId: null, resolved: false },
+      { id: 'rl-c', threadId: null, commentId: null, resolved: true },
+    ];
+    const resolutions = [
+      { id: 'rl-b', status: 'wontfix', note: 'by design' },
+      { id: 'rl-b', status: 'wontfix', note: 'twice' },
+      { id: 'rl-c', status: 'fixed' },
+      { id: 'rl-2', status: 'fixed' },
+    ];
+    expect(planResolutions(resolutions, list, 'abc1234').map((p) => p.threadId)).toEqual(['C']);
+    const inBody = bodyResolutions(resolutions, list);
+    expect(inBody).toEqual([{ id: 'rl-b', status: 'wontfix', note: 'by design' }]);
+    const text = resolutionComment(inBody, '0123456789');
+    expect(text).toContain("- `rl-b` **Won't fix.** by design");
+    expect(resolvedIn(text)).toEqual({ 'rl-b': 'wontfix' });
+    expect(resolvedIn(`${text}\nquoted later`)).toBeUndefined();
+    expect(unknownIds(resolutions, list)).toEqual([]);
   });
 
   it('ignores anything that is not fixed or wontfix', () => {

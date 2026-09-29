@@ -4,7 +4,8 @@
 // and the pre-commit hook are the gates. Skips generated files and missing tooling.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { extname, join } from 'node:path';
+import { extname } from 'node:path';
+import { nodeBin } from '../lib/bin.mjs';
 import { findArtifact, loadManifest, repoRoot, toRepoPath } from '../lib/generated.mjs';
 
 const FORMATTABLE = new Set([
@@ -38,14 +39,15 @@ try {
   const root = repoRoot(
     typeof input.cwd === 'string' && existsSync(input.cwd) ? input.cwd : process.cwd(),
   );
-  const oxfmt = join(root, 'node_modules', '.bin', 'oxfmt');
-  if (!existsSync(oxfmt)) process.exit(0);
+  const oxfmt = nodeBin(root, 'oxfmt');
+  if (!oxfmt) process.exit(0);
   const repoPath = toRepoPath(root, filePath);
   // Only format files inside this repository (never plans, home files, other repos).
   if (repoPath.startsWith('../') || repoPath.startsWith('/')) process.exit(0);
   if (findArtifact(loadManifest(root), repoPath)) process.exit(0);
 
-  execFileSync(oxfmt, ['--no-error-on-unmatched-pattern', filePath], {
+  const [cmd, ...args] = oxfmt;
+  execFileSync(cmd, [...args, '--no-error-on-unmatched-pattern', filePath], {
     cwd: root,
     stdio: 'ignore',
     timeout: 8000,
