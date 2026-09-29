@@ -12,8 +12,10 @@ human to merge. The human still merges; the loop never merges.
 
 ## How (Claude Code)
 
-Run the saved workflow **`review-loop`** with `args: { pr: <number> }` (optional `maxRounds`, default 5).
-Workflows spawn many agents, so confirm with the user first if they haven't already asked for the loop.
+It starts **automatically**: the PostToolUse hook `tools/agent-hooks/pr-opened.mjs` sees `gh pr create` (or
+`gh pr ready` for drafts) and tells Claude to run the saved workflow **`review-loop`** with `args: { pr: <number> }`.
+To run it by hand, ask for the `review-loop` workflow (optional `maxRounds`, default 5). Opt out of the automatic
+start on your machine with `REVIEW_LOOP_AUTO=0` (e.g. `env` in `.claude/settings.local.json`).
 
 Each round:
 

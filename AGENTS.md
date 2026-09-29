@@ -81,7 +81,9 @@ Never claim "done" without running these. If a check fails, fix the cause; never
 
 1. Finish the phase; `pnpm check` must pass.
 2. Commit on a branch (never directly on `main`) and open a PR with a summary and a test plan.
-3. Run the **review loop** (skill `review-loop`): review → post findings → fix → re-review until nothing new or open.
+3. The **review loop** starts automatically when a PR is opened from Claude Code (hook `tools/agent-hooks/pr-opened.mjs`;
+   drafts start when marked ready; opt out with `REVIEW_LOOP_AUTO=0`). It reviews → posts findings → fixes → re-reviews
+   until nothing new or open remains. Other agents: follow the `review-loop` skill manually.
 4. A human merges.
 
 <!-- kit:end -->

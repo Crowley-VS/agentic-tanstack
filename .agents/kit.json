@@ -18,7 +18,9 @@
     "tools/pr-review.mjs",
     "tools/test/pr-review.test.mjs",
     ".claude/workflows/review-loop.js",
-    ".agents/skills/review-loop/SKILL.md"
+    ".agents/skills/review-loop/SKILL.md",
+    "tools/agent-hooks/pr-opened.mjs",
+    "tools/test/pr-opened.test.mjs"
   ],
   "sections": {
     "AGENTS.md": ["done", "commands", "navigation", "invariants", "workflow", "pull-requests"]

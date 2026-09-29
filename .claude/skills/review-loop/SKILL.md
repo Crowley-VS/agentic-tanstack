@@ -6,14 +6,19 @@ description: Use after a phase/milestone PR is opened and `pnpm check` is green 
 # Review loop for a pull request
 
 ## When
+
 A phase of work is done, `pnpm check` passes, and a PR is open (`gh pr create`). Run the loop before asking a
 human to merge. The human still merges; the loop never merges.
 
 ## How (Claude Code)
-Run the saved workflow **`review-loop`** with `args: { pr: <number> }` (optional `maxRounds`, default 5).
-Workflows spawn many agents, so confirm with the user first if they haven't already asked for the loop.
+
+It starts **automatically**: the PostToolUse hook `tools/agent-hooks/pr-opened.mjs` sees `gh pr create` (or
+`gh pr ready` for drafts) and tells Claude to run the saved workflow **`review-loop`** with `args: { pr: <number> }`.
+To run it by hand, ask for the `review-loop` workflow (optional `maxRounds`, default 5). Opt out of the automatic
+start on your machine with `REVIEW_LOOP_AUTO=0` (e.g. `env` in `.claude/settings.local.json`).
 
 Each round:
+
 1. **Review**: three read-only reviewers (correctness+security, tests+verification, consistency/agent-layer) read
    the WHOLE PR (description, test plan, CI status, comments, full changed files). A **hands-on tester** checks
    the PR out in its own git worktree (own ports + database), runs `pnpm check --all`, verifies every claim
@@ -27,6 +32,7 @@ Each round:
 It stops when a round finds **no new issues and nothing is open**, then posts a summary comment.
 
 ## Manual fallback (other agents / no workflows)
+
 ```bash
 gh pr view <n> --comments && gh pr checks <n> && gh pr diff <n>   # review the whole PR
 node tools/pr-review.mjs post --pr <n> --round 1 <<'JSON'         # post findings
@@ -37,8 +43,10 @@ node tools/pr-review.mjs resolve --pr <n> --commit <sha> <<'JSON'  # after fixin
 [{"id":"rl-…","status":"fixed","note":"…"}]
 JSON
 ```
+
 Repeat review → fix until nothing new is found and `threads` is empty.
 
 ## Notes
+
 - Posts as your `gh` user. GitHub doesn't let you approve your own PR, so reviews are posted as comments.
 - Finding ids are stable (`rl-<hash of path + title>`), so repeats are detected across rounds.
