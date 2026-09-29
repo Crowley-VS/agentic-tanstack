@@ -1,6 +1,6 @@
 ---
 name: review-loop
-description: Use after a phase/milestone PR is opened and `pnpm check` is green — runs review → post inline findings → fix → re-review until no open or new issues remain.
+description: Use after a phase/milestone PR is opened and `pnpm check` is green — review → post inline findings → fix → re-review only the fixes, until no blocker/major issue is open.
 ---
 
 # Review loop for a pull request
@@ -18,21 +18,28 @@ asked for the loop. Then run the saved workflow **`review-loop-run`** (`.claude/
 
 Each round:
 
-1. **Review**: three read-only reviewers (correctness+security, tests+verification, consistency/agent-layer) read
-   the WHOLE PR (description, test plan, CI status, discussion, full changed files). A **hands-on tester** runs
+1. **Review**: round 1 reviews the WHOLE PR; later rounds review **only the fix commits** since the previous round
+   (and whether the fixes worked). Three read-only reviewers (correctness+security, tests+verification,
+   consistency/agent-layer) read the PR (description, test plan, CI status, discussion, full changed files). A **hands-on tester** runs
    `pnpm check --all`, verifies every claim in the description, and actually exercises the change (scripts on
    throwaway copies; for app changes it runs the app and clicks through the changed pages in a browser). It
    reports what it ran, with the result and evidence of each; the summary comment lists them.
-2. **Verify**: each new finding is independently checked against the code (false positives dropped).
+2. **Verify**: new and reopened findings are checked against the code in batches of up to 6 (false positives,
+   duplicates and reworded repeats of known findings dropped; severity re-graded).
 3. **Post**: confirmed findings become one GitHub review with inline comments (`tools/pr-review.mjs post`); a
    finding that cannot be anchored to a changed line goes into the review body. If posting fails, the loop stops.
-4. **Fix**: a fixer addresses every open finding (or replies with an evidence-based won't-fix), runs
+4. **Fix**: a fixer addresses every open finding with the **smallest change** that resolves it (large changes become
+   "won't fix — needs a follow-up"; wrong findings get an evidence-based won't-fix), runs
    `pnpm check`, commits, pushes to the PR branch, and resolves the threads. The loop checks that the fix commit
    became the PR head before it counts anything as fixed.
 
 Every agent that reads or changes code works in its own git worktree checked out at the PR head, so the main
-checkout is never touched. It stops when a complete round (every reviewer and verifier answered, and the tester
-ran everything it reported) finds **no new issues and nothing is open**, then posts a summary comment. Anything else
+checkout is never touched (each agent restores its worktree at the end so it is removed automatically).
+
+**Convergence rules** (why the loop ends): only **blocker/major** findings keep it going. Minor/nit findings are
+posted once as suggestions and fixed in the same pass, without another review round. It stops ✅ when a complete
+round (every reviewer and verifier answered, the tester ran everything and every failure it saw is a confirmed
+finding) leaves no blocker/major open, and stops early for a human when blocking findings stop decreasing. Anything else
 (an agent that returned nothing, a tester that reports nothing it ran or something it could not run, a push that
 did not land, `maxRounds`) ends with ⚠️ and the open findings.
 
@@ -49,7 +56,7 @@ node tools/pr-review.mjs resolve --pr <n> --commit <sha> <<'JSON'  # after fixin
 JSON
 ```
 
-Repeat review → fix until nothing new is found and `threads` is empty.
+Repeat: re-review only the fix commits (`git diff <reviewed>..<head>`) until no blocker/major finding is open.
 
 ## Notes
 

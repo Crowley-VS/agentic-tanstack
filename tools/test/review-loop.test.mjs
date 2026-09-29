@@ -59,6 +59,23 @@ async function runLoop(responders = {}, args = { pr: 7, maxRounds: 3 }) {
   const state = { sha: SHA, pushes: 0 };
   const agent = async (prompt, opts = {}) => {
     const call = { kind: String(opts.label).split(':')[0], label: opts.label, prompt, opts, state };
+    // Verifiers run in batches: answer each ITEM as its own `verify:<kind>:<path>:<title>` call, so
+    // tests can script one verdict per finding and assert on per-finding labels.
+    if (call.kind === 'verify' && opts.schema?.properties?.verdicts) {
+      const items = JSON.parse(prompt.slice(prompt.indexOf('ITEMS (')).replace(/^[^\n]*\n/, ''));
+      const verdicts = [];
+      for (const { kind, ...f } of items) {
+        const itemCall = {
+          ...call,
+          label: `verify:${kind}:${f.path}:${f.title}`.slice(0, 80),
+          prompt: `${prompt.slice(0, prompt.indexOf('ITEMS ('))}FINDING:\n${JSON.stringify(f, null, 2)}`,
+          batchLabel: opts.label,
+        };
+        calls.push(itemCall);
+        verdicts.push(await (responders.verify ?? DEFAULTS.verify)(itemCall));
+      }
+      return { verdicts };
+    }
     calls.push(call);
     const tester = String(opts.label).startsWith('review:tester');
     if (tester && responders.tester) return responders.tester(call);
@@ -571,4 +588,133 @@ describe('review-loop: worktree setup', () => {
     const res = postinstall(base);
     expect(hooks(), `${res.stdout}${res.stderr}`).toContain('pre-commit');
   }, 30_000);
+});
+
+describe('review-loop convergence rules', () => {
+  const minor = { ...finding, severity: 'minor', title: 'Wording could be clearer' };
+  const blocking = (title) => ({ ...finding, title });
+
+  it('reviews the whole PR in round 1 and only the fix commits afterwards', async () => {
+    const { of } = await runLoop({ review: reviewerFinds([1]) });
+    const r1 = of('review').find((c) => c.label === 'review:correctness:r1');
+    const r2 = of('review').find((c) => c.label === 'review:correctness:r2');
+    expect(r1.prompt).not.toContain('FOLLOW-UP round');
+    expect(r2.prompt).toContain('FOLLOW-UP round');
+    expect(r2.prompt).toContain(`git diff ${SHA}..`);
+  });
+
+  it('stops after fixing when only minor/nit findings were open (no re-review for suggestions)', async () => {
+    const { result, summary, of } = await runLoop({
+      review: ({ label }) =>
+        label === 'review:correctness:r1' ? { findings: [minor] } : { findings: [] },
+      fix: (call) => ({
+        checkPassed: true,
+        commit: push(call),
+        resolutions: [{ path: minor.path, title: minor.title, status: 'fixed' }],
+      }),
+    });
+    expect(of('fix')).toHaveLength(1);
+    expect(of('review').some((c) => c.label.endsWith(':r2'))).toBe(false);
+    expect(summary).toContain('✅');
+    expect(summary).toContain('suggestions fixed');
+    expect(result.complete).toBe(true);
+  });
+
+  it('counts only blocker/major as blocking: an unfixed minor still ends ✅ with an optional note', async () => {
+    const { result, summary } = await runLoop({
+      review: ({ label }) =>
+        label === 'review:correctness:r1' ? { findings: [minor] } : { findings: [] },
+      fix: (call) => ({
+        checkPassed: true,
+        commit: push(call),
+        resolutions: [{ path: minor.path, title: minor.title, status: 'not-done' }],
+      }),
+    });
+    expect(result.complete).toBe(true);
+    expect(summary).toContain('optional suggestion');
+  });
+
+  it('stops for a human when blocking findings do not decrease', async () => {
+    const { result, summary, of } = await runLoop(
+      {
+        // every round a NEW blocking finding appears in the fixes
+        review: ({ label }) =>
+          label.startsWith('review:correctness')
+            ? { findings: [blocking(`Regression introduced ${label.slice(-2)}`)] }
+            : { findings: [] },
+        fix: (call) => ({ checkPassed: true, commit: push(call), resolutions: [] }),
+      },
+      { pr: 7, maxRounds: 6 },
+    );
+    expect(summary).toContain('not decreasing');
+    expect(result.complete).toBe(false);
+    expect(of('review').filter((c) => c.label.startsWith('review:correctness'))).toHaveLength(3);
+  });
+
+  it('verifies findings in batches of up to 6, not one agent per finding', async () => {
+    const seven = Array.from({ length: 7 }, (_, i) => blocking(`Issue ${i}`));
+    const { calls } = await runLoop({
+      review: ({ label }) =>
+        label === 'review:correctness:r1' ? { findings: seven } : { findings: [] },
+    });
+    const batches = new Set(
+      calls.filter((c) => c.batchLabel?.endsWith(':r1')).map((c) => c.batchLabel),
+    );
+    expect(batches.size).toBe(2);
+  });
+});
+
+describe('review-loop round-5 fixes', () => {
+  it('drops a reworded repeat of a known finding (verifier: duplicateOf "known: …")', async () => {
+    const reworded = { ...finding, title: 'Drift hidden by gate order' };
+    const { of } = await runLoop({
+      threads: () => ({
+        count: 1,
+        threads: [
+          {
+            id: 'rl-1',
+            title: finding.title,
+            path: finding.path,
+            line: null,
+            resolved: true,
+            wontfix: true,
+          },
+        ],
+      }),
+      review: ({ label }) =>
+        label === 'review:correctness:r1' ? { findings: [reworded] } : { findings: [] },
+      verify: () => ({
+        valid: true,
+        reason: 'same issue',
+        duplicateOf: `known: ${finding.path}: ${finding.title}`,
+      }),
+    });
+    expect(of('post')).toHaveLength(0);
+  });
+
+  it('never reports ✅ when the tester saw a failure that no confirmed finding covers', async () => {
+    const { result, summary } = await runLoop({
+      tester: () => ({
+        findings: [{ ...finding, title: 'pnpm check --all fails' }],
+        tested: [
+          {
+            claimOrArea: 'pnpm check --all',
+            stepsOrCommand: 'pnpm check --all',
+            result: 'fail',
+            evidence: 'exit 1',
+          },
+        ],
+      }),
+      verify: () => ({ valid: false, reason: 'could not reproduce' }),
+    });
+    expect(result.complete).toBe(false);
+    expect(summary).toContain('tester saw a failure with no confirmed finding');
+  });
+
+  it('tells worktree agents to restore their starting commit so the worktree is auto-removed', async () => {
+    const { of } = await runLoop();
+    const reviewer = of('review')[0];
+    expect(reviewer.prompt).toContain('ORIG=$(git rev-parse HEAD)');
+    expect(reviewer.prompt).toContain('git checkout -q --detach "$ORIG"');
+  });
 });
