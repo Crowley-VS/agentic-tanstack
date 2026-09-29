@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -8,9 +9,10 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
 const REPO = resolve(import.meta.dirname, '../..');
@@ -33,11 +35,12 @@ function archiveCopy() {
 }
 
 /** Run bootstrap in `cwd` with a non-terminal stdin (like an agent or CI). */
-function bootstrap(cwd, args) {
+function bootstrap(cwd, args, env = process.env) {
   const res = spawnSync(process.execPath, ['scripts/bootstrap.mjs', ...args], {
     cwd,
     encoding: 'utf8',
     input: '',
+    env,
   });
   return { code: res.status, out: `${res.stdout}${res.stderr}` };
 }
@@ -111,6 +114,35 @@ describe('bootstrap', () => {
     expect(renamedCount(real.out)).toBeGreaterThan(0);
     expect(renamedCount(preview.out)).toBe(renamedCount(real.out));
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'a re-run after a failed install reports the chosen name and commits the provenance',
+    () => {
+      const copy = archiveCopy();
+      // A pnpm whose `install` fails (the first run stops there, after renaming everything).
+      const bin = mkdtempSync(join(tmpdir(), 'bootstrap-bin-'));
+      onTestFinished(() => rmSync(bin, { recursive: true, force: true }));
+      writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\n[ "$1" = install ] && exit 1\nexit 0\n');
+      chmodSync(join(bin, 'pnpm'), 0o755);
+      const env = { ...process.env, CI: 'true', PATH: `${bin}${delimiter}${process.env.PATH}` };
+
+      const first = bootstrap(copy, PROJECT, env);
+      expect(first.code, first.out).toBe(1);
+      expect(first.out).toContain('`pnpm install` failed');
+      const git = (...args) => execFileSync('git', args, { cwd: copy, encoding: 'utf8' }).trim();
+      git('config', 'user.email', 'smoke@example.com');
+      git('config', 'user.name', 'Smoke');
+
+      const again = bootstrap(copy, [...PROJECT, '--no-install'], env);
+      expect(again.code, again.out).toBe(0);
+      expect(again.out).toContain('already renamed (@smoke/source)');
+      expect(again.out).toContain('Bootstrapped @smoke/… (smoke-app)');
+      const template = JSON.parse(readFileSync(join(REPO, 'template.json'), 'utf8'));
+      expect(git('log', '-1', '--format=%s')).toBe(
+        `chore: bootstrap from ${template.repo}@${template.version}`,
+      );
+    },
+  );
 
   it('fails with a readable error instead of prompting when stdin is not a terminal', () => {
     const res = bootstrap(archiveCopy(), ['--dry-run']);

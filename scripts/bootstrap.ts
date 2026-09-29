@@ -237,6 +237,14 @@ function projectFiles(): string[] {
     .filter((f) => existsSync(join(ROOT, f)));
 }
 
+/** The project name an earlier run put in README.md's first heading, if it looks like one. */
+function readmeTitle(): string | undefined {
+  const file = join(ROOT, 'README.md');
+  if (!existsSync(file)) return undefined;
+  const title = readFileSync(file, 'utf8').match(/^# (\S+)\s*$/m)?.[1];
+  return title && /^[a-z0-9][a-z0-9-]*$/.test(title) ? title : undefined;
+}
+
 function isText(buf: Buffer): boolean {
   return !buf.subarray(0, 8000).includes(0);
 }
@@ -315,6 +323,10 @@ async function main() {
       `  ${PLACEHOLDER_SCOPE}/ → ${scope}/, ${PLACEHOLDER_NAME} → ${name} (${changed} files)`,
     );
   } else {
+    // A re-run (e.g. after a failed install): an earlier run renamed everything. Report the names
+    // it chose: the scope of the root package, and the project name from --name or the README.
+    scope = String(pkg.name).match(/^(@[^/]+)\//)?.[1] ?? scope;
+    name = opts.name ?? readmeTitle() ?? name;
     console.log(`  already renamed (${pkg.name}); skipping`);
   }
 
@@ -431,7 +443,9 @@ async function main() {
     else if (!dirty) console.log('  nothing to commit');
     else {
       run('git', ['add', '-A']);
-      const from = template ? `${template.repo}@${template.version}` : 'template';
+      // template.json is gone after an earlier run; package.json#template keeps the provenance.
+      const provenance = template ?? fresh.template;
+      const from = provenance?.repo ? `${provenance.repo}@${provenance.version}` : 'template';
       run('git', ['commit', '-q', '-m', `chore: bootstrap from ${from}`], {
         env: { LEFTHOOK: '0' },
       });

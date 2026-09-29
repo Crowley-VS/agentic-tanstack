@@ -118,16 +118,31 @@ describe('detectCheckout', () => {
     expect(linked.commonDir).toBe(primary.commonDir);
   });
 
-  it('gives two real worktrees distinct ports through the CLI', () => {
+  it('gives two real worktrees whose paths hash to the same block distinct ports through the CLI', () => {
     const root = makeRepo({ 'a.txt': 'x' });
     commitAll(root);
-    const ports = ['one', 'two'].map((name) => {
-      const wt = join(tempDir(), name);
+    // Two worktree paths with the same preferred block: without the registry they would share ports.
+    const parent = realpathSync(tempDir());
+    const byBlock = new Map();
+    let pair;
+    for (let i = 0; !pair; i++) {
+      const wt = join(parent, `wt-${i}`);
+      const other = byBlock.get(preferredBlock(wt));
+      if (other) pair = [other, wt];
+      else byBlock.set(preferredBlock(wt), wt);
+    }
+    const webPorts = pair.map((wt) => {
       execFileSync('git', ['worktree', 'add', '-q', '--detach', wt], { cwd: root });
-      return JSON.parse(execFileSync(process.execPath, [DEV_PORTS, '--json'], { cwd: wt })).ports;
+      return JSON.parse(execFileSync(process.execPath, [DEV_PORTS, '--json'], { cwd: wt })).ports
+        .web;
     });
-    expect(ports[0].web).not.toBe(ports[1].web);
-    expect(ports[0].web).toBeGreaterThanOrEqual(20000);
+    expect(webPorts[0]).not.toBe(webPorts[1]);
+    // ...because the CLI recorded each worktree's block in the registry both worktrees share.
+    const registry = JSON.parse(readFileSync(join(root, '.git', 'dev-ports.json'), 'utf8'));
+    expect(registry).toEqual({
+      [pair[0]]: (webPorts[0] - 20000) / 100,
+      [pair[1]]: (webPorts[1] - 20000) / 100,
+    });
   });
 });
 

@@ -1,8 +1,18 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { devNull, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { onTestFinished } from 'vitest';
+
+/**
+ * Git reads no global or system config in these tests. A developer's `commit.gpgsign`, signing
+ * program, `core.hooksPath` or init template would otherwise make temp-repo commits fail (or wait
+ * on a signing prompt) for reasons unrelated to the code. Set on process.env when this module
+ * loads, so every git process a test starts inherits it: direct calls, the tools under test, the
+ * hook scripts and lefthook.
+ */
+export const HERMETIC_GIT_ENV = { GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_NOSYSTEM: '1' };
+Object.assign(process.env, HERMETIC_GIT_ENV);
 
 /** A temp directory that is removed when the current test finishes. Call it inside a test. */
 export function tempDir(prefix = 'agentic-tools-') {

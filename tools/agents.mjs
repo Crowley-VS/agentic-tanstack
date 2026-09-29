@@ -2,10 +2,12 @@
 // Agent-layer maintenance. One script, several modes:
 //
 //   sync     copy .agents/skills/* → .claude/skills/* (byte-identical copies, Windows-safe),
-//            and render generated-file protections from .agents/generated.json into
-//            .oxfmtrc.json, .oxlintrc.json and .claude/settings.json (Edit deny rules);
-//            --stage also `git add`s what it wrote (pre-commit, after formatting)
-//   check    fail if sync is stale, or on agent-config hygiene problems (CI + pre-commit)
+//            remove the copies of deleted skills, and render generated-file protections from
+//            .agents/generated.json into .oxfmtrc.json, .oxlintrc.json and .claude/settings.json
+//            (Edit deny rules); --stage (pre-commit, after formatting) also syncs the INDEX from
+//            the staged sources, so a commit never carries copies of unstaged or untracked files
+//   check    fail if sync is stale, or on agent-config hygiene problems (CI); --staged checks
+//            what the next commit contains instead of the working tree (pre-commit)
 //   adopt    move skills that tools wrote directly into .claude/skills into .agents/skills
 //   regen    run every regen command from .agents/generated.json; --check = fail when regen
 //            changes ANY file (generated outputs and the configs sync renders)
@@ -17,12 +19,14 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findArtifact, isTracked, loadManifest, toRepoPath } from './lib/generated.mjs';
@@ -48,9 +52,70 @@ const BASE_IGNORES = {
   oxfmt: ['pnpm-lock.yaml'],
   oxlint: ['**/dist/**', '**/.output/**', '**/coverage/**'],
 };
+/** Repo paths `sync` reads and writes. */
+const SYNC_PATHS = [
+  '.agents',
+  '.claude/settings.json',
+  '.claude/skills',
+  '.oxfmtrc.json',
+  '.oxlintrc.json',
+];
+/** A .claude/skills copy that no source explains and sync cannot fix on its own. */
+const NO_SOURCE = 'has no source in .agents/skills';
+// Commands that look read-only but write files through a flag (`git diff --output=<file>`,
+// `git log --output=<file>`): a wildcard allow rule would auto-approve those writes.
+const WRITES_THROUGH_FLAGS = /^Bash\(git (?:diff|log|show|whatchanged|format-patch)\b.*\*/;
 
 // ---------- helpers ----------
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
+const git = (root, args, opts = {}) =>
+  execFileSync('git', args, { cwd: root, encoding: 'utf8', ...opts });
+const lines0 = (out) => out.split('\0').filter(Boolean);
+
+/**
+ * Copy the INDEX version of `paths` (default: every tracked file) into a new temp dir: exactly
+ * what the next commit will contain, whatever the working tree has. The caller removes it.
+ */
+function exportIndex(root, paths = []) {
+  const dir = mkdtempSync(join(tmpdir(), 'agents-index-'));
+  const files = lines0(git(root, ['ls-files', '-z', '--', ...paths]));
+  if (files.length)
+    git(root, ['checkout-index', '-z', '--stdin', `--prefix=${dir}/`], { input: files.join('\0') });
+  return dir;
+}
+
+/** Make the index hold exactly what `dir` has at each written path (a file or a directory). */
+function stageFrom(root, dir, written) {
+  if (!written.length) return;
+  const modes = new Map(
+    lines0(git(root, ['ls-files', '-s', '-z', '--', ...SYNC_PATHS])).map((entry) => {
+      const [meta, path] = entry.split('\t');
+      return [path, meta.split(' ')[0]];
+    }),
+  );
+  const remove = [];
+  const add = [];
+  for (const p of written) {
+    const full = join(dir, p);
+    let now = [];
+    if (existsSync(full))
+      now = lstatSync(full).isDirectory()
+        ? listFiles(full).map((f) => `${p}/${f.split(sep).join('/')}`)
+        : [p];
+    remove.push(...lines0(git(root, ['ls-files', '-z', '--', p])).filter((f) => !now.includes(f)));
+    add.push(...now);
+  }
+  if (remove.length) git(root, ['update-index', '--force-remove', '--', ...remove]);
+  for (const f of add) {
+    const sha = git(root, ['hash-object', '-w', '--stdin', `--path=${f}`], {
+      input: readFileSync(join(dir, f)),
+    }).trim();
+    // a skill copy keeps its source's mode (e.g. an executable script)
+    const mode =
+      modes.get(f.replace(/^\.claude\/skills\//, '.agents/skills/')) ?? modes.get(f) ?? '100644';
+    git(root, ['update-index', '--add', '--cacheinfo', `${mode},${sha},${f}`]);
+  }
+}
 
 function listDirs(dir) {
   if (!existsSync(dir)) return [];
@@ -129,23 +194,46 @@ export function desiredState(root = ROOT) {
 }
 
 // ---------- sync ----------
-function sync(root = ROOT, { write = true } = {}) {
-  return syncWithWrites(root, { write }).problems;
+function sync(root = ROOT, opts = {}) {
+  return syncWithWrites(root, opts).problems;
 }
 
 /**
- * Pre-commit: sync, then stage what sync wrote. Runs AFTER the formatter (lefthook `piped`), so
- * a skill source that oxfmt just reformatted is copied as committed, not as it was before.
+ * Pre-commit: sync the working tree from its own sources, and the INDEX from the STAGED sources.
+ * The commit then holds copies and configs that match the committed sources, even when a skill
+ * source has unstaged edits or is untracked (it is not in the commit, so neither is its copy).
+ * Runs AFTER the formatter (lefthook `piped`), so a source oxfmt just reformatted and re-staged
+ * is copied as committed.
  */
 function syncAndStage(root = ROOT) {
-  const { problems, written } = syncWithWrites(root);
-  if (written.length)
-    execFileSync('git', ['add', '-A', '--', ...written], { cwd: root, stdio: 'inherit' });
-  return problems;
+  // Working tree first: whether a copy without a source is a removed skill depends on it still
+  // being tracked, which the index update below may change.
+  const working = syncWithWrites(root);
+  const snapshot = exportIndex(root, SYNC_PATHS);
+  try {
+    const index = syncWithWrites(snapshot, {
+      tracked: () => true, // everything in the snapshot came from the index
+      oxfmt: join(root, 'node_modules', '.bin', 'oxfmt'),
+    });
+    stageFrom(root, snapshot, index.written);
+    return [...new Set([...index.problems, ...working.problems])];
+  } finally {
+    rmSync(snapshot, { recursive: true, force: true });
+  }
 }
 
-/** sync, also returning the repo-relative paths it wrote (files and skill directories). */
-function syncWithWrites(root, { write = true } = {}) {
+/**
+ * sync, also returning the repo-relative paths it wrote (files and skill directories).
+ * `tracked(name)`: whether `.claude/skills/<name>` is tracked, i.e. a copy an earlier sync made.
+ */
+function syncWithWrites(
+  root,
+  {
+    write = true,
+    tracked = (name) => isTracked(root, `.claude/skills/${name}`),
+    oxfmt = join(root, 'node_modules', '.bin', 'oxfmt'),
+  } = {},
+) {
   const problems = [];
   const { files, skills } = desiredState(root);
   const written = [];
@@ -162,7 +250,6 @@ function syncWithWrites(root, { write = true } = {}) {
       }
     }
   }
-  const oxfmt = join(root, 'node_modules', '.bin', 'oxfmt');
   if (written.length && existsSync(oxfmt)) {
     try {
       execFileSync(oxfmt, ['--no-error-on-unmatched-pattern', ...written], {
@@ -200,9 +287,18 @@ function syncWithWrites(root, { write = true } = {}) {
     }
   }
   for (const name of listDirs(dst)) {
-    if (!skills.includes(name)) {
+    if (skills.includes(name)) continue;
+    if (tracked(name)) {
+      // Synced earlier and its source is gone: the skill was deleted.
+      problems.push(`.claude/skills/${name} is the copy of a deleted skill`);
+      if (write) {
+        rmSync(join(dst, name), { recursive: true, force: true });
+        writtenPaths.push(`.claude/skills/${name}`);
+      }
+    } else {
+      // Untracked: a tool wrote it there. Only a human can say whether to keep it.
       problems.push(
-        `.claude/skills/${name} has no source in .agents/skills (run \`node tools/agents.mjs adopt\` to keep it)`,
+        `.claude/skills/${name} ${NO_SOURCE}: a tool wrote it there. Run \`node tools/agents.mjs adopt\` to keep it, or delete .claude/skills/${name}`,
       );
     }
   }
@@ -226,8 +322,10 @@ function adopt(root = ROOT) {
 }
 
 // ---------- check (hygiene) ----------
-function check(root = ROOT) {
-  const problems = sync(root, { write: false }).map((p) => `${p} — run \`pnpm agents:sync\``);
+function check(root = ROOT, { tracked } = {}) {
+  const problems = sync(root, { write: false, tracked }).map((p) =>
+    p.includes(NO_SOURCE) ? p : `${p} — run \`pnpm agents:sync\``,
+  );
 
   // AGENTS.md / CLAUDE.md
   const agentsMd = join(root, 'AGENTS.md');
@@ -287,6 +385,11 @@ function check(root = ROOT) {
         }
       }
     }
+    for (const rule of settings.permissions?.allow ?? [])
+      if (WRITES_THROUGH_FLAGS.test(rule))
+        problems.push(
+          `.claude/settings.json allows ${rule}, which also auto-approves writing any file (--output=<file>); drop the rule (read-only git diff/log need none)`,
+        );
   }
 
   // No machine-specific paths or promotional instructions in agent-facing files
@@ -306,14 +409,64 @@ function check(root = ROOT) {
       problems.push(`${f} contains an instruction to append content to every response`);
   }
 
-  // Kit manifest points at real files
+  // Kit manifest points at real files, and kit-owned content stays stack-neutral
   const kitPath = join(root, '.agents', 'kit.json');
   if (existsSync(kitPath)) {
     const kit = readJson(kitPath);
     for (const f of kit.files ?? [])
       if (!existsSync(join(root, f))) problems.push(`kit.json lists missing file ${f}`);
+    problems.push(...kitLeaks(root, kit));
   }
   return problems;
+}
+
+/**
+ * Kit-owned files and AGENTS.md sections must not mention stack-only files (kit.json
+ * `notYetGeneric`) or the package.json scripts that run them: kit-sync would ship them to repos
+ * where they do not exist.
+ */
+function kitLeaks(root, kit) {
+  const stackOnly = Object.keys(kit.notYetGeneric ?? {});
+  if (stackOnly.length === 0) return [];
+  const pkgPath = join(root, 'package.json');
+  const scripts = existsSync(pkgPath) ? (readJson(pkgPath).scripts ?? {}) : {};
+  const tokens = [
+    ...stackOnly,
+    ...Object.entries(scripts)
+      .filter(([, cmd]) => stackOnly.some((f) => String(cmd).includes(f)))
+      .map(([name]) => `pnpm ${name}`),
+  ];
+  const owned = (kit.files ?? [])
+    .filter((f) => existsSync(join(root, f)))
+    .map((f) => [f, readFileSync(join(root, f), 'utf8')]);
+  for (const [file, names] of Object.entries(kit.sections ?? {})) {
+    if (!existsSync(join(root, file))) continue;
+    const text = readFileSync(join(root, file), 'utf8');
+    for (const name of names) {
+      const m = text.match(new RegExp(`<!-- kit:start:${name} -->([\\s\\S]*?)<!-- kit:end -->`));
+      if (m) owned.push([`${file} (kit:${name})`, m[1]]);
+    }
+  }
+  const problems = [];
+  for (const [where, text] of owned)
+    for (const token of tokens) {
+      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`${escaped}(?![\\w:-])`).test(text))
+        problems.push(
+          `kit-owned ${where} mentions stack-only \`${token}\` (kit.json notYetGeneric); move it to a stack file or section`,
+        );
+    }
+  return problems;
+}
+
+/** check, on what the next commit contains (pre-commit): the index, not the working tree. */
+function checkStaged(root = ROOT) {
+  const snapshot = exportIndex(root);
+  try {
+    return check(snapshot, { tracked: () => true }).map((p) => `staged: ${p}`);
+  } finally {
+    rmSync(snapshot, { recursive: true, force: true });
+  }
 }
 
 // ---------- regen ----------
@@ -386,14 +539,15 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const [mode, ...rest] = process.argv.slice(2);
   switch (mode) {
     case 'sync': {
-      const changed = rest.includes('--stage') ? syncAndStage() : sync();
-      console.log(
-        changed.length ? `agents: synced (${changed.length} updates)` : 'agents: already in sync',
-      );
+      const problems = rest.includes('--stage') ? syncAndStage() : sync();
+      const unresolved = problems.filter((p) => p.includes(NO_SOURCE));
+      const updates = problems.length - unresolved.length;
+      console.log(updates ? `agents: synced (${updates} updates)` : 'agents: already in sync');
+      for (const p of unresolved) console.warn(`! ${p}`);
       break;
     }
     case 'check':
-      report(check(), 'agents: config OK');
+      report(rest.includes('--staged') ? checkStaged() : check(), 'agents: config OK');
       break;
     case 'adopt': {
       const adopted = adopt();
@@ -413,10 +567,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       break;
     default:
       console.error(
-        'usage: node tools/agents.mjs <sync [--stage]|check|adopt|regen [--check]|staged <files...>>',
+        'usage: node tools/agents.mjs <sync [--stage]|check [--staged]|adopt|regen [--check]|staged <files...>>',
       );
       process.exitCode = 1;
   }
 }
 
-export { adopt, check, regen, sync, syncAndStage, isTracked };
+export { adopt, check, checkStaged, regen, sync, syncAndStage, isTracked };

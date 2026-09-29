@@ -29,10 +29,9 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 | Task                                             | Command                                                          |
 | ------------------------------------------------ | ---------------------------------------------------------------- |
 | All checks (definition of done)                  | `pnpm check` (`--all` for every project)                         |
-| Where is the app running?                        | `pnpm ports`                                                     |
 | Regenerate generated files                       | `pnpm regen`                                                     |
 | One target                                       | `pnpm nx run <project>:<target>` (e.g. `pnpm nx run tools:test`) |
-| Only what changed                                | `pnpm nx affected -t lint typecheck test`                        |
+| Only what changed                                | `pnpm nx affected -t lint eslint typecheck test`                 |
 | What exists / depends on what                    | `pnpm nx show projects`, `pnpm nx show project <name> --json`    |
 | Sync agent skills after editing `.agents/skills` | `pnpm agents:sync`                                               |
 
@@ -41,6 +40,12 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 - Never run `nx configure-ai-agents` (it rewrites agent config; humans run it deliberately).
 
 <!-- kit:end -->
+
+<!-- stack:start:commands -->
+
+- **Where is the app running?** `pnpm ports` prints this checkout's URLs, ports and database URLs.
+
+<!-- stack:end -->
 
 <!-- kit:start:navigation -->
 
@@ -76,11 +81,17 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 ## Invariants (enforced by lint, hooks or tests)
 
 - **Generated files are read-only.** They are listed in `.agents/generated.json`; edit the source and run the regen command it names (or `pnpm regen`).
-- **Module boundaries** (`eslint` target): `scope:web` → web/shared only; `scope:server` → server/shared only; `type:util` imports no frameworks.
+- **Module boundaries** (`eslint` target): a project's tags decide what it may import; the stack's rules are below.
 - **Skills**: edit `.agents/skills/<name>/SKILL.md`, then `pnpm agents:sync` (`.claude/skills` holds generated copies).
 - **Secrets**: never read or print `.env*` files; add new variables to `.env.example` and the app's env schema.
 
 <!-- kit:end -->
+
+<!-- stack:start:invariants -->
+
+- Boundary rules (`eslint.config.mjs`): `scope:web` → web/shared only; `scope:server` → server/shared only; `type:util` imports no frameworks.
+
+<!-- stack:end -->
 
 <!-- kit:start:pull-requests -->
 
@@ -98,7 +109,12 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 ## Working style
 
 - Plans and scratch notes go in `.agents/ignore/plans/YYYY-MM-DD-topic.md` (gitignored).
-- Parallel work: each git worktree gets its own ports and database automatically (`pnpm ports`).
 - Anything you verified by hand should become a test.
 
 <!-- kit:end -->
+
+<!-- stack:start:workflow -->
+
+- Parallel work: each git worktree gets its own ports and database automatically (`pnpm ports`).
+
+<!-- stack:end -->

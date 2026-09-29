@@ -1,9 +1,17 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { adopt, check, parseFrontmatter, regen, sync, syncAndStage } from '../agents.mjs';
+import {
+  adopt,
+  check,
+  checkStaged,
+  parseFrontmatter,
+  regen,
+  sync,
+  syncAndStage,
+} from '../agents.mjs';
 import { steps } from '../check.mjs';
 import { collectVersions, mismatches } from '../check-versions.mjs';
 import { commitAll, makeRepo, writeFile } from './helpers.mjs';
@@ -94,37 +102,94 @@ describe('sync --stage (pre-commit)', () => {
     );
   });
 
+  it('stages copies of the STAGED sources only: never of unstaged or untracked skill files', () => {
+    const root = repo();
+    sync(root);
+    commitAll(root);
+    const committed = readFileSync(join(root, '.agents/skills/verify/SKILL.md'), 'utf8');
+    writeFile(root, '.agents/skills/draft/SKILL.md', skill('draft')); // untracked
+    writeFile(root, '.agents/skills/verify/SKILL.md', `${committed}- WIP note\n`); // unstaged
+    const manifest = JSON.parse(readFileSync(join(root, '.agents/generated.json'), 'utf8'));
+    manifest.artifacts.push({ id: 'wip', paths: ['wip/**'], regen: 'true' }); // unstaged
+    writeFile(root, '.agents/generated.json', manifest);
+    writeFile(root, '.agents/kit.json', { files: [] }); // the change being committed
+    git(root, 'add', '.agents/kit.json');
+
+    syncAndStage(root);
+    expect(git(root, 'diff', '--cached', '--name-only')).toBe('.agents/kit.json\n');
+    expect(checkStaged(root)).toEqual([]);
+    // the working tree follows its own sources
+    expect(readFileSync(join(root, '.claude/skills/verify/SKILL.md'), 'utf8')).toContain('WIP');
+    expect(existsSync(join(root, '.claude/skills/draft/SKILL.md'))).toBe(true);
+    expect(readFileSync(join(root, '.claude/settings.json'), 'utf8')).toContain('Edit(/wip/**)');
+    expect(check(root)).toEqual([]);
+  });
+
+  it('removes the copy of a skill whose deletion is staged', () => {
+    const root = repo({ '.agents/skills/demo/SKILL.md': skill('demo') });
+    sync(root);
+    commitAll(root);
+    git(root, 'rm', '-r', '-q', '.agents/skills/demo');
+    syncAndStage(root);
+    expect(git(root, 'status', '--porcelain')).toBe(
+      'D  .agents/skills/demo/SKILL.md\nD  .claude/skills/demo/SKILL.md\n',
+    );
+    expect(checkStaged(root)).toEqual([]);
+  });
+
+  it('checkStaged judges what will be committed, not the working tree', () => {
+    const root = repo();
+    sync(root);
+    commitAll(root);
+    // staged: a source whose copy is not staged along with it
+    writeFile(root, '.agents/skills/verify/SKILL.md', skill('verify', 'Use when checking work.'));
+    git(root, 'add', '.agents/skills');
+    sync(root); // the working tree copy is fine, the staged one is stale
+    expect(check(root)).toEqual([]);
+    expect(checkStaged(root)).toEqual([
+      expect.stringMatching(/^staged: \.claude\/skills\/verify differs/),
+    ]);
+  });
+
   const lefthook = join(REPO, 'node_modules', '.bin', 'lefthook');
+  /** A repo with this repo's pre-commit (lefthook.yml + the tools it runs) and node_modules. */
+  function lefthookRepo() {
+    const root = makeRepo({
+      'AGENTS.md': '# Agents\n',
+      'CLAUDE.md': '@AGENTS.md\n',
+      '.agents/generated.json': {
+        artifacts: [{ id: 'claude-skills', paths: ['.claude/skills/**'], regen: 'true' }],
+      },
+      '.oxfmtrc.json': { singleQuote: true, ignorePatterns: [] },
+      '.oxlintrc.json': { ignorePatterns: [] },
+      '.claude/settings.json': { permissions: { deny: [] } },
+    });
+    for (const f of ['lefthook.yml', 'tools/agents.mjs', 'tools/lib/generated.mjs']) {
+      mkdirSync(dirname(join(root, f)), { recursive: true });
+      copyFileSync(join(REPO, f), join(root, f));
+    }
+    symlinkSync(join(REPO, 'node_modules'), join(root, 'node_modules'), 'dir');
+    writeFile(root, '.gitignore', 'node_modules\n');
+    sync(root);
+    commitAll(root);
+    return root;
+  }
+  function preCommit(root) {
+    const env = { ...process.env };
+    delete env.LEFTHOOK;
+    return spawnSync(lefthook, ['run', 'pre-commit'], { cwd: root, encoding: 'utf8', env });
+  }
+
   it.skipIf(!existsSync(lefthook))(
     'the lefthook pre-commit never commits a skill copy older than its formatted source',
     () => {
-      const root = makeRepo({
-        'AGENTS.md': '# Agents\n',
-        'CLAUDE.md': '@AGENTS.md\n',
-        '.agents/generated.json': {
-          artifacts: [{ id: 'claude-skills', paths: ['.claude/skills/**'], regen: 'true' }],
-        },
-        '.oxfmtrc.json': { singleQuote: true, ignorePatterns: [] },
-        '.oxlintrc.json': { ignorePatterns: [] },
-        '.claude/settings.json': { permissions: { deny: [] } },
-      });
-      for (const f of ['lefthook.yml', 'tools/agents.mjs', 'tools/lib/generated.mjs']) {
-        mkdirSync(dirname(join(root, f)), { recursive: true });
-        copyFileSync(join(REPO, f), join(root, f));
-      }
-      symlinkSync(join(REPO, 'node_modules'), join(root, 'node_modules'), 'dir');
-      writeFile(root, '.gitignore', 'node_modules\n');
-      sync(root);
-      commitAll(root);
-
+      const root = lefthookRepo();
       // An author writes a skill oxfmt will reformat, syncs it, and commits both.
       const unformatted = `${skill('demo').trimEnd()}\n## When\nRight after a heading.\n`;
       writeFile(root, '.agents/skills/demo/SKILL.md', unformatted);
       sync(root);
       git(root, 'add', '-A');
-      const env = { ...process.env };
-      delete env.LEFTHOOK;
-      const res = spawnSync(lefthook, ['run', 'pre-commit'], { cwd: root, encoding: 'utf8', env });
+      const res = preCommit(root);
       expect(res.status, `${res.stdout}${res.stderr}`).toBe(0);
 
       const source = git(root, 'show', ':.agents/skills/demo/SKILL.md');
@@ -134,6 +199,52 @@ describe('sync --stage (pre-commit)', () => {
     },
     30_000,
   );
+
+  it.skipIf(!existsSync(lefthook))(
+    'the lefthook pre-commit commits no copy of an untracked or unstaged skill source',
+    () => {
+      const root = lefthookRepo();
+      writeFile(root, '.agents/skills/demo/SKILL.md', skill('demo'));
+      sync(root);
+      commitAll(root);
+      writeFile(root, '.agents/skills/draft/SKILL.md', skill('draft')); // untracked
+      writeFile(root, '.agents/skills/demo/SKILL.md', `${skill('demo')}- WIP note\n`); // unstaged
+      writeFile(root, '.agents/kit.json', { files: [] });
+      git(root, 'add', '.agents/kit.json');
+      const res = preCommit(root);
+      expect(res.status, `${res.stdout}${res.stderr}`).toBe(0);
+      expect(git(root, 'diff', '--cached', '--name-only')).toBe('.agents/kit.json\n');
+      expect(checkStaged(root)).toEqual([]);
+    },
+    30_000,
+  );
+});
+
+describe('deleting a skill', () => {
+  it('sync removes its copy, and check says to sync', () => {
+    const root = repo({ '.agents/skills/demo/SKILL.md': skill('demo') });
+    sync(root);
+    commitAll(root);
+    rmSync(join(root, '.agents/skills/demo'), { recursive: true });
+    expect(check(root)).toEqual([
+      '.claude/skills/demo is the copy of a deleted skill — run `pnpm agents:sync`',
+    ]);
+    sync(root);
+    expect(existsSync(join(root, '.claude/skills/demo'))).toBe(false);
+    expect(check(root)).toEqual([]);
+  });
+
+  it('keeps a copy a tool wrote (untracked), and check offers adopt or delete, not sync', () => {
+    const root = repo();
+    sync(root);
+    writeFile(root, '.claude/skills/tool-made/SKILL.md', skill('tool-made'));
+    sync(root);
+    expect(existsSync(join(root, '.claude/skills/tool-made/SKILL.md'))).toBe(true);
+    const problems = check(root).join('\n');
+    expect(problems).toContain('adopt');
+    expect(problems).toContain('delete .claude/skills/tool-made');
+    expect(problems).not.toContain('pnpm agents:sync');
+  });
 });
 
 const syncedManifest = (extra = []) => ({
@@ -192,6 +303,62 @@ describe('check', () => {
     expect(problems).toContain('CLAUDE.md line 1 must be exactly `@AGENTS.md`');
     expect(problems).toContain('instruction to append content to every response');
     expect(problems).toContain('machine-specific absolute path');
+  });
+
+  it('flags allow rules that also approve file writes through --output', () => {
+    const root = repo({
+      '.claude/settings.json': {
+        permissions: {
+          allow: ['Bash(git status *)', 'Bash(git diff *)', 'Bash(git log --oneline *)'],
+        },
+      },
+    });
+    sync(root);
+    const problems = check(root).join('\n');
+    expect(problems).toContain('allows Bash(git diff *)');
+    expect(problems).toContain('allows Bash(git log --oneline *)');
+    expect(problems).not.toContain('git status');
+  });
+
+  it('flags kit-owned files and sections that mention stack-only files or their scripts', () => {
+    const agentsMd = [
+      '<!-- kit:start:commands -->',
+      '| Where is the app? | `pnpm where` |',
+      '<!-- kit:end -->',
+      '<!-- stack:start:commands -->',
+      '`pnpm where` and tools/stack-only.mjs are fine here',
+      '<!-- stack:end -->',
+    ].join('\n');
+    const root = repo({
+      'AGENTS.md': agentsMd,
+      'package.json': { scripts: { where: 'node tools/stack-only.mjs --print', ok: 'node x.mjs' } },
+      'tools/stack-only.mjs': '',
+      'tools/kit-tool.mjs':
+        '// see tools/stack-only.mjs\n// `pnpm where:else` and `pnpm ok` are other scripts\n',
+      '.agents/kit.json': {
+        files: ['tools/kit-tool.mjs'],
+        notYetGeneric: { 'tools/stack-only.mjs': 'stack services' },
+        sections: { 'AGENTS.md': ['commands'] },
+      },
+    });
+    sync(root);
+    expect(check(root).filter((p) => p.startsWith('kit-owned'))).toEqual([
+      expect.stringMatching(
+        /^kit-owned tools\/kit-tool\.mjs mentions stack-only `tools\/stack-only\.mjs`/,
+      ),
+      expect.stringMatching(
+        /^kit-owned AGENTS\.md \(kit:commands\) mentions stack-only `pnpm where`/,
+      ),
+    ]);
+  });
+
+  it('keeps the "only what changed" command in AGENTS.md in step with pnpm check', () => {
+    const [nx] = steps(['affected']);
+    const targets = nx.command
+      .slice(nx.command.indexOf('-t') + 1)
+      .filter((a) => !a.startsWith('--'));
+    const agentsMd = readFileSync(join(REPO, 'AGENTS.md'), 'utf8');
+    expect(agentsMd).toContain(`\`pnpm nx affected -t ${targets.join(' ')}\``);
   });
 
   it('flags a skill whose frontmatter name does not match its folder', () => {

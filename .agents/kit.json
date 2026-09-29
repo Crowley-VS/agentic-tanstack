@@ -8,6 +8,7 @@
     "tools/agent-hooks/guard-paths.mjs",
     "tools/agent-hooks/format.mjs",
     "tools/test/helpers.mjs",
+    "tools/test/helpers.test.mjs",
     "tools/test/generated.test.mjs",
     "tools/test/hooks.test.mjs",
     "tools/test/agents.test.mjs",
@@ -16,6 +17,7 @@
     "tools/pr-review.mjs",
     "tools/test/pr-review.test.mjs",
     ".claude/workflows/review-loop.js",
+    "tools/test/review-loop.test.mjs",
     ".agents/skills/review-loop/SKILL.md"
   ],
   "notYetGeneric": {

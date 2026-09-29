@@ -16,6 +16,7 @@
           "default",
           "^production",
           "{workspaceRoot}/.claude/workflows/**/*",
+          "{workspaceRoot}/AGENTS.md",
           "{workspaceRoot}/eslint.config.mjs",
           "{workspaceRoot}/lefthook.yml"
         ]
