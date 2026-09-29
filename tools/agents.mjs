@@ -86,7 +86,7 @@ export function parseFrontmatter(text) {
 }
 
 // ---------- desired state (pure) ----------
-/** Everything `sync` would write, as { path: contents } plus skill copy plan. */
+/** Everything `sync` would write, as { path: desired JSON object } plus the skill list. */
 export function desiredState(root = ROOT) {
   const manifest = loadManifest(root);
   const generatedGlobs = manifest.artifacts.flatMap((a) => a.paths);
@@ -99,13 +99,13 @@ export function desiredState(root = ROOT) {
   if (existsSync(oxfmtPath)) {
     const cfg = readJson(oxfmtPath);
     cfg.ignorePatterns = [...new Set([...BASE_IGNORES.oxfmt, ...generatedGlobs])];
-    files[oxfmtPath] = `${JSON.stringify(cfg, null, 2)}\n`;
+    files[oxfmtPath] = cfg;
   }
   const oxlintPath = join(root, '.oxlintrc.json');
   if (existsSync(oxlintPath)) {
     const cfg = readJson(oxlintPath);
     cfg.ignorePatterns = [...new Set([...BASE_IGNORES.oxlint, ...generatedGlobs])];
-    files[oxlintPath] = `${JSON.stringify(cfg, null, 2)}\n`;
+    files[oxlintPath] = cfg;
   }
   const settingsPath = join(root, '.claude', 'settings.json');
   if (existsSync(settingsPath)) {
@@ -118,7 +118,7 @@ export function desiredState(root = ROOT) {
     );
     const handWritten = (cfg.permissions.deny ?? []).filter((r) => !r.startsWith('Edit(/'));
     cfg.permissions.deny = [...handWritten, ...managed];
-    files[settingsPath] = `${JSON.stringify(cfg, null, 2)}\n`;
+    files[settingsPath] = cfg;
   }
 
   const skills = listDirs(join(root, '.agents', 'skills'));
@@ -129,11 +129,27 @@ export function desiredState(root = ROOT) {
 function sync(root = ROOT, { write = true } = {}) {
   const problems = [];
   const { files, skills } = desiredState(root);
-  for (const [path, contents] of Object.entries(files)) {
-    const current = existsSync(path) ? readFileSync(path, 'utf8') : '';
-    if (current !== contents) {
+  const written = [];
+  for (const [path, desired] of Object.entries(files)) {
+    // Compare content, not formatting: oxfmt may lay the JSON out differently.
+    const current = existsSync(path) ? readJson(path) : undefined;
+    if (JSON.stringify(current) !== JSON.stringify(desired)) {
       problems.push(`${relative(root, path)} is out of date`);
-      if (write) writeFileSync(path, contents);
+      if (write) {
+        writeFileSync(path, `${JSON.stringify(desired, null, 2)}\n`);
+        written.push(path);
+      }
+    }
+  }
+  const oxfmt = join(root, 'node_modules', '.bin', 'oxfmt');
+  if (written.length && existsSync(oxfmt)) {
+    try {
+      execFileSync(oxfmt, ['--no-error-on-unmatched-pattern', ...written], {
+        cwd: root,
+        stdio: 'ignore',
+      });
+    } catch {
+      // formatting is cosmetic; the content is already correct
     }
   }
 

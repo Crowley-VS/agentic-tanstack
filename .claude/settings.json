@@ -40,7 +40,8 @@
       "Bash(pnpm agents:nx *)",
       "Bash(pnpm nx configure-ai-agents *)",
       "Bash(pnpm exec nx configure-ai-agents *)",
-      "Bash(nx configure-ai-agents *)"
+      "Bash(nx configure-ai-agents *)",
+      "Edit(/.claude/skills/**)"
     ]
   },
   "hooks": {

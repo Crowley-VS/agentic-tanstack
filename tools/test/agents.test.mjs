@@ -61,6 +61,15 @@ describe('sync', () => {
 
     expect(sync(root)).toEqual([]); // idempotent
   });
+
+  it('treats a reformatted but equivalent JSON config as in sync', () => {
+    const root = repo();
+    sync(root);
+    const file = join(root, '.oxfmtrc.json');
+    const compact = JSON.stringify(JSON.parse(readFileSync(file, 'utf8')));
+    writeFile(root, '.oxfmtrc.json', compact); // e.g. what a formatter might produce
+    expect(sync(root, { write: false })).toEqual([]);
+  });
 });
 
 describe('check', () => {
