@@ -1,0 +1,12 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "$comment": "Template-only project: lints, typechecks and tests the bootstrap script. Not a pnpm package (it has no dependencies); bootstrap deletes this whole directory.",
+  "name": "scripts",
+  "tags": ["scope:tooling", "type:tooling"],
+  "targets": {
+    "test": {
+      "$comment": "bootstrap rewrites the whole repository, so any file can break it",
+      "inputs": ["default", "{workspaceRoot}/**/*"]
+    }
+  }
+}

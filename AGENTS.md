@@ -1,6 +1,3 @@
-<!-- intent-skills:start -->
-<!-- intent-skills:end -->
-
 # Agent guide
 
 <!-- stack:start:overview -->
@@ -14,26 +11,30 @@ Business logic lives in `packages/core`; apps are thin wrappers around it.
 ## Done means
 
 1. `pnpm check` passes (lint, module boundaries, typecheck, tests, generated-file drift, agent config).
-2. If you changed routes or UI: `pnpm nx e2e web-e2e` passes.
-3. If you changed runtime behavior: you ran the app and verified it (skill: `verify`).
+2. The stack's extra checks below pass.
+3. If you changed runtime behavior: you ran it and verified the behavior yourself.
 
 Never claim "done" without running these. If a check fails, fix the cause; never weaken a test or a rule to pass.
 <!-- kit:end -->
+
+<!-- stack:start:done -->
+
+Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route and UI changes.
+<!-- stack:end -->
 
 <!-- kit:start:commands -->
 
 ## Commands
 
-| Task                                             | Command                                                                                  |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| All checks (definition of done)                  | `pnpm check` (`--all` for every project)                                                 |
-| Where is the app running?                        | `pnpm ports`                                                                             |
-| Run the app                                      | `pnpm dev` (start it in the background; check `pnpm ports` first — reuse a running copy) |
-| Regenerate generated files                       | `pnpm regen`                                                                             |
-| One target                                       | `pnpm nx run <project>:<target>` (e.g. `pnpm nx run api:test`)                           |
-| Only what changed                                | `pnpm nx affected -t lint typecheck test`                                                |
-| What exists / depends on what                    | `pnpm nx show projects`, `pnpm nx show project <name> --json`                            |
-| Sync agent skills after editing `.agents/skills` | `pnpm agents:sync`                                                                       |
+| Task                                             | Command                                                          |
+| ------------------------------------------------ | ---------------------------------------------------------------- |
+| All checks (definition of done)                  | `pnpm check` (`--all` for every project)                         |
+| Where is the app running?                        | `pnpm ports`                                                     |
+| Regenerate generated files                       | `pnpm regen`                                                     |
+| One target                                       | `pnpm nx run <project>:<target>` (e.g. `pnpm nx run tools:test`) |
+| Only what changed                                | `pnpm nx affected -t lint typecheck test`                        |
+| What exists / depends on what                    | `pnpm nx show projects`, `pnpm nx show project <name> --json`    |
+| Sync agent skills after editing `.agents/skills` | `pnpm agents:sync`                                               |
 
 - **pnpm only**, never npm/yarn/npx. Add dependencies with `pnpm add <pkg> --filter <project>`; versions come from the catalog in `pnpm-workspace.yaml`.
 - Always run tools **through Nx** (`pnpm nx run …`), never `vitest`, `tsc`, `eslint` or `vite` directly — Nx provides the project graph, caching and the correct working directory.
@@ -47,11 +48,17 @@ Never claim "done" without running these. If a check fails, fix the cause; never
 
 - **Structure, ownership, impact** → Nx project graph: `pnpm nx show projects --affected`, `pnpm nx show project <p> --json`.
 - **Definitions, callers, renames** → the TypeScript LSP (go to definition, find references, call hierarchy).
-- **API shape** → `packages/graphql/schema.graphql` (generated, read-only).
-- **Pages and params** → `apps/web/src/routeTree.gen.ts` (generated, read-only).
+- **Generated maps** (read-only) → the stack's list below.
 - **grep** only for strings, config values and comments.
 
 <!-- kit:end -->
+
+<!-- stack:start:navigation -->
+
+- **API shape** → `packages/graphql/schema.graphql` (arrives with the API).
+- **Pages and params** → `apps/web/src/routeTree.gen.ts` (arrives with the web app).
+
+<!-- stack:end -->
 
 <!-- stack:start:map -->
 

@@ -7,37 +7,49 @@ export const meta = {
   phases: [
     {
       title: 'Review',
-      detail: '3 code reviewers (read-only) + 1 hands-on tester in its own worktree',
+      detail: '3 code reviewers + 1 hands-on tester, each in its own worktree at the PR head',
     },
     {
       title: 'Verify',
-      detail: 'each new or reopened finding is independently checked against the code',
+      detail: 'each new or reopened finding is independently checked against the PR head',
     },
     { title: 'Post', detail: 'confirmed findings → one GitHub review with inline comments' },
     {
       title: 'Fix',
-      detail: 'fixer addresses open threads, runs pnpm check, pushes, resolves threads',
+      detail: 'fixer addresses open findings, runs pnpm check, pushes, resolves threads',
     },
     { title: 'Summary', detail: 'final PR comment with the outcome' },
   ],
 };
 
 // ---------------------------------------------------------------------------------------------
-// Loop: review → verify → post → fix, until a round has no new confirmed findings AND no open
-// review-loop threads, or maxRounds is hit. GitHub is the durable record (threads carry stable
-// ids); this script keeps per-run memory so rejected findings are not re-litigated.
+// Loop: review → verify → post → fix, until a round has no new confirmed findings AND nothing is
+// open, or maxRounds is hit. GitHub is the durable record (threads carry stable ids, and only
+// threads started by the `gh` user running the loop count); this script keeps per-run memory so
+// rejected and won't-fix findings are not re-litigated. Every agent that reads or changes code
+// works in its own git worktree checked out at the PR head, never in the main checkout.
 // ---------------------------------------------------------------------------------------------
 const PR = args?.pr;
 if (!PR) throw new Error('review-loop: pass args {pr: <number>}');
 const MAX_ROUNDS = args?.maxRounds ?? 5;
 
-const READ_ONLY = `You are READ-ONLY: do not edit, create or delete tracked files, do not commit, push or post anything.
-You MAY run commands that don't modify tracked files (tests, type checks, scripts against throwaway copies in a temp dir).`;
-const CONTEXT = `Repository: the current working directory (an Nx monorepo; follow AGENTS.md/CLAUDE.md, which you already have).
-Pull request #${PR}. Look at the WHOLE pull request, not just the diff:
+const READ_ONLY = `You are READ-ONLY: do not edit tracked files, do not commit, push or post anything.
+You MAY run commands (tests, type checks, scripts against throwaway copies in a temp dir).`;
+function context(head) {
+  return `Pull request #${PR} (an Nx monorepo; follow AGENTS.md/CLAUDE.md, which you already have).
+The PR head is commit ${head.sha}. Look at the WHOLE pull request, not just the diff:
 - \`gh pr view ${PR} --comments\` (description, stated goals, test plan checkboxes, discussion)
 - \`gh pr checks ${PR}\` (CI status; \`gh run view <id> --log-failed\` for failures)
 - \`gh pr diff ${PR}\` (what changed), then read changed files IN FULL plus the code they call or that calls them.`;
+}
+// Worktree agents start at whatever the main checkout had open; put them on the PR head first.
+function checkout(head) {
+  return `You are in your own throwaway git worktree. FIRST put it on the PR head, so you judge the PR's code
+and not whatever the main checkout has open:
+  git fetch -q origin "pull/${PR}/head" && git checkout -q --detach ${head.sha} && git rev-parse HEAD
+Before running anything (tests, scripts, the app), install without touching the shared git hooks:
+  LEFTHOOK=0 pnpm install --frozen-lockfile`;
+}
 
 const FINDINGS = {
   type: 'object',
@@ -100,87 +112,134 @@ code, confusing names, changes outside the PR's stated scope.`,
   },
 ];
 
-// The hands-on tester works in its own git worktree (isolation: 'worktree'), so it gets its own
-// ports and database (tools/dev-ports.mjs) and never disturbs the main checkout.
+// The hands-on tester's worktree also gets its own ports and database (tools/dev-ports.mjs).
 const TESTER_PROMPT = `You are the HANDS-ON TESTER. Your job is to actually run and try the PR, not just read it.
-You are in your own throwaway git worktree. Setup:
-  git fetch origin && git checkout --detach "origin/$(gh pr view ${PR} --json headRefName -q .headRefName)"
-  pnpm install --frozen-lockfile
-Then:
+After the setup above:
 1. Run \`pnpm check --all\`. Any failure is a finding (include the failing output).
 2. Verify EVERY claim in the PR description and every test-plan item by doing it yourself.
 3. Exercise the changed behavior the way a user or agent would: run changed scripts/CLIs with realistic and edge-case
-   inputs (against throwaway copies in a temp dir when they modify files, e.g. bootstrap); start apps with
-   \`pnpm dev\` (background; find URLs with \`pnpm ports\`) and drive changed pages with the playwright-cli skill
-   (\`pnpm exec playwright cli …\`); check logs and console errors. Try to break it.
+   inputs (against throwaway copies in a temp dir when they modify files, e.g. bootstrap). If the PR changes an app
+   the repo can run (see the package.json scripts and AGENTS.md), start it in the background (\`pnpm ports\` shows
+   this worktree's URLs), open the changed pages in a browser with the browser tools you have, click through them,
+   and check server logs and console errors. Try to break it.
 4. Stop any processes/containers you started before you finish.
 Rules: never commit or push; never post to GitHub; anything you change in this worktree is discarded.
 Report only things you actually observed, each with exact reproduction steps and observed vs expected result.
 For a finding about a file, use that file's path and the most relevant line.`;
 
-/** Title of a posted finding, parsed back out of its comment body ("**major: Title**"). */
-const titleFromBody = (body) =>
-  body?.match(/\*\*(?:blocker|major|minor|nit|issue): (.+?)\*\*/)?.[1];
-
-const keyOf = (f) => `${f.path}::${String(f.title).trim().toLowerCase()}`;
-const seen = new Map(); // key → { status: 'open' | 'resolved' | 'rejected', finding }
-const history = [];
-
-async function openThreads() {
-  const out = await agent(
-    `${CONTEXT}\nRun \`node tools/pr-review.mjs threads --pr ${PR} --all\` and return its JSON array verbatim as {threads}.`,
-    {
-      label: 'threads',
-      phase: 'Fix',
-      effort: 'low',
-      schema: {
+const THREADS = {
+  type: 'object',
+  properties: {
+    threads: {
+      type: 'array',
+      items: {
         type: 'object',
         properties: {
-          threads: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                id: { type: 'string' },
-                resolved: { type: 'boolean' },
-                path: { type: 'string' },
-                line: { type: ['integer', 'null'] },
-                body: { type: 'string' },
-              },
-              required: ['id', 'resolved'],
-            },
-          },
+          id: { type: 'string' },
+          title: { type: ['string', 'null'] },
+          resolved: { type: 'boolean' },
+          wontfix: { type: 'boolean' },
+          path: { type: ['string', 'null'] },
+          line: { type: ['integer', 'null'] },
+          body: { type: 'string' },
         },
-        required: ['threads'],
+        required: ['id', 'resolved'],
       },
     },
+  },
+  required: ['threads'],
+};
+
+const HEAD = {
+  type: 'object',
+  properties: {
+    sha: { type: 'string', pattern: '^[0-9a-f]{40}$', description: 'headRefOid' },
+    branch: { type: 'string', description: 'headRefName' },
+  },
+  required: ['sha', 'branch'],
+};
+
+const keyOf = (f) => `${f.path}::${String(f.title).trim().toLowerCase()}`;
+// key → { status: 'open' | 'resolved' | 'wontfix' | 'rejected', finding }
+const seen = new Map();
+const history = [];
+const STATUS_LABEL = {
+  open: 'open',
+  resolved: 'resolved',
+  wontfix: "won't fix — do not re-report",
+  rejected: 'rejected — do not re-report',
+};
+
+/** Review-loop threads on the PR (started by our `gh` user), resolved ones included. */
+async function listThreads(label, phaseTitle) {
+  const out = await agent(
+    `Run \`node tools/pr-review.mjs threads --pr ${PR} --all\` and return its JSON array verbatim as {threads}.`,
+    { label, phase: phaseTitle, effort: 'low', schema: THREADS },
   );
   return out?.threads ?? [];
 }
 
+/** The PR head right now (it moves when the fixer pushes), fetched so worktrees can check it out. */
+async function prHead(round) {
+  const out = await agent(
+    `Run \`node tools/pr-review.mjs info --pr ${PR}\` and \`git fetch -q origin "pull/${PR}/head"\`.
+Return the PR's headRefOid as {sha} and headRefName as {branch}.`,
+    { label: `head:r${round}`, phase: 'Review', effort: 'low', schema: HEAD },
+  );
+  if (!out?.sha) throw new Error(`review-loop: could not resolve the head commit of PR #${PR}`);
+  return out;
+}
+
+/** Open work = findings this run still has open + unresolved review-loop threads on GitHub. */
+function openFindings(threads) {
+  const byKey = new Map();
+  for (const s of seen.values())
+    if (s.status === 'open') byKey.set(keyOf(s.finding), { ...s.finding });
+  for (const t of threads) {
+    if (t.resolved) continue;
+    const k = t.title ? keyOf({ path: t.path, title: t.title }) : `thread::${t.id}`;
+    byKey.set(k, {
+      ...(byKey.get(k) ?? { path: t.path, line: t.line, title: t.title ?? t.id, body: t.body }),
+      threadId: t.id,
+    });
+  }
+  return [...byKey.values()];
+}
+
+// Threads from an earlier run (or a human re-run) are known findings too: without this, round-1
+// reviewers would re-report them as new and the loop would post duplicate threads.
+for (const t of await listThreads('threads:start', 'Review')) {
+  if (!t.title || !t.path) continue;
+  const finding = { path: t.path, line: t.line ?? undefined, title: t.title, body: t.body };
+  const status = !t.resolved ? 'open' : t.wontfix ? 'wontfix' : 'resolved';
+  seen.set(keyOf(finding), { status, finding });
+}
+
 for (let round = 1; round <= MAX_ROUNDS; round++) {
-  // ---- 1. Review (3 code lenses + hands-on tester, in parallel) ------------------------------
+  // ---- 1. Review (3 code lenses + hands-on tester, in parallel, each at the PR head) ----------
   phase('Review');
+  const head = await prHead(round);
   const known = [...seen.values()]
-    .map((s) => `- [${s.status}] ${s.finding.path}: ${s.finding.title}`)
+    .map((s) => `- [${STATUS_LABEL[s.status]}] ${s.finding.path}: ${s.finding.title}`)
     .join('\n');
   const rules = `Review ONLY what this PR changes (and code it directly breaks).
 Report real problems with concrete evidence; skip formatting/style (oxfmt handles it) and pure preferences.
 At most 8 findings, most severe first. Use a stable, specific title for each finding.
-Findings already reported earlier in this loop (do NOT report them again unless a "resolved" one is still broken
-in the current code — then report it again with the SAME path and title):
+Findings already known in this loop (do NOT report them again unless a "resolved" one is still broken in the current
+code — then report it again with the SAME path and title; never re-report "won't fix" or "rejected" ones):
 ${known || '(none yet)'}`;
   const reviews = await parallel([
     ...LENSES.map(
       (lens) => () =>
-        agent(`${READ_ONLY}\n${CONTEXT}\n\n${lens.prompt}\n\n${rules}`, {
+        agent(`${READ_ONLY}\n${context(head)}\n\n${checkout(head)}\n\n${lens.prompt}\n\n${rules}`, {
           label: `review:${lens.key}:r${round}`,
           phase: 'Review',
           schema: FINDINGS,
+          isolation: 'worktree',
         }),
     ),
     () =>
-      agent(`${CONTEXT}\n\n${TESTER_PROMPT}\n\n${rules}`, {
+      agent(`${context(head)}\n\n${checkout(head)}\n\n${TESTER_PROMPT}\n\n${rules}`, {
         label: `review:tester:r${round}`,
         phase: 'Review',
         schema: FINDINGS,
@@ -200,7 +259,7 @@ ${known || '(none yet)'}`;
     const prior = seen.get(k);
     if (!prior) fresh.push(f);
     else if (prior.status === 'resolved') reopenCandidates.push(f);
-    // open or rejected: ignore
+    // open, wontfix or rejected: ignore
   }
   log(
     `round ${round}: ${raw.length} raw, ${fresh.length} new, ${reopenCandidates.length} possibly not fixed`,
@@ -209,7 +268,7 @@ ${known || '(none yet)'}`;
   phase('Verify');
   const verify = (f, kind) =>
     agent(
-      `${READ_ONLY}\n${CONTEXT}\n\nYou are a skeptical verifier. Check this ${kind === 'reopen' ? 'claim that a previously fixed issue is STILL present' : 'review finding'} against the CURRENT code on the PR branch.
+      `${READ_ONLY}\n${context(head)}\n\n${checkout(head)}\n\nYou are a skeptical verifier. Check this ${kind === 'reopen' ? 'claim that a previously fixed issue is STILL present' : 'review finding'} against the code at the PR head.
 Mark valid=true ONLY if you can confirm it with concrete evidence (file:line, a reproduction you ran, or an exact trace).
 For findings from hands-on testing, try the reproduction steps yourself (on throwaway copies if they modify files).
 If it is speculative, already handled, out of the PR's scope, or pure style, mark valid=false.
@@ -221,6 +280,7 @@ ${JSON.stringify(f, null, 2)}`,
         label: `verify:${kind}:${f.path}:${f.title}`.slice(0, 80),
         phase: 'Verify',
         schema: VERDICT,
+        isolation: 'worktree',
       },
     ).then((v) => ({ f, v }));
 
@@ -249,7 +309,7 @@ ${JSON.stringify(f, null, 2)}`,
       ? `\nAlso, these previously resolved findings are STILL present — include them in the same post (same path/title, body prefixed with "Still present: " and the reason):\n${JSON.stringify(reopened, null, 2)}`
       : '';
     await agent(
-      `${CONTEXT}\nPost these review findings to the PR by piping the JSON array to:
+      `Post these review findings to pull request #${PR} by piping the JSON array to:
 \`node tools/pr-review.mjs post --pr ${PR} --round ${round}\` (use a heredoc: <<'JSON' ... JSON).
 Do not change the findings' wording. Report the command output.
 FINDINGS:
@@ -261,22 +321,8 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
     seen.set(keyOf(f), { status: 'open', finding: f });
 
   // ---- 4. Stop condition ---------------------------------------------------------------------
-  // Open work = findings this run still has open + unresolved review-loop threads on GitHub
-  // (threads can pre-date this run). Body-level findings have no thread, so memory matters.
-  const threads = await openThreads();
-  const openThreadList = threads.filter((t) => !t.resolved);
-  const openByKey = new Map();
-  for (const s of seen.values())
-    if (s.status === 'open') openByKey.set(keyOf(s.finding), { ...s.finding });
-  for (const t of openThreadList) {
-    const title = titleFromBody(t.body);
-    const k = title ? keyOf({ path: t.path, title }) : `thread::${t.id}`;
-    openByKey.set(k, {
-      ...(openByKey.get(k) ?? { path: t.path, line: t.line, title, body: t.body }),
-      threadId: t.id,
-    });
-  }
-  const open = [...openByKey.values()];
+  // Body-level findings have no thread, so the run's memory counts as much as GitHub does.
+  const open = openFindings(await listThreads(`threads:r${round}`, 'Post'));
   history.push({
     round,
     raw: raw.length,
@@ -285,32 +331,34 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
     open: open.length,
   });
   log(
-    `round ${round}: posted ${confirmedNew.length}, reopened ${reopened.length}, open threads ${open.length}`,
+    `round ${round}: posted ${confirmedNew.length}, reopened ${reopened.length}, open ${open.length}`,
   );
   if (confirmedNew.length === 0 && reopened.length === 0 && open.length === 0) break;
   if (round === MAX_ROUNDS) {
-    log(`stopping after ${MAX_ROUNDS} rounds with ${open.length} open thread(s)`);
+    log(`stopping after ${MAX_ROUNDS} rounds with ${open.length} open finding(s)`);
+    history.push({ round, stoppedBy: `${MAX_ROUNDS} rounds reached with findings open` });
     break;
   }
 
   // ---- 5. Fix --------------------------------------------------------------------------------
   phase('Fix');
   const fix = await agent(
-    `${CONTEXT}\n\nYou are the FIXER for review-loop round ${round}. Open findings (JSON; "threadId" = has a GitHub review thread):
+    `${context(head)}\n\n${checkout(head)}\n\nYou are the FIXER for review-loop round ${round}. Open findings (JSON; "threadId" = has a GitHub review thread):
 ${JSON.stringify(open, null, 2)}
 
-1. Make sure you are on the PR branch and up to date: \`gh pr view ${PR} --json headRefName\`, then \`git switch <branch>\` and \`git pull --ff-only\`.
-2. Address EVERY open finding. Prefer a real fix. Only if a finding is wrong or out of scope, mark it "wontfix" with a specific, evidence-based note.
+1. Address EVERY open finding. Prefer a real fix. Only if a finding is wrong or out of scope, mark it "wontfix" with a specific, evidence-based note.
    Follow AGENTS.md (never hand-edit generated files; regenerate instead; add or adjust tests for behavior you change).
-3. Run \`pnpm check\` until it passes. Never weaken a test or rule to make it pass.
-4. Commit (conventional commit message listing the finding ids, ending with the repo's Co-Authored-By line if the repo uses one) and \`git push\`.
-5. Resolve the threads: pipe [{"id","status":"fixed"|"wontfix","note"}] for findings WITH a threadId to
+2. Run \`pnpm check\` until it passes. Never weaken a test or rule to make it pass.
+3. Commit (conventional commit message listing the finding ids, ending with the repo's Co-Authored-By line if the repo uses one)
+   and push to the PR branch: \`git push origin HEAD:refs/heads/${head.branch}\`.
+4. Resolve the threads: pipe [{"id","status":"fixed"|"wontfix","note"}] for findings WITH a threadId to
    \`node tools/pr-review.mjs resolve --pr ${PR} --commit <sha>\` (get each thread's review-loop "id" from
    \`node tools/pr-review.mjs threads --pr ${PR}\`). Findings without a thread need no GitHub call.
 Return one resolution per finding (path + title exactly as given).`,
     {
       label: `fix:r${round}`,
       phase: 'Fix',
+      isolation: 'worktree',
       schema: {
         type: 'object',
         properties: {
@@ -342,14 +390,18 @@ Return one resolution per finding (path + title exactly as given).`,
   for (const r of fix.resolutions ?? []) {
     if (r.status === 'not-done') continue;
     const k = keyOf(r);
-    seen.set(k, { status: 'resolved', finding: seen.get(k)?.finding ?? r });
+    seen.set(k, {
+      status: r.status === 'wontfix' ? 'wontfix' : 'resolved',
+      finding: seen.get(k)?.finding ?? r,
+    });
   }
 }
 
 // ---- Summary ---------------------------------------------------------------------------------
 phase('Summary');
-const finalThreads = await openThreads();
-const stillOpen = finalThreads.filter((t) => !t.resolved);
+const stillOpen = openFindings(await listThreads('threads:final', 'Summary'));
+const stopped = history.filter((h) => h.stoppedBy).map((h) => h.stoppedBy);
+const wontfix = [...seen.values()].filter((s) => s.status === 'wontfix').map((s) => s.finding);
 const table = history
   .map((h) =>
     h.stoppedBy
@@ -357,20 +409,30 @@ const table = history
       : `| ${h.round} | ${h.raw} | ${h.posted} | ${h.reopened} | ${h.open} |`,
   )
   .join('\n');
-const verdict =
-  stillOpen.length === 0
-    ? '✅ **Review loop complete** — no open or new issues.'
-    : `⚠️ **Review loop stopped with ${stillOpen.length} open thread(s)** — needs a human look.`;
+const clean = stillOpen.length === 0 && stopped.length === 0;
+const verdict = clean
+  ? '✅ **Review loop complete** — no open or new issues.'
+  : `⚠️ **Review loop stopped with ${stillOpen.length} open finding(s)**${stopped.length ? ` (${stopped.join('; ')})` : ''} — needs a human look.`;
+const list = (title, items) =>
+  items.length
+    ? `\n\n**${title}:**\n${items.map((f) => `- \`${f.path}\`: ${f.title}`).join('\n')}`
+    : '';
 await agent(
-  `${CONTEXT}\nPost this markdown as a PR comment by piping it to \`node tools/pr-review.mjs comment --pr ${PR}\` (heredoc). Post it verbatim.
+  `Post this markdown as a comment on pull request #${PR} by piping it to \`node tools/pr-review.mjs comment --pr ${PR}\` (heredoc). Post it verbatim.
 
-${verdict}
+${verdict}${list('Open', stillOpen)}${list("Won't fix", wontfix)}
 
-| Round | Raw findings | Posted | Reopened | Open threads after round |
+| Round | Raw findings | Posted | Reopened | Open after round |
 | --- | --- | --- | --- | --- |
 ${table}
 
 <sub>Posted by the review-loop workflow (\`.claude/workflows/review-loop.js\`).</sub>`,
   { label: 'summary', phase: 'Summary', effort: 'low' },
 );
-return { pr: PR, rounds: history, open: stillOpen.map((t) => t.id) };
+return {
+  pr: PR,
+  rounds: history,
+  complete: clean,
+  open: stillOpen.map((f) => f.threadId ?? `${f.path}: ${f.title}`),
+  wontfix: wontfix.map((f) => `${f.path}: ${f.title}`),
+};

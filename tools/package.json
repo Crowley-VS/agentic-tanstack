@@ -9,6 +9,17 @@
     "tags": [
       "scope:tooling",
       "type:tooling"
-    ]
+    ],
+    "targets": {
+      "test": {
+        "inputs": [
+          "default",
+          "^production",
+          "{workspaceRoot}/.claude/workflows/**/*",
+          "{workspaceRoot}/eslint.config.mjs",
+          "{workspaceRoot}/lefthook.yml"
+        ]
+      }
+    }
   }
 }

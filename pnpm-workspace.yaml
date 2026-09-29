@@ -16,7 +16,7 @@ allowBuilds:
   nx: true
 
 # One version per dependency across the workspace. Pinned exactly where
-# compatibility is known to be tight (see docs/decisions/0002-version-matrix.md).
+# compatibility is known to be tight (Nx plugins, TypeScript, Vitest).
 catalog:
   '@nx/eslint': 23.2.1
   '@nx/eslint-plugin': 23.2.1

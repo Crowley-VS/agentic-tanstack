@@ -1,11 +1,19 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { onTestFinished } from 'vitest';
+
+/** A temp directory that is removed when the current test finishes. Call it inside a test. */
+export function tempDir(prefix = 'agentic-tools-') {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
 
 /** Create a throwaway git repo with the given files ({ 'path': 'contents' }). */
 export function makeRepo(files = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'agentic-tools-'));
+  const root = tempDir();
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: root });

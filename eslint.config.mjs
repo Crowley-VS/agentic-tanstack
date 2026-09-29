@@ -26,7 +26,8 @@ export default [
     ],
   },
   {
-    files: ['**/*.ts', '**/*.tsx', '**/*.mts'],
+    // Every JS/TS flavor: boundaries must hold for .mjs/.js code too (all of `tools` is .mjs).
+    files: ['**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}'],
     languageOptions: { parser: tsParser },
     rules: {
       '@nx/enforce-module-boundaries': [

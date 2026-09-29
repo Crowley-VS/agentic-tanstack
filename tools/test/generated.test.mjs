@@ -1,5 +1,8 @@
+import { mkdirSync, symlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { findArtifact, globToRegExp, toRepoPath } from '../lib/generated.mjs';
+import { findArtifact, globToRegExp, realpathDeep, toRepoPath } from '../lib/generated.mjs';
+import { tempDir } from './helpers.mjs';
 
 describe('globToRegExp', () => {
   it.each([
@@ -34,5 +37,20 @@ describe('findArtifact / toRepoPath', () => {
   it('normalizes absolute and relative paths to POSIX repo paths', () => {
     expect(toRepoPath('/repo', '/repo/apps/web/x.ts')).toBe('apps/web/x.ts');
     expect(toRepoPath('/repo', 'x.ts', '/repo/apps/web')).toBe('apps/web/x.ts');
+  });
+
+  it('resolves symlinks on both sides, even for files that do not exist yet', () => {
+    const real = join(tempDir(), 'repo');
+    mkdirSync(join(real, 'apps/web'), { recursive: true });
+    const link = join(tempDir(), 'link');
+    symlinkSync(real, link, 'dir');
+    expect(toRepoPath(realpathDeep(real), join(link, 'apps/web/x.ts'))).toBe('apps/web/x.ts');
+    expect(toRepoPath(link, join(real, 'apps/web/new/dir/x.ts'))).toBe('apps/web/new/dir/x.ts');
+    expect(toRepoPath(realpathDeep(real), 'apps/web/x.ts', link)).toBe('apps/web/x.ts');
+  });
+
+  it('matches case-insensitively when asked (macOS and Windows default)', () => {
+    expect(findArtifact(manifest, 'Apps/Web/src/GQL/x.ts', { ignoreCase: true })?.id).toBe('gql');
+    expect(findArtifact(manifest, 'Apps/Web/src/GQL/x.ts', { ignoreCase: false })).toBeUndefined();
   });
 });

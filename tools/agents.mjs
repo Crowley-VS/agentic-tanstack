@@ -3,10 +3,12 @@
 //
 //   sync     copy .agents/skills/* → .claude/skills/* (byte-identical copies, Windows-safe),
 //            and render generated-file protections from .agents/generated.json into
-//            .oxfmtrc.json, .oxlintrc.json and .claude/settings.json (Edit deny rules)
+//            .oxfmtrc.json, .oxlintrc.json and .claude/settings.json (Edit deny rules);
+//            --stage also `git add`s what it wrote (pre-commit, after formatting)
 //   check    fail if sync is stale, or on agent-config hygiene problems (CI + pre-commit)
 //   adopt    move skills that tools wrote directly into .claude/skills into .agents/skills
-//   regen    run every regen command from .agents/generated.json; --check = fail on drift
+//   regen    run every regen command from .agents/generated.json; --check = fail when regen
+//            changes ANY file (generated outputs and the configs sync renders)
 //   staged   pre-commit: format + lint the given staged files, skipping generated ones
 import { execFileSync, execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -21,7 +23,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findArtifact, isTracked, loadManifest, toRepoPath } from './lib/generated.mjs';
 
@@ -128,9 +130,26 @@ export function desiredState(root = ROOT) {
 
 // ---------- sync ----------
 function sync(root = ROOT, { write = true } = {}) {
+  return syncWithWrites(root, { write }).problems;
+}
+
+/**
+ * Pre-commit: sync, then stage what sync wrote. Runs AFTER the formatter (lefthook `piped`), so
+ * a skill source that oxfmt just reformatted is copied as committed, not as it was before.
+ */
+function syncAndStage(root = ROOT) {
+  const { problems, written } = syncWithWrites(root);
+  if (written.length)
+    execFileSync('git', ['add', '-A', '--', ...written], { cwd: root, stdio: 'inherit' });
+  return problems;
+}
+
+/** sync, also returning the repo-relative paths it wrote (files and skill directories). */
+function syncWithWrites(root, { write = true } = {}) {
   const problems = [];
   const { files, skills } = desiredState(root);
   const written = [];
+  const writtenPaths = [];
   for (const [path, desired] of Object.entries(files)) {
     // Compare content, not formatting: oxfmt may lay the JSON out differently.
     const current = existsSync(path) ? readJson(path) : undefined;
@@ -139,6 +158,7 @@ function sync(root = ROOT, { write = true } = {}) {
       if (write) {
         writeFileSync(path, `${JSON.stringify(desired, null, 2)}\n`);
         written.push(path);
+        writtenPaths.push(relative(root, path).split(sep).join('/'));
       }
     }
   }
@@ -175,6 +195,7 @@ function sync(root = ROOT, { write = true } = {}) {
         rmSync(to, { recursive: true, force: true });
         mkdirSync(dirname(to), { recursive: true });
         cpSync(from, to, { recursive: true });
+        writtenPaths.push(`.claude/skills/${name}`);
       }
     }
   }
@@ -185,7 +206,7 @@ function sync(root = ROOT, { write = true } = {}) {
       );
     }
   }
-  return problems;
+  return { problems, written: writtenPaths };
 }
 
 // ---------- adopt ----------
@@ -296,35 +317,35 @@ function check(root = ROOT) {
 }
 
 // ---------- regen ----------
-/** Snapshot { path: sha256 } of every file (tracked or untracked, not ignored) matching the manifest. */
-function snapshotGenerated(root, artifacts) {
+/**
+ * Snapshot { path: sha256 } of every git-visible file (tracked or untracked, not ignored). The
+ * whole tree, not just manifest paths: regen commands also rewrite derived files the manifest
+ * does not list (`pnpm agents:sync` renders .claude/settings.json, .oxfmtrc.json, .oxlintrc.json).
+ */
+function snapshotTree(root) {
   const res = execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], {
     cwd: root,
     encoding: 'utf8',
   });
   const snap = new Map();
-  for (const f of res.split('\0').filter(Boolean)) {
-    if (!findArtifact({ artifacts }, f) || !existsSync(join(root, f))) continue;
-    snap.set(
-      f,
-      createHash('sha256')
-        .update(readFileSync(join(root, f)))
-        .digest('hex'),
-    );
+  for (const f of new Set(res.split('\0').filter(Boolean))) {
+    const full = join(root, f);
+    if (!existsSync(full) || !lstatSync(full).isFile()) continue;
+    snap.set(f, createHash('sha256').update(readFileSync(full)).digest('hex'));
   }
   return snap;
 }
 
-/** Run every regen command; with checkOnly, report files that regen changed (= drift). */
+/** Run every regen command; with checkOnly, report every file that regen changed (= drift). */
 function regen(root = ROOT, { checkOnly = false } = {}) {
   const { artifacts } = loadManifest(root);
-  const before = checkOnly ? snapshotGenerated(root, artifacts) : undefined;
+  const before = checkOnly ? snapshotTree(root) : undefined;
   for (const cmd of new Set(artifacts.map((a) => a.regen))) {
     console.log(`regen: ${cmd}`);
     execSync(cmd, { cwd: root, stdio: 'inherit' });
   }
   if (!before) return [];
-  const after = snapshotGenerated(root, artifacts);
+  const after = snapshotTree(root);
   const problems = [];
   for (const [f, hash] of after)
     if (before.get(f) !== hash)
@@ -365,7 +386,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const [mode, ...rest] = process.argv.slice(2);
   switch (mode) {
     case 'sync': {
-      const changed = sync();
+      const changed = rest.includes('--stage') ? syncAndStage() : sync();
       console.log(
         changed.length ? `agents: synced (${changed.length} updates)` : 'agents: already in sync',
       );
@@ -392,10 +413,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       break;
     default:
       console.error(
-        'usage: node tools/agents.mjs <sync|check|adopt|regen [--check]|staged <files...>>',
+        'usage: node tools/agents.mjs <sync [--stage]|check|adopt|regen [--check]|staged <files...>>',
       );
       process.exitCode = 1;
   }
 }
 
-export { adopt, check, regen, sync, isTracked };
+export { adopt, check, regen, sync, syncAndStage, isTracked };

@@ -1,5 +1,23 @@
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { computePorts, pathHash, toEnv } from '../dev-ports.mjs';
+import {
+  assignBlock,
+  computePorts,
+  detectCheckout,
+  pathHash,
+  preferredBlock,
+  toEnv,
+  worktreeBlock,
+} from '../dev-ports.mjs';
+import { commitAll, makeRepo, tempDir } from './helpers.mjs';
+
+const DEV_PORTS = resolve(import.meta.dirname, '../dev-ports.mjs');
+const worktreeNames = Array.from(
+  { length: 60 },
+  (_, i) => `/home/u/app/.claude/worktrees/agent-${i}`,
+);
 
 describe('computePorts', () => {
   it('uses fixed, memorable ports in the primary checkout', () => {
@@ -35,6 +53,81 @@ describe('computePorts', () => {
 
   it('sanitizes odd directory names into a compose-safe slug', () => {
     expect(computePorts({ root: '/w/My App!', primary: true }).composeProject).toBe('my-app');
+  });
+});
+
+describe('worktree port blocks', () => {
+  it('gives every worktree of a repository its own block, even when their hashes collide', () => {
+    const preferred = worktreeNames.map(preferredBlock);
+    expect(new Set(preferred).size).toBeLessThan(preferred.length); // the collisions are real
+    const registry = {};
+    for (const root of worktreeNames) registry[root] = assignBlock(registry, root);
+    const blocks = Object.values(registry);
+    expect(new Set(blocks).size).toBe(worktreeNames.length);
+    const ports = worktreeNames.map(
+      (root) => computePorts({ root, primary: false, block: registry[root] }).ports.web,
+    );
+    expect(new Set(ports).size).toBe(worktreeNames.length);
+    expect(Math.min(...ports)).toBeGreaterThanOrEqual(20000);
+    expect(Math.max(...ports) + 11).toBeLessThan(60000);
+  });
+
+  it('keeps a recorded block and probes past a taken preferred one', () => {
+    const root = '/w/.claude/worktrees/x';
+    const taken = preferredBlock(root);
+    expect(assignBlock({ '/other': taken }, root)).toBe((taken + 1) % 400);
+    expect(assignBlock({ [root]: 7 }, root)).toBe(7);
+  });
+
+  it('records blocks in the registry and frees those of removed worktrees', () => {
+    const commonDir = tempDir();
+    const a = join(tempDir(), 'a');
+    const b = join(tempDir(), 'b');
+    mkdirSync(a);
+    mkdirSync(b);
+    const blockA = worktreeBlock(a, commonDir);
+    const blockB = worktreeBlock(b, commonDir);
+    expect(blockA).not.toBe(blockB);
+    expect(worktreeBlock(a, commonDir)).toBe(blockA); // stable
+    const registry = JSON.parse(readFileSync(join(commonDir, 'dev-ports.json'), 'utf8'));
+    expect(registry).toEqual({ [a]: blockA, [b]: blockB });
+    // `a` is gone: its entry is dropped the next time anyone looks
+    worktreeBlock(b, commonDir, { exists: (p) => p !== a });
+    expect(JSON.parse(readFileSync(join(commonDir, 'dev-ports.json'), 'utf8'))).toEqual({
+      [b]: blockB,
+    });
+    expect(existsSync(join(commonDir, 'dev-ports.json.lock'))).toBe(false);
+  });
+
+  it('falls back to the preferred block when the registry cannot be written', () => {
+    expect(worktreeBlock('/w/x', join(tempDir(), 'missing', 'dir'))).toBeUndefined();
+  });
+});
+
+describe('detectCheckout', () => {
+  it('tells the primary checkout from a linked worktree, from any subdirectory', () => {
+    const root = realpathSync(makeRepo({ 'sub/dir/file.txt': 'x' }));
+    commitAll(root);
+    const wt = join(realpathSync(tempDir()), 'wt');
+    execFileSync('git', ['worktree', 'add', '-q', '--detach', wt], { cwd: root });
+
+    const primary = detectCheckout(join(root, 'sub/dir'));
+    expect(primary).toMatchObject({ root, primary: true });
+    const linked = detectCheckout(join(wt, 'sub'));
+    expect(linked).toMatchObject({ root: wt, primary: false });
+    expect(linked.commonDir).toBe(primary.commonDir);
+  });
+
+  it('gives two real worktrees distinct ports through the CLI', () => {
+    const root = makeRepo({ 'a.txt': 'x' });
+    commitAll(root);
+    const ports = ['one', 'two'].map((name) => {
+      const wt = join(tempDir(), name);
+      execFileSync('git', ['worktree', 'add', '-q', '--detach', wt], { cwd: root });
+      return JSON.parse(execFileSync(process.execPath, [DEV_PORTS, '--json'], { cwd: wt })).ports;
+    });
+    expect(ports[0].web).not.toBe(ports[1].web);
+    expect(ports[0].web).toBeGreaterThanOrEqual(20000);
   });
 });
 

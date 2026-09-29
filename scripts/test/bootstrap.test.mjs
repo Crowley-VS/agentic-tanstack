@@ -1,0 +1,121 @@
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative, resolve } from 'node:path';
+import { describe, expect, it, onTestFinished } from 'vitest';
+
+const REPO = resolve(import.meta.dirname, '../..');
+const PROJECT = ['--yes', '--scope', '@smoke', '--name', 'smoke-app'];
+
+/** A tarball-style copy of the working tree: every git-visible file, no .git (like giget). */
+function archiveCopy() {
+  const dest = mkdtempSync(join(tmpdir(), 'bootstrap-copy-'));
+  onTestFinished(() => rmSync(dest, { recursive: true, force: true }));
+  const files = execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], {
+    cwd: REPO,
+    encoding: 'utf8',
+  });
+  for (const f of files.split('\0').filter(Boolean)) {
+    if (!existsSync(join(REPO, f))) continue; // deleted in the working tree
+    mkdirSync(dirname(join(dest, f)), { recursive: true });
+    cpSync(join(REPO, f), join(dest, f));
+  }
+  return dest;
+}
+
+/** Run bootstrap in `cwd` with a non-terminal stdin (like an agent or CI). */
+function bootstrap(cwd, args) {
+  const res = spawnSync(process.execPath, ['scripts/bootstrap.mjs', ...args], {
+    cwd,
+    encoding: 'utf8',
+    input: '',
+  });
+  return { code: res.status, out: `${res.stdout}${res.stderr}` };
+}
+
+/** { relative path: sha256 } of every file outside .git. */
+function snapshot(root, dir = root, out = {}) {
+  for (const d of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, d.name);
+    if (d.isDirectory()) {
+      if (d.name !== '.git') snapshot(root, p, out);
+    } else {
+      out[relative(root, p)] = createHash('sha256').update(readFileSync(p)).digest('hex');
+    }
+  }
+  return out;
+}
+
+const renamedCount = (out) => Number(out.match(/→ smoke-app \((\d+) files\)/)?.[1]);
+
+describe('bootstrap', () => {
+  it('turns a tarball copy into a project with no template leftovers', () => {
+    const copy = archiveCopy();
+    const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit']);
+    expect(res.code, res.out).toBe(0);
+
+    const leftovers = Object.keys(snapshot(copy)).filter((f) => {
+      const text = readFileSync(join(copy, f), 'utf8');
+      return text.includes('@acme/') || text.includes('acme-app');
+    });
+    expect(leftovers).toEqual([]);
+    for (const gone of ['scripts', 'template.json', '.github/workflows/template-smoke.yml'])
+      expect(existsSync(join(copy, gone)), gone).toBe(false);
+
+    expect(readFileSync(join(copy, 'README.md'), 'utf8')).toMatch(/^# smoke-app\n/);
+    const tsconfig = JSON.parse(readFileSync(join(copy, 'tsconfig.json'), 'utf8'));
+    expect(tsconfig.references.map((r) => r.path)).not.toContain('./scripts');
+    const pkg = JSON.parse(readFileSync(join(copy, 'package.json'), 'utf8'));
+    expect(pkg.name).toBe('@smoke/source');
+    expect(pkg.template.repo).toBeTruthy();
+  });
+
+  it('only suggests next steps that exist', () => {
+    const copy = archiveCopy();
+    const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit']);
+    expect(res.code, res.out).toBe(0);
+    const steps = res.out
+      .slice(res.out.indexOf('Next steps:'))
+      .split('\n')
+      .slice(1)
+      .map((l) => l.trim().split(/\s+/))
+      .filter(([first]) => first);
+    expect(steps.length).toBeGreaterThan(0);
+    const scripts = JSON.parse(readFileSync(join(copy, 'package.json'), 'utf8')).scripts;
+    for (const [first, second = ''] of steps) {
+      if (first === 'pnpm') expect(scripts, `pnpm ${second}`).toHaveProperty(second);
+      else if (first === 'node') expect(existsSync(join(copy, second)), second).toBe(true);
+      else expect(existsSync(join(copy, first)), first).toBe(true); // a file or directory
+    }
+  });
+
+  it('--dry-run on a tarball copy previews the files a real run renames, and writes nothing', () => {
+    const dry = archiveCopy();
+    const before = snapshot(dry);
+    const preview = bootstrap(dry, [...PROJECT, '--dry-run']);
+    expect(preview.code, preview.out).toBe(0);
+    expect(snapshot(dry)).toEqual(before);
+    expect(existsSync(join(dry, '.git'))).toBe(false);
+
+    const real = bootstrap(archiveCopy(), [...PROJECT, '--no-install', '--no-commit']);
+    expect(real.code, real.out).toBe(0);
+    expect(renamedCount(real.out)).toBeGreaterThan(0);
+    expect(renamedCount(preview.out)).toBe(renamedCount(real.out));
+  });
+
+  it('fails with a readable error instead of prompting when stdin is not a terminal', () => {
+    const res = bootstrap(archiveCopy(), ['--dry-run']);
+    expect(res.code).toBe(1);
+    expect(res.out).toContain('stdin is not a terminal');
+    expect(res.out).not.toContain('unsettled top-level await');
+  });
+});

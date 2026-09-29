@@ -3,7 +3,9 @@
 // running in them) never fight over ports or share a database.
 //
 //   primary checkout  -> fixed, memorable defaults (web 3000, api 4000, db 5432)
-//   linked worktree   -> a block derived from a hash of the worktree path
+//   linked worktree   -> its own block of 100 ports in 20000-59999, recorded in
+//                        <git common dir>/dev-ports.json: the block its path hashes to, or the
+//                        next free one, so no two worktrees of this repository share a block
 //   env overrides     -> WEB_PORT, API_PORT, DB_PORT, WEB_E2E_PORT, API_E2E_PORT, COMPOSE_PROJECT_NAME
 //
 // Usage:
@@ -14,9 +16,12 @@
 //   node tools/dev-ports.mjs --exec -- <cmd>  run cmd with the env injected (existing env wins)
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { basename, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const BLOCKS = 400; // blocks of 100 ports in 20000-59999
+const REGISTRY = 'dev-ports.json';
 const PRIMARY = { web: 3000, api: 4000, db: 5432, webE2e: 3100, apiE2e: 4100 };
 const OFFSETS = { web: 0, api: 1, db: 2, webE2e: 10, apiE2e: 11 };
 const ENV_KEYS = {
@@ -27,7 +32,10 @@ const ENV_KEYS = {
   apiE2e: 'API_E2E_PORT',
 };
 
-/** Detect the checkout root and whether it is the primary checkout (not a linked worktree). */
+/**
+ * Detect the checkout root, whether it is the primary checkout (not a linked worktree), and the
+ * git directory shared by all worktrees (where the port registry lives).
+ */
 export function detectCheckout(cwd = process.cwd()) {
   try {
     const git = (...args) =>
@@ -39,7 +47,7 @@ export function detectCheckout(cwd = process.cwd()) {
     const root = git('rev-parse', '--show-toplevel');
     const gitDir = resolve(cwd, git('rev-parse', '--git-dir'));
     const commonDir = resolve(cwd, git('rev-parse', '--git-common-dir'));
-    return { root, primary: gitDir === commonDir };
+    return { root, primary: gitDir === commonDir, commonDir };
   } catch {
     return { root: resolve(cwd), primary: true };
   }
@@ -50,15 +58,84 @@ export function pathHash(path) {
   return createHash('sha256').update(path).digest('hex').slice(0, 8);
 }
 
-/** Pure: compute ports and names for a checkout. */
-export function computePorts({ root, primary }, env = {}) {
+/** The block a worktree path prefers (used when it is free, and when there is no registry). */
+export function preferredBlock(root) {
+  return Number.parseInt(pathHash(root), 16) % BLOCKS;
+}
+
+/**
+ * Pure: the block for `root` given the registry { worktree path: block } — its recorded block,
+ * else its preferred block, else the next free one after it.
+ */
+export function assignBlock(registry, root) {
+  if (Number.isInteger(registry[root])) return registry[root];
+  const used = new Set(Object.values(registry));
+  const preferred = preferredBlock(root);
+  for (let i = 0; i < BLOCKS; i++) {
+    const block = (preferred + i) % BLOCKS;
+    if (!used.has(block)) return block;
+  }
+  return preferred; // all 400 blocks taken: share one rather than fail
+}
+
+function withLock(lockDir, fn) {
+  const sleep = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      mkdirSync(lockDir); // atomic: fails with EEXIST while another process holds the lock
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST' || attempt > 200) throw err;
+      if (attempt === 120) rmSync(lockDir, { recursive: true, force: true }); // stale (~3 s)
+      Atomics.wait(sleep, 0, 0, 25);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * This worktree's block from the registry in the git common dir, claiming one on first use and
+ * dropping worktrees whose directories are gone. Returns undefined when the registry cannot be
+ * used (e.g. read-only .git); callers then fall back to the preferred block.
+ */
+export function worktreeBlock(root, commonDir, { exists = existsSync } = {}) {
+  const file = join(commonDir, REGISTRY);
+  try {
+    return withLock(`${file}.lock`, () => {
+      let current = {};
+      try {
+        current = JSON.parse(readFileSync(file, 'utf8'));
+      } catch {
+        // missing or corrupt: start over
+      }
+      const registry = Object.fromEntries(
+        Object.entries(current).filter(([path, block]) => Number.isInteger(block) && exists(path)),
+      );
+      const block = assignBlock(registry, root);
+      registry[root] = block;
+      if (JSON.stringify(registry) !== JSON.stringify(current)) {
+        writeFileSync(`${file}.tmp`, `${JSON.stringify(registry, null, 2)}\n`);
+        renameSync(`${file}.tmp`, file);
+      }
+      return block;
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/** Pure: compute ports and names for a checkout (`block`: the worktree's registry block). */
+export function computePorts({ root, primary, block }, env = {}) {
   const hash = pathHash(root);
   let ports;
   if (primary) {
     ports = { ...PRIMARY };
   } else {
-    // 400 blocks of 100 ports in 20000-59999; the block is chosen by the path hash.
-    const base = 20000 + (Number.parseInt(hash, 16) % 400) * 100;
+    const base = 20000 + (Number.isInteger(block) ? block : preferredBlock(root)) * 100;
     ports = Object.fromEntries(Object.entries(OFFSETS).map(([k, off]) => [k, base + off]));
   }
   for (const [key, envKey] of Object.entries(ENV_KEYS)) {
@@ -103,7 +180,12 @@ export function toEnv(info) {
 }
 
 function main(argv) {
-  const info = computePorts(detectCheckout(), process.env);
+  const checkout = detectCheckout();
+  const block =
+    checkout.primary || !checkout.commonDir
+      ? undefined
+      : worktreeBlock(checkout.root, checkout.commonDir);
+  const info = computePorts({ ...checkout, block }, process.env);
   const [flag, ...rest] = argv;
   switch (flag) {
     case '--json':

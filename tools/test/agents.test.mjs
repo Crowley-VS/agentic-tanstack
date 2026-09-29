@@ -1,9 +1,15 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { adopt, check, parseFrontmatter, sync } from '../agents.mjs';
+import { adopt, check, parseFrontmatter, regen, sync, syncAndStage } from '../agents.mjs';
+import { steps } from '../check.mjs';
 import { collectVersions, mismatches } from '../check-versions.mjs';
-import { makeRepo, writeFile } from './helpers.mjs';
+import { commitAll, makeRepo, writeFile } from './helpers.mjs';
+
+const REPO = resolve(import.meta.dirname, '../..');
+const git = (root, ...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
 
 const skill = (name, description = 'Use when testing things.') =>
   `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
@@ -72,6 +78,99 @@ describe('sync', () => {
   });
 });
 
+describe('sync --stage (pre-commit)', () => {
+  it('stages the copies and configs it rewrote', () => {
+    const root = repo();
+    sync(root);
+    commitAll(root);
+    writeFile(root, '.agents/skills/verify/SKILL.md', skill('verify', 'Use when checking work.'));
+    git(root, 'add', '.agents/skills');
+    expect(syncAndStage(root)).toEqual([expect.stringContaining('.claude/skills/verify differs')]);
+    expect(git(root, 'diff', '--cached', '--name-only').split('\n')).toContain(
+      '.claude/skills/verify/SKILL.md',
+    );
+    expect(git(root, 'status', '--porcelain')).toBe(
+      'M  .agents/skills/verify/SKILL.md\nM  .claude/skills/verify/SKILL.md\n',
+    );
+  });
+
+  const lefthook = join(REPO, 'node_modules', '.bin', 'lefthook');
+  it.skipIf(!existsSync(lefthook))(
+    'the lefthook pre-commit never commits a skill copy older than its formatted source',
+    () => {
+      const root = makeRepo({
+        'AGENTS.md': '# Agents\n',
+        'CLAUDE.md': '@AGENTS.md\n',
+        '.agents/generated.json': {
+          artifacts: [{ id: 'claude-skills', paths: ['.claude/skills/**'], regen: 'true' }],
+        },
+        '.oxfmtrc.json': { singleQuote: true, ignorePatterns: [] },
+        '.oxlintrc.json': { ignorePatterns: [] },
+        '.claude/settings.json': { permissions: { deny: [] } },
+      });
+      for (const f of ['lefthook.yml', 'tools/agents.mjs', 'tools/lib/generated.mjs']) {
+        mkdirSync(dirname(join(root, f)), { recursive: true });
+        copyFileSync(join(REPO, f), join(root, f));
+      }
+      symlinkSync(join(REPO, 'node_modules'), join(root, 'node_modules'), 'dir');
+      writeFile(root, '.gitignore', 'node_modules\n');
+      sync(root);
+      commitAll(root);
+
+      // An author writes a skill oxfmt will reformat, syncs it, and commits both.
+      const unformatted = `${skill('demo').trimEnd()}\n## When\nRight after a heading.\n`;
+      writeFile(root, '.agents/skills/demo/SKILL.md', unformatted);
+      sync(root);
+      git(root, 'add', '-A');
+      const env = { ...process.env };
+      delete env.LEFTHOOK;
+      const res = spawnSync(lefthook, ['run', 'pre-commit'], { cwd: root, encoding: 'utf8', env });
+      expect(res.status, `${res.stdout}${res.stderr}`).toBe(0);
+
+      const source = git(root, 'show', ':.agents/skills/demo/SKILL.md');
+      expect(source).not.toBe(unformatted); // oxfmt did reformat it
+      expect(git(root, 'show', ':.claude/skills/demo/SKILL.md')).toBe(source);
+      expect(git(root, 'status', '--porcelain')).not.toMatch(/^.[MD]/m); // nothing left unstaged
+    },
+    30_000,
+  );
+});
+
+const syncedManifest = (extra = []) => ({
+  artifacts: [{ id: 'skills', paths: ['.claude/skills/**'], regen: 'node sync.mjs' }, ...extra],
+});
+
+describe('pnpm check gates', () => {
+  it('report a manifest-derived config that sync would change, in check.mjs order', () => {
+    const syncScript = `import { sync } from ${JSON.stringify(pathToFileURL(join(REPO, 'tools/agents.mjs')).href)};\nsync(process.cwd());\n`;
+    const root = repo({ 'sync.mjs': syncScript, '.agents/generated.json': syncedManifest() });
+    sync(root);
+    commitAll(root);
+    // A new generated artifact, committed without running sync: the deny rule and the
+    // oxfmt/oxlint ignores for it are missing.
+    writeFile(
+      root,
+      '.agents/generated.json',
+      syncedManifest([{ id: 'gql', paths: ['apps/web/src/gql/**'], regen: 'node sync.mjs' }]),
+    );
+    commitAll(root);
+
+    const gates = {
+      'agent config': () => check(root),
+      'generated files': () => regen(root, { checkOnly: true }),
+    };
+    const order = steps([])
+      .map((s) => s.name)
+      .filter((name) => name in gates);
+    expect(order).toEqual(['agent config', 'generated files']);
+    const reported = Object.fromEntries(order.map((name) => [name, gates[name]().join('\n')]));
+    for (const file of ['.oxfmtrc.json', '.oxlintrc.json', '.claude/settings.json']) {
+      expect(reported['agent config']).toContain(`${file} is out of date`);
+      expect(reported['generated files']).toContain(`${file} was out of date`);
+    }
+  });
+});
+
 describe('check', () => {
   it('passes on a synced, healthy repo', () => {
     const root = repo();
@@ -135,8 +234,7 @@ describe('check-versions', () => {
 });
 
 describe('regen --check', () => {
-  it('passes when regen is a no-op (even for uncommitted outputs) and reports real drift', async () => {
-    const { regen } = await import('../agents.mjs');
+  it('passes when regen is a no-op (even for uncommitted outputs) and reports real drift', () => {
     const root = makeRepo({
       '.agents/generated.json': {
         artifacts: [{ id: 'out', paths: ['gen/**'], regen: 'node make.mjs' }],

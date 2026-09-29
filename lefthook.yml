@@ -1,11 +1,19 @@
-# Pre-commit: format + lint staged files (generated files are skipped via .agents/generated.json).
+# Pre-commit, in this order (`piped`: lefthook otherwise runs commands alphabetically):
+#   1. format + lint staged files (generated files are skipped via .agents/generated.json)
+#   2. re-sync agent config from the (now formatted) sources and stage what changed, so a
+#      reformatted .agents/skills/*/SKILL.md never goes in with a stale .claude/skills copy
+#   3. check agent-config hygiene
 # Heavier checks (typecheck, tests, boundaries) run in `pnpm check` and CI.
 pre-commit:
-  commands:
-    format-and-lint:
+  piped: true
+  jobs:
+    - name: format-and-lint
       glob: '*.{ts,tsx,mts,cts,js,jsx,mjs,cjs,json,jsonc,css,md,yml,yaml,graphql}'
       run: node tools/agents.mjs staged {staged_files}
       stage_fixed: true
-    agent-config:
+    - name: agent-sync
+      glob: '{.agents/**,.claude/settings.json,.oxfmtrc.json,.oxlintrc.json}'
+      run: node tools/agents.mjs sync --stage
+    - name: agent-config
       glob: '{.agents/**,.claude/**,AGENTS.md,CLAUDE.md}'
       run: node tools/agents.mjs check

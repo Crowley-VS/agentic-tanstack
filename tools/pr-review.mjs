@@ -8,13 +8,17 @@
 //        → one PR review (event COMMENT) with inline comments on diff lines; findings that
 //          can't be anchored to a changed line go into the review body. Prints posted ids.
 //   node tools/pr-review.mjs threads --pr <n> [--all]              review-loop threads (JSON)
+//        → [{ id, title, path, line, resolved, wontfix, body, ... }], only threads YOU started
 //   node tools/pr-review.mjs resolve --pr <n> --commit <sha>  < resolutions.json
 //        resolutions: [{ id, status: "fixed" | "wontfix", note }]
-//        → replies on each thread and resolves it.
+//        → replies on every open thread with that id and resolves it.
 //   node tools/pr-review.mjs comment --pr <n>                 < markdown   plain PR comment
 //
-// Every comment carries a hidden marker `<!-- review-loop:id=<id> -->` so later rounds can
-// find, dedupe and resolve their own threads. Posting uses your `gh` login.
+// Every comment ends with a hidden marker `<!-- review-loop:id=<id> -->` so later rounds can
+// find, dedupe and resolve their own threads. Posting uses your `gh` login, and only threads
+// whose first comment is by that login count: anyone can comment on a PR, and thread bodies
+// are handed to an agent that edits, commits and pushes. `--pr` must be a number, so every
+// command targets a pull request in the current repository.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -22,6 +26,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const MARKER = 'review-loop:id=';
+const WONTFIX_REPLY = "**Won't fix.**";
 
 /** Stable id for a finding: same file + same title → same id across rounds. */
 export function findingId(finding) {
@@ -91,6 +96,78 @@ export function commentBody(f, round) {
     .trim();
 }
 
+/** The finding id from the marker that `commentBody` puts on a comment's LAST line (quotes of it in the text don't count). */
+export function markerId(body) {
+  return String(body ?? '').match(/<!-- review-loop:id=(rl-[0-9a-f]+) -->\s*$/)?.[1];
+}
+
+/** The finding title that `commentBody` put on a comment's first line (`<icon> **<severity>: <title>**`). */
+export function titleFromBody(body) {
+  const first = String(body ?? '').split('\n', 1)[0] ?? '';
+  return first.match(/\*\*[a-z]+: (.+)\*\*\s*$/)?.[1];
+}
+
+/** Validate `--pr`: a pull request NUMBER (a URL or `owner/repo#n` could target another repository). */
+export function prNumber(value) {
+  if (!/^[1-9]\d*$/.test(String(value ?? '')))
+    throw new Error(`--pr must be a pull request number in this repository (got "${value ?? ''}")`);
+  return Number(value);
+}
+
+/**
+ * Pure: the review-loop threads in a `reviewThreads` GraphQL response (`data` of THREADS_QUERY).
+ * Only threads whose first comment was written by the viewer (the `gh` user running the loop) and
+ * carries a review-loop marker count. `wontfix` = the viewer's latest reply is a won't-fix.
+ */
+export function parseThreads(data, { all = false } = {}) {
+  const viewer = data?.viewer?.login;
+  const nodes = data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+  const out = [];
+  if (!viewer) return out;
+  for (const t of nodes) {
+    const comments = t.comments?.nodes ?? [];
+    const first = comments[0];
+    if (!first || first.author?.login !== viewer) continue;
+    const id = markerId(first.body);
+    if (!id || (t.isResolved && !all)) continue;
+    const lastReply = comments
+      .slice(1)
+      .filter((c) => c.author?.login === viewer)
+      .at(-1);
+    out.push({
+      id,
+      threadId: t.id,
+      commentId: first.databaseId,
+      resolved: t.isResolved,
+      wontfix: Boolean(lastReply?.body?.startsWith(WONTFIX_REPLY)),
+      path: t.path,
+      line: t.line,
+      title: titleFromBody(first.body),
+      body: first.body,
+    });
+  }
+  return out;
+}
+
+/** Pure: the reply + resolve for EVERY unresolved thread carrying each resolution's id. */
+export function planResolutions(resolutions, openThreads, commit) {
+  const plan = [];
+  for (const r of resolutions) {
+    if (r.status !== 'fixed' && r.status !== 'wontfix') continue;
+    const verb = r.status === 'wontfix' ? WONTFIX_REPLY : `**Addressed in ${commit.slice(0, 7)}.**`;
+    for (const t of openThreads) {
+      if (t.id !== r.id || t.resolved) continue;
+      plan.push({
+        id: r.id,
+        threadId: t.threadId,
+        commentId: t.commentId,
+        body: `${verb} ${r.note ?? ''}`.trim(),
+      });
+    }
+  }
+  return plan;
+}
+
 /** Build the GitHub review payload from findings and the PR diff. Pure. */
 export function buildReview({ findings, diff, round, commitId }) {
   const lines = commentableLines(diff);
@@ -141,15 +218,16 @@ function prInfo(pr) {
   );
 }
 
+const THREADS_QUERY = `query($owner:String!,$name:String!,$pr:Int!){viewer{login} repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved path line comments(first:50){nodes{databaseId body author{login}}}}}}}}`;
+
 function threads(pr, all = false) {
   const [owner, name] = repoSlug().split('/');
-  const query = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved path line comments(first:20){nodes{databaseId body}}}}}}}`;
   const res = JSON.parse(
     gh([
       'api',
       'graphql',
       '-f',
-      `query=${query}`,
+      `query=${THREADS_QUERY}`,
       '-F',
       `owner=${owner}`,
       '-F',
@@ -158,24 +236,7 @@ function threads(pr, all = false) {
       `pr=${pr}`,
     ]),
   );
-  return res.data.repository.pullRequest.reviewThreads.nodes
-    .map((t) => {
-      const first = t.comments.nodes[0];
-      const id = first?.body.match(/review-loop:id=(rl-[0-9a-f]+)/)?.[1];
-      return id
-        ? {
-            id,
-            threadId: t.id,
-            commentId: first.databaseId,
-            resolved: t.isResolved,
-            path: t.path,
-            line: t.line,
-            body: first.body,
-          }
-        : undefined;
-    })
-    .filter(Boolean)
-    .filter((t) => all || !t.resolved);
+  return parseThreads(res.data, { all });
 }
 
 function readStdinJson() {
@@ -191,8 +252,8 @@ function arg(argv, name) {
 // ---------- CLI ----------
 function main(argv) {
   const [cmd] = argv;
-  const pr = arg(argv, 'pr');
-  if (!pr && cmd !== 'help') throw new Error('--pr <number> is required');
+  const known = ['info', 'post', 'threads', 'resolve', 'comment'];
+  const pr = known.includes(cmd) ? prNumber(arg(argv, 'pr')) : undefined;
   switch (cmd) {
     case 'info':
       console.log(JSON.stringify(prInfo(pr), null, 2));
@@ -220,22 +281,20 @@ function main(argv) {
       return;
     case 'resolve': {
       const commit = arg(argv, 'commit');
-      if (!commit) throw new Error('--commit <sha> is required');
-      const resolutions = readStdinJson();
-      const open = new Map(threads(pr).map((t) => [t.id, t]));
+      if (!/^[0-9a-f]{7,40}$/i.test(commit ?? ''))
+        throw new Error(
+          '--commit <sha> is required (the pushed commit that addresses the findings)',
+        );
+      const plan = planResolutions(readStdinJson(), threads(pr), commit);
       const slug = repoSlug();
-      const done = [];
-      for (const r of resolutions) {
-        const t = open.get(r.id);
-        if (!t) continue;
-        const verb = r.status === 'wontfix' ? "Won't fix" : `Addressed in ${commit.slice(0, 7)}`;
+      for (const p of plan) {
         gh([
           'api',
-          `repos/${slug}/pulls/${pr}/comments/${t.commentId}/replies`,
+          `repos/${slug}/pulls/${pr}/comments/${p.commentId}/replies`,
           '-X',
           'POST',
           '-f',
-          `body=**${verb}.** ${r.note ?? ''}`.trim(),
+          `body=${p.body}`,
         ]);
         gh([
           'api',
@@ -243,11 +302,10 @@ function main(argv) {
           '-f',
           'query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}',
           '-F',
-          `id=${t.threadId}`,
+          `id=${p.threadId}`,
         ]);
-        done.push(r.id);
       }
-      console.log(JSON.stringify({ resolved: done }));
+      console.log(JSON.stringify({ resolved: [...new Set(plan.map((p) => p.id))] }));
       return;
     }
     case 'comment': {

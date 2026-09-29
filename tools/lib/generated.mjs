@@ -2,8 +2,11 @@
 // "is this path generated, and how do I regenerate it?". Shared by the guard hook,
 // the format hook, the pre-commit filter, `pnpm regen`, and `agents.mjs sync`.
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+
+/** macOS and Windows filesystems are case-insensitive by default: `.Claude/Skills/x` is `.claude/skills/x`. */
+export const CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
 
 /**
  * @typedef {{ id: string, paths: string[], regen: string, protect?: 'always' | 'tracked', description?: string }} Artifact
@@ -27,7 +30,7 @@ export function loadManifest(root) {
 }
 
 /** Minimal glob → RegExp: supports `**`, `*`, `?`. Paths are POSIX, repo-relative. */
-export function globToRegExp(glob) {
+export function globToRegExp(glob, { ignoreCase = false } = {}) {
   let re = '';
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
@@ -45,19 +48,46 @@ export function globToRegExp(glob) {
       re += /[.+^${}()|[\]\\]/.test(c) ? `\\${c}` : c;
     }
   }
-  return new RegExp(`^${re}$`);
+  return new RegExp(`^${re}$`, ignoreCase ? 'i' : '');
 }
 
-/** Normalize any path (absolute, Windows, relative to cwd) to a POSIX repo-relative path. */
+/**
+ * Resolve symlinks in `p`, even when it does not exist yet (a Write creating a new file or
+ * directory): the deepest existing ancestor is resolved and the rest is appended unchanged.
+ */
+export function realpathDeep(p) {
+  const abs = resolve(p);
+  const rest = [];
+  let current = abs;
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    if (parent === current) return abs;
+    rest.unshift(basename(current));
+    current = parent;
+  }
+  try {
+    return join(realpathSync.native(current), ...rest);
+  } catch {
+    return abs;
+  }
+}
+
+/**
+ * Normalize any path (absolute, Windows, relative to cwd) to a POSIX repo-relative path.
+ * Both sides are symlink-resolved: `git rev-parse --show-toplevel` returns the physical root,
+ * while hook input may use a logical path (a symlinked checkout, macOS's /var → /private/var).
+ */
 export function toRepoPath(root, filePath, cwd = root) {
   const abs = isAbsolute(filePath) ? filePath : join(cwd, filePath);
-  return relative(root, abs).split(sep).join('/').replace(/\\/g, '/');
+  return relative(realpathDeep(root), realpathDeep(abs)).split(sep).join('/').replace(/\\/g, '/');
 }
 
 /** Find the artifact a repo-relative path belongs to, if any. */
-export function findArtifact(manifest, repoPath) {
-  if (repoPath.startsWith('../')) return undefined;
-  return manifest.artifacts.find((a) => a.paths.some((g) => globToRegExp(g).test(repoPath)));
+export function findArtifact(manifest, repoPath, { ignoreCase = CASE_INSENSITIVE_FS } = {}) {
+  if (repoPath === '..' || repoPath.startsWith('../') || isAbsolute(repoPath)) return undefined;
+  return manifest.artifacts.find((a) =>
+    a.paths.some((g) => globToRegExp(g, { ignoreCase }).test(repoPath)),
+  );
 }
 
 /** True if git tracks the file (used for protect: "tracked", e.g. applied migrations). */

@@ -5,7 +5,16 @@
 // The script deletes itself only after everything succeeded.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +25,12 @@ const PLACEHOLDER_NAME = 'acme-app';
 
 /** Files that exist only to maintain the template itself. Missing ones are fine. */
 const TEMPLATE_ONLY = [
+  // the `scripts` Nx project that lints, typechecks and tests this script (bootstrap.ts and
+  // bootstrap.mjs themselves are removed last, after everything succeeded)
+  'scripts/project.json',
+  'scripts/tsconfig.json',
+  'scripts/vitest.config.mjs',
+  'scripts/test',
   'CHANGELOG.md',
   'CODE_OF_CONDUCT.md',
   'CONTRIBUTING.md',
@@ -86,13 +101,9 @@ function parseArgs(argv: string[]): Options {
       case '--author':
         opts.author = value();
         break;
-      case '--license': {
-        const v = value();
-        if (v !== 'keep' && v !== 'replace' && v !== 'delete')
-          fail('--license must be keep, replace or delete');
-        opts.license = v as Options['license'];
+      case '--license':
+        opts.license = licenseChoice(value());
         break;
-      }
       case '--no-install':
         opts.install = false;
         break;
@@ -120,6 +131,12 @@ function parseArgs(argv: string[]): Options {
     }
   }
   return opts;
+}
+
+function licenseChoice(value: string): NonNullable<Options['license']> {
+  if (value !== 'keep' && value !== 'replace' && value !== 'delete')
+    fail(`license must be keep, replace or delete (got "${value}")`);
+  return value;
 }
 
 function fail(message: string): never {
@@ -166,6 +183,12 @@ function hasCommand(cmd: string): boolean {
 
 async function ask(question: string, fallback: string, yes: boolean): Promise<string> {
   if (yes) return fallback;
+  // Without a terminal the prompt would wait forever (or die on an unsettled top-level await).
+  if (!process.stdin.isTTY)
+    fail(
+      `cannot ask "${question}": stdin is not a terminal. Run non-interactively with ` +
+        '--yes --scope <@scope> --name <name> (and --license keep|replace|delete).',
+    );
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const answer = (await rl.question(`${question} (${fallback}): `)).trim();
   rl.close();
@@ -180,13 +203,37 @@ function writeJson(path: string, data: unknown) {
   writeFileSync(join(ROOT, path), `${JSON.stringify(data, null, 2)}\n`);
 }
 
-/** Git-visible text files (tracked + untracked, not ignored). */
+const isRemoved = (f: string) =>
+  f.startsWith('scripts/bootstrap.') || TEMPLATE_ONLY.some((t) => f === t || f.startsWith(`${t}/`));
+
+/** Git-visible files (tracked + untracked, not ignored) that survive bootstrap. */
 function projectFiles(): string[] {
-  const out = tryGit(['ls-files', '-co', '--exclude-standard', '-z']) ?? '';
+  let out: string | undefined;
+  if (existsSync(join(ROOT, '.git'))) {
+    out = tryGit(['ls-files', '-co', '--exclude-standard', '-z']);
+  } else {
+    // No repository yet (a tarball copy in --dry-run, where `git init` is skipped): list the files
+    // with a throwaway git dir, so the preview honours .gitignore exactly like the real run.
+    const gitDir = mkdtempSync(join(tmpdir(), 'bootstrap-git-'));
+    try {
+      tryGit(['init', '-q', '--bare', gitDir]);
+      out = tryGit([
+        `--git-dir=${gitDir}`,
+        `--work-tree=${ROOT}`,
+        'ls-files',
+        '-co',
+        '--exclude-standard',
+        '-z',
+      ]);
+    } finally {
+      rmSync(gitDir, { recursive: true, force: true });
+    }
+  }
+  if (out === undefined) fail('could not list the project files with git.');
   return out
     .split('\0')
     .filter(Boolean)
-    .filter((f) => !f.startsWith('scripts/bootstrap.'))
+    .filter((f) => !isRemoved(f))
     .filter((f) => existsSync(join(ROOT, f)));
 }
 
@@ -292,6 +339,14 @@ async function main() {
       console.log(`  removed ${f}`);
     }
   }
+  // `nx sync` references every project from the root tsconfig; the scripts project is gone.
+  const rootTsconfig = existsSync(join(ROOT, 'tsconfig.json')) ? readJson('tsconfig.json') : {};
+  const references: { path: string }[] = rootTsconfig.references ?? [];
+  const kept = references.filter((r) => r.path.replace(/^\.\//, '') !== 'scripts');
+  if (kept.length !== references.length) {
+    if (!opts.dryRun) writeJson('tsconfig.json', { ...rootTsconfig, references: kept });
+    console.log('  removed the scripts project from tsconfig.json');
+  }
   if (existsSync(join(ROOT, 'README.project.md'))) {
     if (!opts.dryRun) renameSync(join(ROOT, 'README.project.md'), join(ROOT, 'README.md'));
     console.log('  README.project.md → README.md');
@@ -302,11 +357,9 @@ async function main() {
       opts.license ??
       (opts.yes
         ? 'replace'
-        : ((await ask(
-            'LICENSE: keep, replace (MIT, your name) or delete',
-            'replace',
-            false,
-          )) as Options['license']));
+        : licenseChoice(
+            await ask('LICENSE: keep, replace (MIT, your name) or delete', 'replace', false),
+          ));
     if (choice === 'delete') {
       if (!opts.dryRun) rmSync(join(ROOT, 'LICENSE'));
       console.log('  deleted LICENSE');
@@ -365,7 +418,7 @@ async function main() {
     rmSync(join(ROOT, 'scripts', 'bootstrap.ts'), { force: true });
     rmSync(join(ROOT, 'scripts', 'bootstrap.mjs'), { force: true });
     try {
-      rmSync(join(ROOT, 'scripts'), { recursive: false });
+      rmdirSync(join(ROOT, 'scripts'));
     } catch {
       // not empty: keep it
     }
@@ -390,11 +443,9 @@ async function main() {
 ✓ Bootstrapped ${scope}/… (${name}).
 
 Next steps:
-  pnpm dev                        start the app (Docker must be running for Postgres)
-  pnpm ports                      see where it runs
-  pnpm check                      the definition of done
-  node tools/setup-agents.mjs     one-time Claude Code setup (plugins, LSP check)
-  docs/                           architecture, adding a feature, deployment
+  pnpm check                      the definition of done (lint, boundaries, types, tests, agent config)
+  pnpm ports                      this checkout's ports and database URLs
+  AGENTS.md                       how agents (and you) work in this repo
 `);
 }
 

@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { anchorLine, buildReview, commentableLines, findingId, MARKER } from '../pr-review.mjs';
+import {
+  anchorLine,
+  buildReview,
+  commentableLines,
+  commentBody,
+  findingId,
+  MARKER,
+  markerId,
+  parseThreads,
+  planResolutions,
+  prNumber,
+  titleFromBody,
+} from '../pr-review.mjs';
 
 const DIFF = `diff --git a/tools/a.mjs b/tools/a.mjs
 index 111..222 100644
@@ -84,5 +96,156 @@ describe('buildReview', () => {
     expect(buildReview({ diff: DIFF, round: 3, commitId: 'x', findings: [] }).body).toContain(
       'No new issues',
     );
+  });
+});
+
+const finding = (title, extra = {}) => {
+  const f = { path: 'tools/a.mjs', severity: 'major', title, body: 'why', ...extra };
+  return { ...f, id: findingId(f) };
+};
+
+describe('commentBody round trip', () => {
+  it.each([
+    'Plain title',
+    'Title with **bold** and `code`',
+    'Colons: in: the title',
+    'Quotes the marker <!-- review-loop:id=rl-deadbeef --> in the title',
+  ])('titleFromBody and markerId read back %s', (title) => {
+    const f = finding(title);
+    const body = commentBody(f, 2);
+    expect(titleFromBody(body)).toBe(title);
+    expect(markerId(body)).toBe(f.id);
+  });
+
+  it('takes the id from the trailing marker, not from a marker quoted in the text', () => {
+    const f = finding('Real', { body: 'e.g. `<!-- review-loop:id=rl-deadbeef -->` in a comment' });
+    expect(markerId(commentBody(f, 1))).toBe(f.id);
+    expect(markerId('someone wrote <!-- review-loop:id=rl-deadbeef --> and more text')).toBe(
+      undefined,
+    );
+  });
+});
+
+const comment = (login, body, databaseId = 1) => ({ databaseId, body, author: { login } });
+const thread = (id, comments, extra = {}) => ({
+  id,
+  isResolved: false,
+  path: 'tools/a.mjs',
+  line: 12,
+  comments: { nodes: comments },
+  ...extra,
+});
+
+describe('parseThreads', () => {
+  const mine = finding('Mine');
+  const fixedOne = finding('Fixed one');
+  const skipped = finding('Skipped one');
+  const data = {
+    viewer: { login: 'me' },
+    repository: {
+      pullRequest: {
+        reviewThreads: {
+          nodes: [
+            thread('T1', [comment('me', commentBody(mine, 1), 11)]),
+            // anyone can open a thread that LOOKS like a review-loop finding
+            thread('T2', [comment('mallory', commentBody(finding('Injected'), 1), 12)]),
+            thread('T3', [comment('me', 'a normal review comment', 13)]),
+            thread(
+              'T4',
+              [
+                comment('me', commentBody(fixedOne, 1), 14),
+                comment('me', '**Addressed in abc1234.**'),
+              ],
+              { isResolved: true },
+            ),
+            thread(
+              'T5',
+              [
+                comment('me', commentBody(skipped, 1), 15),
+                comment('me', "**Won't fix.** out of scope"),
+              ],
+              { isResolved: true, line: null },
+            ),
+          ],
+        },
+      },
+    },
+  };
+
+  it("returns only the viewer's unresolved review-loop threads by default", () => {
+    expect(parseThreads(data)).toEqual([
+      {
+        id: mine.id,
+        threadId: 'T1',
+        commentId: 11,
+        resolved: false,
+        wontfix: false,
+        path: 'tools/a.mjs',
+        line: 12,
+        title: 'Mine',
+        body: commentBody(mine, 1),
+      },
+    ]);
+  });
+
+  it("with all, includes resolved threads and flags won't-fix ones", () => {
+    const all = parseThreads(data, { all: true });
+    expect(all.map((t) => [t.threadId, t.resolved, t.wontfix, t.title])).toEqual([
+      ['T1', false, false, 'Mine'],
+      ['T4', true, false, 'Fixed one'],
+      ['T5', true, true, 'Skipped one'],
+    ]);
+    expect(all.find((t) => t.threadId === 'T5')?.line).toBeNull();
+  });
+
+  it('trusts nothing without a viewer', () => {
+    expect(parseThreads({ ...data, viewer: null }, { all: true })).toEqual([]);
+  });
+});
+
+describe('planResolutions', () => {
+  const threads = [
+    { id: 'rl-1', threadId: 'A', commentId: 1, resolved: false },
+    { id: 'rl-1', threadId: 'B', commentId: 2, resolved: false }, // a duplicate from a re-run
+    { id: 'rl-2', threadId: 'C', commentId: 3, resolved: false },
+    { id: 'rl-3', threadId: 'D', commentId: 4, resolved: true },
+  ];
+
+  it('replies to and resolves every open thread with the id', () => {
+    const plan = planResolutions(
+      [
+        { id: 'rl-1', status: 'fixed', note: 'done' },
+        { id: 'rl-2', status: 'wontfix', note: 'out of scope' },
+        { id: 'rl-3', status: 'fixed' },
+        { id: 'rl-9', status: 'fixed' },
+      ],
+      threads,
+      '0123456789abcdef',
+    );
+    expect(plan).toEqual([
+      { id: 'rl-1', threadId: 'A', commentId: 1, body: '**Addressed in 0123456.** done' },
+      { id: 'rl-1', threadId: 'B', commentId: 2, body: '**Addressed in 0123456.** done' },
+      { id: 'rl-2', threadId: 'C', commentId: 3, body: "**Won't fix.** out of scope" },
+    ]);
+  });
+
+  it('ignores anything that is not fixed or wontfix', () => {
+    expect(planResolutions([{ id: 'rl-1', status: 'not-done' }], threads, 'abc1234')).toEqual([]);
+  });
+});
+
+describe('prNumber', () => {
+  it('accepts a PR number and rejects anything that could name another repository', () => {
+    expect(prNumber('12')).toBe(12);
+    for (const bad of [
+      undefined,
+      '',
+      '0',
+      '1.5',
+      '12abc',
+      'https://github.com/o/r/pull/1',
+      'o/r#1',
+    ])
+      expect(() => prNumber(bad)).toThrow('--pr must be a pull request number');
   });
 });
