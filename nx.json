@@ -1,0 +1,66 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "analytics": false,
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "production": [
+      "default",
+      "!{projectRoot}/**/*.test.{ts,tsx,mts}",
+      "!{projectRoot}/**/*.browser.test.{ts,tsx}",
+      "!{projectRoot}/vitest.config.{ts,mts}",
+      "!{projectRoot}/test/**/*"
+    ],
+    "sharedGlobals": [
+      "{workspaceRoot}/tsconfig.base.json",
+      "{workspaceRoot}/.prototools",
+      "{workspaceRoot}/pnpm-workspace.yaml"
+    ]
+  },
+  "plugins": [
+    {
+      "plugin": "@nx/js/typescript",
+      "options": {
+        "typecheck": { "targetName": "typecheck" }
+      }
+    },
+    {
+      "plugin": "@nx/vitest",
+      "options": { "testTargetName": "test" }
+    },
+    {
+      "plugin": "@nx/oxlint",
+      "options": { "targetName": "lint" }
+    },
+    {
+      "plugin": "@nx/eslint/plugin",
+      "options": { "targetName": "eslint" }
+    }
+  ],
+  "sync": {
+    "applyChanges": true
+  },
+  "targetDefaults": {
+    "eslint": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^default",
+        "{workspaceRoot}/eslint.config.mjs",
+        { "externalDependencies": ["eslint", "@nx/eslint-plugin", "@typescript-eslint/parser"] }
+      ]
+    },
+    "lint": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^default",
+        "{workspaceRoot}/.oxlintrc.json",
+        { "externalDependencies": ["oxlint", "oxlint-tsgolint", "@nx/oxlint"] }
+      ]
+    },
+    "test": {
+      "cache": true,
+      "inputs": ["default", "^production"]
+    }
+  }
+}

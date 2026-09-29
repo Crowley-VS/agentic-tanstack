@@ -1,0 +1,4 @@
+{
+  "$comment": "Single source of truth for generated files. Read by the guard hook, `pnpm regen`, the drift check, the pre-commit formatter filter, and `node tools/agents.mjs sync` (which renders oxfmt/oxlint ignores and Claude deny rules). Add an entry whenever a tool starts generating files; never hand-edit a listed path.",
+  "artifacts": []
+}

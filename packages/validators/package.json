@@ -1,0 +1,23 @@
+{
+  "name": "@acme/validators",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./notes": {
+      "@acme/source": "./src/notes.ts",
+      "types": "./src/notes.ts",
+      "default": "./src/notes.ts"
+    }
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "nx": {
+    "name": "validators",
+    "tags": [
+      "scope:shared",
+      "type:util"
+    ]
+  }
+}

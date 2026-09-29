@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "PLAYWRIGHT_HTML_OPEN": "never"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(pnpm check *)",
+      "Bash(pnpm ports *)",
+      "Bash(pnpm dev *)",
+      "Bash(pnpm regen *)",
+      "Bash(pnpm agents:sync *)",
+      "Bash(pnpm agents:check *)",
+      "Bash(pnpm nx run *)",
+      "Bash(pnpm nx run-many *)",
+      "Bash(pnpm nx affected *)",
+      "Bash(pnpm nx show *)",
+      "Bash(node tools/dev-ports.mjs *)",
+      "Bash(pnpm exec playwright cli *)",
+      "Bash(pnpm exec intent list *)",
+      "Bash(pnpm exec intent load *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)"
+    ],
+    "ask": [
+      "Bash(pnpm nx exec *)",
+      "Bash(pnpm add *)",
+      "Bash(pnpm remove *)",
+      "Bash(pnpm dlx *)",
+      "Bash(git push *)",
+      "Bash(railway up *)",
+      "Bash(railway config apply *)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(!.env.example)",
+      "Bash(npx *)",
+      "Bash(pnpm agents:nx *)",
+      "Bash(pnpm nx configure-ai-agents *)",
+      "Bash(pnpm exec nx configure-ai-agents *)",
+      "Bash(nx configure-ai-agents *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/tools/agent-hooks/guard-paths.mjs"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/tools/agent-hooks/format.mjs"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "nx-claude-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "nrwl/nx-ai-agents-config"
+      }
+    },
+    "railway-skills": {
+      "source": {
+        "source": "github",
+        "repo": "railwayapp/railway-skills"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "typescript-lsp@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "railway@railway-skills": true,
+    "nx@nx-claude-plugins": true
+  }
+}

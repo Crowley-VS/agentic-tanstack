@@ -1,0 +1,28 @@
+{
+  "$comment": "Files and marked sections owned by the generic agent kit (agentic-nx-monorepo). Stack-specific content lives in stack-owned files or <!-- stack:... --> sections. `tools/kit-sync.mjs` (added later) copies these from the kit repo; do not put stack-specific content in them.",
+  "files": [
+    "tools/dev-ports.mjs",
+    "tools/agents.mjs",
+    "tools/check.mjs",
+    "tools/check-versions.mjs",
+    "tools/lib/generated.mjs",
+    "tools/agent-hooks/guard-paths.mjs",
+    "tools/agent-hooks/format.mjs",
+    "tools/test/helpers.mjs",
+    "tools/test/dev-ports.test.mjs",
+    "tools/test/generated.test.mjs",
+    "tools/test/hooks.test.mjs",
+    "tools/test/agents.test.mjs",
+    "lefthook.yml",
+    ".worktreeinclude"
+  ],
+  "sections": {
+    "AGENTS.md": ["done", "commands", "navigation", "invariants", "workflow"]
+  },
+  "merged": {
+    ".claude/settings.json": "kit provides env, hooks, base permissions and plugins; stacks may add permissions and plugins",
+    ".oxlintrc.json": "kit provides base rules; ignorePatterns are rendered by agents:sync",
+    ".oxfmtrc.json": "kit provides base options; ignorePatterns are rendered by agents:sync",
+    ".gitignore": "kit block + stack block"
+  }
+}

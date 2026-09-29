@@ -1,0 +1,11 @@
+# Pre-commit: format + lint staged files (generated files are skipped via .agents/generated.json).
+# Heavier checks (typecheck, tests, boundaries) run in `pnpm check` and CI.
+pre-commit:
+  commands:
+    format-and-lint:
+      glob: '*.{ts,tsx,mts,cts,js,jsx,mjs,cjs,json,jsonc,css,md,yml,yaml,graphql}'
+      run: node tools/agents.mjs staged {staged_files}
+      stage_fixed: true
+    agent-config:
+      glob: '{.agents/**,.claude/**,AGENTS.md,CLAUDE.md}'
+      run: node tools/agents.mjs check

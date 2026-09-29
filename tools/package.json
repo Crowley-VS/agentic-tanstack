@@ -1,0 +1,14 @@
+{
+  "name": "@acme/tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Repo tooling: dev ports, Claude Code hooks, agent-config sync/check, pnpm check.",
+  "type": "module",
+  "nx": {
+    "name": "tools",
+    "tags": [
+      "scope:tooling",
+      "type:tooling"
+    ]
+  }
+}

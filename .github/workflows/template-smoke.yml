@@ -1,0 +1,76 @@
+# Template maintenance only: proves a fresh copy bootstraps and passes every check.
+# Runs only where the repository variable TEMPLATE_MAINTENANCE is 'true' (the upstream
+# template). Repository variables are not copied into repos created from the template,
+# and bootstrap deletes this file anyway.
+name: Template smoke test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  CI: 'true'
+  NX_NO_CLOUD: 'true'
+  NX_TUI: 'false'
+
+jobs:
+  smoke:
+    if: vars.TEMPLATE_MAINTENANCE == 'true'
+    name: bootstrap (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # archive  = `pnpm dlx giget` / tarball download (no .git, export-ignore applied)
+        # template = GitHub "Use this template" (every tracked file, one fresh commit)
+        mode: [archive, template]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: moonrepo/setup-toolchain@v0
+        with:
+          auto-install: true
+
+      - name: Git identity for the bootstrap commit
+        run: |
+          git config --global user.name "Template Smoke"
+          git config --global user.email "smoke@example.com"
+
+      - name: Create a fresh copy
+        env:
+          DEST: ${{ runner.temp }}/copy
+        run: |
+          mkdir -p "$DEST"
+          if [ "${{ matrix.mode }}" = archive ]; then
+            git archive HEAD | tar -x -C "$DEST"
+          else
+            git ls-files -z | tar --null -T - -cf - | tar -x -C "$DEST"
+            cd "$DEST" && git init -q -b main && git add -A && git commit -q -m "Initial commit"
+          fi
+
+      - name: Bootstrap
+        working-directory: ${{ runner.temp }}/copy
+        run: node scripts/bootstrap.mjs --yes --scope @smoke --name smoke-app
+
+      - name: No template leftovers
+        working-directory: ${{ runner.temp }}/copy
+        run: |
+          set -e
+          if git grep -nE '@acme/|acme-app'; then echo "placeholders survived bootstrap"; exit 1; fi
+          test ! -e scripts/bootstrap.ts
+          test ! -e scripts/bootstrap.mjs
+          test ! -e template.json
+          test ! -e .github/workflows/template-smoke.yml
+          test "$(git rev-list --count HEAD)" -le 2
+
+      - name: Every check on every project
+        working-directory: ${{ runner.temp }}/copy
+        run: pnpm check --all
