@@ -4,7 +4,7 @@
 export const meta = {
   name: 'review-loop-run',
   description:
-    'The multi-agent run behind the review-loop skill: review a PR, post findings as inline comments, fix them, re-review only the fixes until no blocker/major issues remain',
+    'The multi-agent run behind the review-loop skill: review a PR, post findings as inline comments, fix the blocker/major ones, re-review only the fixes until none remain',
   whenToUse:
     'Only when the review-loop skill says to: after the user confirmed the run, or when the pr-opened hook reports their REVIEW_LOOP_AUTO=1 opt-in (it spawns many agents and pushes to the PR branch). Pass args {pr: <number>, maxRounds?: 3}.',
   phases: [
@@ -19,7 +19,8 @@ export const meta = {
     { title: 'Post', detail: 'confirmed findings → one GitHub review with inline comments' },
     {
       title: 'Fix',
-      detail: 'fixer addresses open findings, runs pnpm check, pushes, resolves threads',
+      detail:
+        'fixer addresses open blocker/major findings, runs pnpm check, pushes, resolves threads',
     },
     { title: 'Summary', detail: 'final PR comment with the outcome' },
   ],
@@ -33,17 +34,20 @@ export const meta = {
 //     round (plus whether the fixes actually fixed what they claimed).
 //   * Only BLOCKING findings (blocker, major) keep the loop going, and only they go to the fixer.
 //     Minor/nit findings are posted once as suggestions for a human to pick; the loop never fixes
-//     them (in run 2 of PR #1, fixes to minor findings caused 11 of 13 follow-up findings).
-//   * Severity is strict (see FINDINGS): major = breaks CI or a normal flow in ordinary use.
-//     Verifiers also grade likelihood; unusual → at most minor, contrived → nit.
+//     them (in the loop's own retrospective, fixes to minor findings caused 11 of 13 follow-up
+//     findings).
+//   * Severity is strict (see SEVERITY): major = breaks CI or a normal flow in ordinary use.
+//     Verifiers also grade likelihood; unusual → at most minor, contrived → nit (a blocker keeps
+//     its grade: untrusted input that reaches a security hole is ordinary, never contrived).
 //   * Fixes are minimal: the smallest change that resolves the finding, no new abstractions.
-//   * Stop early when blocking findings stop decreasing (from round 2), and hand off to a human.
-//   * A PR that changes the review loop itself gets one review-only round (never let the loop fix
-//     the loop). Hands-on checks no agent can do (repo variables, PR-description claims about
-//     local commits, exact test counts) are "needs-human": listed, never blocking.
-//   * Before each round the loop checks free space on /tmp and the worktree disk (agents' copies
-//     once exhausted /tmp's inodes) and stops cleanly below 20% free.
-// See docs/decisions/0001-review-loop-convergence.md for the data behind these rules.
+//   * From round 2, stop for a human when open blocking findings don't decrease while new ones
+//     keep appearing, or when a fixed blocking finding is reopened a second time.
+//   * A PR that changes the review loop itself (or whose changed files cannot be listed) gets one
+//     review-only round (never let the loop fix the loop). Hands-on checks no agent can do (repo
+//     variables, PR-description claims about local commits, exact test counts) are "needs-human":
+//     listed in the summary, never blocking.
+//   * Before each round the loop checks /tmp and the worktree disk (agents' copies once exhausted
+//     /tmp's inodes) and stops cleanly below 2 GB or 20% of inodes free, or when it cannot check.
 //   * A fix pass that changed nothing ends the run: another round would review the same head. A
 //     finding it calls "fixed" without a fix commit stays open.
 // The loop ends when a complete round (every reviewer and verifier answered) leaves no blocking
@@ -58,12 +62,13 @@ export const meta = {
 // re-litigated. Every agent that reads or changes code works in its own git worktree checked out
 // at the PR head, never in the main checkout. An agent that returns nothing (it died, timed out
 // or was skipped) is a gap, never a clean answer: only a converged run posts ✅. So is a tester
-// that reports nothing it ran, something it could not run, or a failure: ✅ needs evidence of
-// hands-on testing that passed, and the summary lists what the tester ran. A check that failed or
-// could not run stays a gap in every later round until a tester reports that same check passing
-// (the next tester is asked to run it again). The tester's own report repeats at the same head, so
-// it never re-runs every reviewer on an unchanged head, and never adds a round of its own: with no
-// blocker/major open, the run stops (⚠️) after the fix pass.
+// that reports nothing it ran, nothing that passed (only n/a or needs-human), something it could
+// not run, or a failure: ✅ needs evidence of hands-on testing that passed, and the summary lists
+// what the tester ran. A check that failed or could not run stays a gap in every later round until
+// a tester reports that same check passing, or needing a human (the next tester is asked to run it
+// again). The tester's failures repeat at the same head, so they never re-run every reviewer on an
+// unchanged head, and never add a round of their own: with no blocker/major open, the run stops
+// (⚠️) without a fix pass.
 // ---------------------------------------------------------------------------------------------
 const PR = args?.pr;
 if (!PR) throw new Error('review-loop: pass args {pr: <number>}');
@@ -121,6 +126,14 @@ unchanged and removed automatically):
   git checkout -q --detach <the starting sha you noted>`;
 }
 
+// Reviewers grade by it, and so do the verifiers, whose grade is the one that counts.
+const SEVERITY = {
+  type: 'string',
+  enum: ['blocker', 'major', 'minor', 'nit'],
+  description:
+    'STRICT. blocker: breaks a core flow, loses data, or is an exploitable security hole in ordinary use. major: breaks CI or a normal user/agent flow in ordinary use, with a reproduction. minor: needs an unusual setup or input (a dead/misbehaving agent, a fork PR, Windows, symlinked checkouts, a contrived command), robustness, a misleading doc, or a missing test. nit: polish. A missing test is NEVER blocker/major.',
+};
+
 const FINDINGS = {
   type: 'object',
   properties: {
@@ -134,12 +147,7 @@ const FINDINGS = {
             type: 'integer',
             description: 'line on the NEW side of the diff (omit if file-level)',
           },
-          severity: {
-            type: 'string',
-            enum: ['blocker', 'major', 'minor', 'nit'],
-            description:
-              'STRICT. blocker: breaks a core flow, loses data, or is an exploitable security hole in ordinary use. major: breaks CI or a normal user/agent flow in ordinary use, with a reproduction. minor: needs an unusual setup or input (a dead/misbehaving agent, a fork PR, Windows, symlinked checkouts, a contrived command), robustness, a misleading doc, or a missing test. nit: polish. A missing test is NEVER blocker/major.',
-          },
+          severity: SEVERITY,
           title: {
             type: 'string',
             description: 'short, specific, stable wording (reused to detect repeats)',
@@ -195,19 +203,19 @@ const VERDICT = {
     index: { type: 'integer', description: 'the "index" of the item this verdict is for' },
     valid: { type: 'boolean' },
     reason: { type: 'string', description: 'evidence: file:line references and why' },
-    severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
+    severity: SEVERITY,
     likelihood: {
       type: 'string',
       enum: ['ordinary', 'unusual', 'contrived'],
       description:
-        'how likely the failure is in normal use: ordinary (normal flows), unusual (a specific but real setup), contrived (needs a misbehaving agent, a crafted input, or several unlikely conditions)',
+        'how likely the failure is in normal use: ordinary (normal flows), unusual (a specific but real setup), contrived (needs a misbehaving agent, an input only the person running it would supply, or several unlikely conditions). Input an untrusted party controls (PR text, branch names, file contents) is ordinary: it never makes a security hole contrived.',
     },
     duplicateOf: {
       type: 'string',
       description: 'title of an earlier finding in the list this duplicates, if any',
     },
   },
-  required: ['index', 'valid', 'reason'],
+  required: ['index', 'valid', 'reason', 'likelihood'],
 };
 
 const LENSES = [
@@ -248,8 +256,10 @@ Report only things you actually observed, each with exact reproduction steps and
 For a finding about a file, use that file's path and the most relevant line.
 Also return \`tested\`: one entry per thing from steps 1-3 (\`pnpm check --all\`, each claim and test-plan item, each
 script you ran, each page you opened), with the exact command or steps, the result and the evidence you saw. If you
-could not do one (the install failed, the app would not start, you have no browser tools), list it as
-"could-not-run" with the reason; never leave it out. The loop only reports a clean run when everything ran.`;
+could not do something this worktree should be able to do (the install failed, the app would not start, you have no
+browser tools), list it as "could-not-run" with the reason; never leave it out. A check no agent can do from a
+worktree is "needs-human", not "could-not-run". The loop only reports a clean run when something passed and nothing
+failed or could not run.`;
 
 // `pr-review.mjs threads --brief`: bodies are left out so the relay stays small, and `count` lets
 // the script notice a relayed list that lost entries.
@@ -300,8 +310,12 @@ const POSTED = {
 const keyOf = (f) => `${f.path}::${String(f.title).trim().toLowerCase()}`;
 /** Blocker or major, or a severity the loop does not know (fail closed): only minor/nit are not. */
 const isBlocking = (severity) => severity !== 'minor' && severity !== 'nit';
-/** Strict grading: an unusual failure is at most minor, a contrived one a nit. */
+/**
+ * Strict grading: an unusual failure is at most minor, a contrived one a nit. A blocker keeps its
+ * grade (a core flow broken, data lost, a security hole: likelihood never makes those optional).
+ */
 function graded(severity, likelihood) {
+  if (severity === 'blocker') return severity;
   const order = ['nit', 'minor', 'major', 'blocker'];
   const cap = likelihood === 'contrived' ? 'nit' : likelihood === 'unusual' ? 'minor' : 'blocker';
   const i = Math.min(order.indexOf(severity), order.indexOf(cap));
@@ -324,10 +338,18 @@ const retryable = (gap) => !gap.startsWith(TESTER_FAILED) && !gap.startsWith(TES
 let testing;
 /**
  * Hands-on checks that failed or could not run, by claim: each stays a gap, round after round,
- * until a later tester reports that same claim as 'pass' (leaving it out clears nothing).
+ * until a later tester reports that same claim as 'pass' or 'needs-human' (leaving it out clears
+ * nothing).
  * norm(claimOrArea) → { round, entry }.
  */
 const pendingTests = new Map();
+/**
+ * Hands-on checks a tester said need a human, by claim, until a later tester reports that claim
+ * again (the latest report decides): the summary lists them whatever round they came from.
+ */
+const needsHuman = new Map();
+/** How often this run reopened each blocking finding: a second reopen stops it for a human. */
+const reopens = new Map();
 const short = (sha) => String(sha ?? '?').slice(0, 7);
 // key → { status: 'open' | 'resolved' | 'wontfix' | 'rejected' | 'duplicate', finding }
 const seen = new Map();
@@ -499,25 +521,48 @@ const changed = await agent(
     },
   },
 );
-const selfReview = (changed?.files ?? []).filter((f) => LOOP_PATHS.test(f)).join(', ');
+// Why this run is review-only ('' if it is not). Fails closed: a listing that failed or came back
+// empty may hide the loop's own files.
+const loopFiles =
+  Array.isArray(changed?.files) && changed.files.length && !changed.error
+    ? changed.files.filter((f) => LOOP_PATHS.test(f))
+    : undefined;
+const selfReview = !loopFiles
+  ? `the PR's changed files could not be listed (${changed?.error ?? 'no usable answer'}), so it may change the review loop itself`
+  : loopFiles.length
+    ? `this PR changes the review loop itself (${loopFiles.join(', ')})`
+    : '';
 
-/** Free space on /tmp and the worktree disk, in percent; stops the run cleanly below 20%. */
+/**
+ * Space and inodes on /tmp and the worktree disk: true, or why no round may start (below 2 GB or
+ * 20% of inodes free, or the check itself failed).
+ */
 async function diskOk(round) {
   const out = await agent(
-    `Run \`df -P -i /tmp . && df -P -k /tmp .\` and return the LOWEST "free" percentage over all four lines (100 minus the
-Use%/IUse% column) as {freePct}. If a command fails, return {freePct: -1, error}.`,
+    `Run \`df -P -k /tmp .\`, then \`df -P -i /tmp .\`. Return {freeGb}: the LOWEST "Available" value of the first
+command's lines, in GB (KB / 1048576, one decimal), and {inodeFreePct}: the LOWEST 100 minus "IUse%" of the second
+command's lines (skip a line whose IUse% is "-": that filesystem has no fixed inode count; 100 if every line is
+skipped). If a command fails, return {error} with its message instead.`,
     {
       label: `disk:r${round}`,
       phase: 'Review',
       effort: 'low',
       schema: {
         type: 'object',
-        properties: { freePct: { type: 'number' }, error: { type: 'string' } },
-        required: ['freePct'],
+        properties: {
+          freeGb: { type: 'number' },
+          inodeFreePct: { type: 'number' },
+          error: { type: 'string' },
+        },
       },
     },
   );
-  return typeof out?.freePct === 'number' && out.freePct >= 20 ? true : (out?.freePct ?? -1);
+  const { freeGb, inodeFreePct } = out ?? {};
+  if (out?.error || typeof freeGb !== 'number' || typeof inodeFreePct !== 'number')
+    return `could not check disk space before round ${round} (${out?.error ?? 'no usable answer'}); check /tmp and the worktree disk and re-run`;
+  if (freeGb < 2 || inodeFreePct < 20)
+    return `low disk space before round ${round} (${freeGb} GB and ${inodeFreePct}% of inodes free on /tmp or the worktree disk; clean up and re-run)`;
+  return true;
 }
 
 // Threads from an earlier run (or a human re-run) are known findings too: without this, round-1
@@ -543,10 +588,7 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
   phase('Review');
   const disk = await diskOk(round);
   if (disk !== true) {
-    history.push({
-      round,
-      stoppedBy: `low disk space before round ${round} (${disk}% free on /tmp or the worktree disk; clean up and re-run)`,
-    });
+    history.push({ round, stoppedBy: disk });
     break;
   }
   const known = [...seen.values()]
@@ -571,8 +613,9 @@ code — then report it again with the SAME path and title; never re-report "won
 ${known || '(none yet)'}`;
   // Earlier checks that did not pass: in a follow-up round too, the tester runs them again.
   const retest = pendingTests.size
-    ? `\n\nEarlier hands-on checks that did NOT pass. They stay failed until you see them pass: run EACH again, whatever
-the scope above, and list it in \`tested\` under the SAME claimOrArea:
+    ? `\n\nEarlier hands-on checks that did NOT pass. They stay failed until you see them pass (or find that no agent can
+do them: then report them "needs-human"): run EACH again, whatever the scope above, and list it in \`tested\` under the
+SAME claimOrArea:
 ${[...pendingTests.values()].map(({ round: r, entry: t }) => `- ${t?.claimOrArea} (round ${r}: ${t?.result}; ran: ${t?.stepsOrCommand})`).join('\n')}`
     : '';
   const reviewers = [
@@ -608,21 +651,29 @@ ${[...pendingTests.values()].map(({ round: r, entry: t }) => `- ${t?.claimOrArea
       owesFullReview.add(r.key);
     }
   });
-  // The tester's evidence: no list of what it ran, anything it could not run, or a failure it saw
-  // is a hole too, whatever the verifiers make of its findings: only a later tester that reports
-  // the same check as passing clears it (see pendingTests).
+  // The tester's evidence: no list of what it ran, nothing that passed, anything it could not run,
+  // or a failure it saw is a hole too, whatever the verifiers make of its findings: only a later
+  // tester that reports the same check as passing (or needing a human) clears it (see pendingTests).
   const report = reviews[reviewers.findIndex((r) => r.key === 'tester')];
   if (Array.isArray(report?.findings)) {
     const ran = Array.isArray(report.tested) ? report.tested : [];
-    if (!ran.length) {
-      gaps.push('tester (reported nothing it ran)');
+    // Only n/a and needs-human entries: nothing shows the PR working (failures are gaps below).
+    const nothingPassed = ran.every((t) => t?.result === 'n/a' || t?.result === 'needs-human');
+    if (nothingPassed) {
+      gaps.push(ran.length ? 'tester (nothing it ran passed)' : 'tester (reported nothing it ran)');
       owesFullReview.add('tester');
     }
-    // a check reported both ways counts as not passing
-    for (const t of ran) if (t?.result === 'pass') pendingTests.delete(norm(t.claimOrArea));
+    // a check reported both ways counts as not passing; one no agent can do needs a human instead
+    for (const t of ran) {
+      if (t?.result === 'pass' || t?.result === 'needs-human')
+        pendingTests.delete(norm(t.claimOrArea));
+      needsHuman.delete(norm(t?.claimOrArea));
+    }
     for (const t of ran)
       if (t?.result === 'fail' || t?.result === 'could-not-run')
         pendingTests.set(norm(t?.claimOrArea), { round, entry: t });
+      else if (t?.result === 'needs-human')
+        needsHuman.set(norm(t.claimOrArea), { round, entry: t });
     testing = { round, sha: head.sha, tested: ran };
   }
   for (const { round: r, entry: t } of pendingTests.values())
@@ -673,7 +724,8 @@ ${[...pendingTests.values()].map(({ round: r, entry: t }) => `- ${t?.claimOrArea
 Mark valid=true ONLY if you can confirm it with concrete evidence (file:line, a reproduction you ran, or an exact trace).
 For findings from hands-on testing, try the reproduction steps yourself (on throwaway copies if they modify files).
 If it is speculative, already handled, out of the PR's scope, or pure style, mark valid=false. Re-grade severity
-strictly by the definitions (blocker/major/minor/nit).
+strictly by the definitions in the schema's "severity" field, and grade EVERY item's likelihood (ordinary, unusual or
+contrived, as the "likelihood" field defines them): an unusual failure counts as at most minor, a contrived one as a nit.
 All new findings this round, for duplicate detection (set duplicateOf to the EARLIER entry's "path: title"):
 ${fresh.map((x, i) => `${i + 1}. ${x.path}: ${x.title}`).join('\n') || '(none)'}
 Findings already known to this loop (if a "new" item is the same issue reworded, set duplicateOf to "known: <path: title>";
@@ -794,6 +846,9 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
   const newBlocking = confirmedNew.filter(
     (f) => isBlocking(f.severity) && !carriedKeys.has(keyOf(f)),
   ).length;
+  for (const f of reopened)
+    if (isBlocking(f.severity)) reopens.set(keyOf(f), (reopens.get(keyOf(f)) ?? 0) + 1);
+  const reopenedTwice = reopened.filter((f) => reopens.get(keyOf(f)) >= 2);
   history.push({
     round,
     kind: !delta
@@ -820,7 +875,7 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
   if (selfReview) {
     history.push({
       round,
-      stoppedBy: `review-only: this PR changes the review loop itself (${selfReview}); a human fixes and merges`,
+      stoppedBy: `review-only: ${selfReview}; a human fixes and merges`,
     });
     break;
   }
@@ -830,6 +885,14 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
     history.push({
       round,
       stoppedBy: `blocking findings not decreasing (${prevBlocking} → ${openBlocking.length})`,
+    });
+    break;
+  }
+  // A fix that did not hold twice will not hold a third time.
+  if (reopenedTwice.length) {
+    history.push({
+      round,
+      stoppedBy: `reopened a second time: ${reopenedTwice.map((f) => `${f.path}: ${f.title}`).join('; ')}`,
     });
     break;
   }
@@ -967,9 +1030,9 @@ const table = history
       : `| ${h.round} (${h.kind}) | ${h.raw} | ${h.posted} | ${h.reopened} | ${h.open} (${h.openBlocking} blocking) | ${h.gaps.length ? h.gaps.join('; ') : ''} |`,
   )
   .join('\n');
-// ✅ only for a run that converged (a complete round, or the fix pass right after one, left no
-// blocker/major open; that last fix pass is not re-reviewed) and that nothing stopped. Minor/nit
-// findings may stay open as suggestions; a finding of unknown severity counts as blocking.
+// ✅ only for a run that converged (a complete round left no blocker/major open, or a fix pass
+// that changed nothing marked every blocking finding won't fix) and that nothing stopped.
+// Minor/nit findings may stay open as suggestions; a finding of unknown severity counts as blocking.
 const stillOpenBlocking = stillOpen.filter((f) => isBlocking(severityOf(f)));
 const clean = converged && stillOpenBlocking.length === 0 && stopped.length === 0;
 const reasons = [...stopped, ...notes];
@@ -998,6 +1061,8 @@ const testLine = (t) =>
   `- ${RESULT_LABEL[t?.result] ?? '**could not run**'} · ${oneLine(t?.claimOrArea, 120)} · \`${oneLine(t?.stepsOrCommand, 120).replaceAll('`', "'")}\` · ${oneLine(t?.evidence, 200)}`;
 // Checks that failed or could not run in an earlier round, and no later tester saw pass.
 const notSeenPassing = [...pendingTests.values()].filter((p) => p.round !== testing?.round);
+// Checks an earlier tester said need a human (the latest report lists its own).
+const earlierNeedsHuman = [...needsHuman.values()].filter((p) => p.round !== testing?.round);
 const testedList = `${
   testing
     ? `\n\n**Hands-on testing** (round ${testing.round}, at ${short(testing.sha)}):\n${
@@ -1009,6 +1074,10 @@ const testedList = `${
 }${
   notSeenPassing.length
     ? `\n\n**Earlier hands-on checks not seen passing since:**\n${notSeenPassing.map((p) => `${testLine(p.entry)} (round ${p.round})`).join('\n')}`
+    : ''
+}${
+  earlierNeedsHuman.length
+    ? `\n\n**Earlier hands-on checks that need a human:**\n${earlierNeedsHuman.map((p) => `${testLine(p.entry)} (round ${p.round})`).join('\n')}`
     : ''
 }`;
 await agent(

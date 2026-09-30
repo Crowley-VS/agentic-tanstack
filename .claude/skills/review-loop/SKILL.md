@@ -42,20 +42,24 @@ Each round:
 Every agent that reads or changes code works in its own git worktree checked out at the PR head, so the main
 checkout is never touched (each agent restores its worktree at the end so it is removed automatically).
 
-**Convergence rules** (see `docs/decisions/0001-review-loop-convergence.md` for the data):
+**Convergence rules:**
 
 - Only **blocker/major** findings keep the loop going, and only they go to the fixer. Minor/nit findings are posted once
   as **suggestions for a human**; the loop never fixes them (fixing minors caused most follow-up findings).
 - Severity is strict: major = breaks CI or a normal flow in ordinary use; a missing test is never blocking. Verifiers
-  grade likelihood too: unusual → at most minor, contrived → nit.
-- At most 3 rounds by default; it stops for a human when new blocking findings don't decrease (from round 2).
-- A PR that changes the review loop itself gets **one review-only round** (no fixer): never let the loop fix the loop.
+  grade likelihood too: unusual → at most minor, contrived → nit (a blocker keeps its grade; untrusted input that
+  reaches a security hole is never contrived).
+- At most 3 rounds by default. From round 2 it stops for a human when open blocking findings don't decrease while new
+  ones keep appearing, or when a fixed blocking finding is reopened a second time.
+- A PR that changes the review loop itself (or whose changed files cannot be listed) gets **one review-only round**
+  (no fixer): never let the loop fix the loop.
 - Hands-on checks no agent can do (repository variables, the author's local commits, exact test counts in the
   description) are **needs-human**: listed in the summary, never blocking. Write PR descriptions without exact counts.
-- Before each round it checks free space on /tmp and the worktree disk and stops cleanly below 20%.
+- Before each round it checks /tmp and the worktree disk and stops cleanly below 2 GB or 20% of inodes free (or when
+  it cannot check).
 
-It ends ✅ when a complete round leaves no blocker/major open. An agent that returned nothing, a failure the tester saw,
-a push that did not land, or `maxRounds` ends with ⚠️ and the open findings.
+It ends ✅ when a complete round leaves no blocker/major open and the tester saw something pass. An agent that returned
+nothing, a failure the tester saw, a push that did not land, or `maxRounds` ends with ⚠️ and the open findings.
 
 ## Manual fallback (other agents / no workflows)
 

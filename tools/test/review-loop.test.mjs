@@ -35,7 +35,7 @@ const DEFAULTS = {
   fix: (call) => ({ checkPassed: true, commit: push(call), resolutions: [] }),
   summary: () => 'commented',
   files: () => ({ files: ['tools/check.mjs'] }),
-  disk: () => ({ freePct: 80 }),
+  disk: () => ({ freeGb: 100, inodeFreePct: 80 }),
 };
 
 /** A clean hands-on run: what the tester reports unless a test answers for it (`tester`). */
@@ -145,15 +145,18 @@ describe('review-loop workflow', () => {
     });
   });
 
-  it('reports open findings when it runs out of rounds', async () => {
-    const { result, summary, of } = await runLoop({
-      review: reviewerFinds([1]),
-      fix: (call) => ({
-        checkPassed: true,
-        commit: push(call),
-        resolutions: [{ path: finding.path, title: finding.title, status: 'not-done' }],
-      }),
-    });
+  it('reports open findings when it runs out of rounds (3 by default)', async () => {
+    const { result, summary, of } = await runLoop(
+      {
+        review: reviewerFinds([1]),
+        fix: (call) => ({
+          checkPassed: true,
+          commit: push(call),
+          resolutions: [{ path: finding.path, title: finding.title, status: 'not-done' }],
+        }),
+      },
+      { pr: 7 }, // no maxRounds: the default applies
+    );
     expect(of('fix')).toHaveLength(2); // rounds 1 and 2; round 3 is the last review
     expect(summary).toContain('⚠️');
     expect(summary).toContain('3 rounds reached');
@@ -299,6 +302,8 @@ describe('review-loop workflow', () => {
       items: { required: ['claimOrArea', 'stepsOrCommand', 'result', 'evidence'] },
     });
     expect(tester?.prompt).toContain('"could-not-run"');
+    expect(tester?.prompt).toContain('is "needs-human", not "could-not-run"');
+    expect(tester?.prompt).not.toContain('when everything ran');
     const reviewer = of('review').find((c) => c.label === 'review:correctness:r1');
     expect(reviewer?.opts.schema.required).toEqual(['findings']);
     // (stack-only scripts such as the ports one are kept out by `pnpm agents:check`)
@@ -664,28 +669,113 @@ describe('review-loop convergence rules', () => {
       },
       { pr: 7, maxRounds: 6 },
     );
-    expect(summary).toContain('not decreasing');
+    // round 1 posts one and the fixer leaves it open; round 2 finds a new one in the fixes
+    expect(summary).toContain('blocking findings not decreasing (1 → 2)');
     expect(result.complete).toBe(false);
-    // round 1 posts one, round 2 finds a new one in the fixes: 1 → 1 is not decreasing
     expect(of('review').filter((c) => c.label.startsWith('review:correctness'))).toHaveLength(2);
   });
 
-  it('downgrades by likelihood: unusual → at most minor, contrived → nit', async () => {
+  it('stops for a human when the fix of a blocking finding brings a new one (1 → 1)', async () => {
+    const { result, summary, of } = await runLoop(
+      {
+        review: ({ label }) =>
+          label === 'review:correctness:r1'
+            ? { findings: [blocking('Bug A')] }
+            : label === 'review:correctness:r2'
+              ? { findings: [blocking('Bug B, from the fix of A')] }
+              : { findings: [] },
+        fix: fixOpen,
+      },
+      { pr: 7, maxRounds: 6 },
+    );
+    expect(summary).toContain('blocking findings not decreasing (1 → 1)');
+    expect(of('fix')).toHaveLength(1);
+    expect(of('review').filter((c) => c.label.startsWith('review:correctness'))).toHaveLength(2);
+    expect(result.complete).toBe(false);
+  });
+
+  it('never stops for "not decreasing" after a round with no blocking finding (0 → 1)', async () => {
+    const { result, summary, of } = await runLoop({
+      // round 1's reviewer died (a gap, 0 blocking); the retry finds a blocker
+      review: ({ label }) =>
+        label === 'review:correctness:r1'
+          ? null
+          : label === 'review:correctness:r2'
+            ? { findings: [blocking('Found on the retry')] }
+            : { findings: [] },
+      fix: fixOpen,
+    });
+    expect(of('fix')).toHaveLength(1);
+    expect(summary).not.toContain('not decreasing');
+    expect(result.complete).toBe(true);
+  });
+
+  it('stops for a human when a fixed blocking finding is reopened a second time', async () => {
+    const { result, summary, of } = await runLoop(
+      { review: reviewerFinds([1, 2, 3, 4, 5]), fix: fixOpen },
+      { pr: 7, maxRounds: 5 },
+    );
+    // round 2 reopens it and it gets one more fix; round 3 reopens it again
+    expect(of('fix')).toHaveLength(2);
+    expect(of('review').filter((c) => c.label.startsWith('review:correctness'))).toHaveLength(3);
+    expect(summary).toContain('reopened a second time: tools/check.mjs: Gate order hides drift');
+    expect(result.complete).toBe(false);
+  });
+
+  it('downgrades by likelihood: unusual → at most minor, contrived → nit, a blocker never', async () => {
+    const hole = {
+      ...finding,
+      severity: 'blocker',
+      title: 'Branch name pasted unquoted into a shell',
+    };
     const { of } = await runLoop({
       review: ({ label }) =>
         label === 'review:correctness:r1'
-          ? { findings: [blocking('Breaks only on Windows'), blocking('Needs a crafted input')] }
+          ? {
+              findings: [
+                blocking('Breaks only on Windows'),
+                blocking('Needs a crafted input'),
+                hole,
+              ],
+            }
           : { findings: [] },
       verify: ({ label }) =>
         label.includes('Windows')
           ? { valid: true, reason: 'real', likelihood: 'unusual' }
-          : { valid: true, reason: 'real', likelihood: 'contrived' },
+          : label.includes('Branch name')
+            ? { valid: true, reason: 'real', severity: 'blocker', likelihood: 'contrived' }
+            : { valid: true, reason: 'real', likelihood: 'contrived' },
+      fix: fixOpen,
     });
-    const posted = of('post')[0]?.prompt ?? '';
-    expect(posted).toMatch(
-      /"title": "Breaks only on Windows"[\s\S]*?"severity": "minor"|"severity": "minor"[\s\S]*?"title": "Breaks only on Windows"/,
+    const post = of('post')[0]?.prompt ?? '';
+    const grades = Object.fromEntries(
+      JSON.parse(post.slice(post.indexOf('FINDINGS:\n') + 'FINDINGS:\n'.length)).map((f) => [
+        f.title,
+        f.severity,
+      ]),
     );
-    expect(of('fix')).toHaveLength(0); // nothing blocking left
+    expect(grades).toEqual({
+      'Breaks only on Windows': 'minor',
+      'Needs a crafted input': 'nit',
+      [hole.title]: 'blocker',
+    });
+    // only the blocker is fixed
+    expect(of('fix')).toHaveLength(1);
+    expect(of('fix')[0].prompt).toContain(hole.title);
+    expect(of('fix')[0].prompt).not.toContain('Needs a crafted input');
+  });
+
+  it('has verifiers grade by the strict rubric and give every likelihood', async () => {
+    const { of } = await runLoop({
+      review: reviewerFinds([1]),
+      fix: () => ({ checkPassed: false, resolutions: [] }),
+    });
+    const verify = of('verify')[0];
+    const verdict = verify?.opts.schema.properties.verdicts.items;
+    expect(verdict.required).toContain('likelihood');
+    expect(verdict.properties.severity.description).toContain('A missing test is NEVER');
+    expect(verdict.properties.likelihood.description).not.toContain('a crafted input');
+    expect(verify?.prompt).toContain("grade EVERY item's likelihood");
   });
 
   it('reviews only once, with no fixer, when the PR changes the review loop itself', async () => {
@@ -699,11 +789,42 @@ describe('review-loop convergence rules', () => {
     expect(result.complete).toBe(false);
   });
 
-  it('stops cleanly before a round when disk space is low', async () => {
-    const { result, summary, of } = await runLoop({ disk: () => ({ freePct: 5 }) });
-    expect(of('review')).toHaveLength(0);
-    expect(summary).toContain('low disk space before round 1');
-    expect(result.complete).toBe(false);
+  it('reviews only once, with no fixer, when the changed files cannot be listed', async () => {
+    for (const files of [
+      () => ({ files: [], error: 'HTTP 406' }),
+      () => null,
+      () => ({ files: [] }),
+    ]) {
+      const { result, summary, of } = await runLoop({ files, review: reviewerFinds([1]) });
+      expect(of('fix')).toHaveLength(0);
+      expect(summary).toContain("review-only: the PR's changed files could not be listed");
+      expect(result.complete).toBe(false);
+    }
+  });
+
+  it('stops cleanly before a round when disk space or inodes are low', async () => {
+    for (const disk of [
+      () => ({ freeGb: 1.5, inodeFreePct: 80 }),
+      () => ({ freeGb: 100, inodeFreePct: 5 }),
+    ]) {
+      const { result, summary, of } = await runLoop({ disk });
+      expect(of('review')).toHaveLength(0);
+      expect(summary).toContain('low disk space before round 1');
+      expect(result.complete).toBe(false);
+    }
+    // a 1 TB disk 81% used still has ~190 GB free
+    const big = await runLoop({ disk: () => ({ freeGb: 190, inodeFreePct: 90 }) });
+    expect(big.result.complete).toBe(true);
+  });
+
+  it('says it could not check disk space, instead of calling it low, when the check fails', async () => {
+    for (const disk of [() => ({ error: 'df: permission denied' }), () => null]) {
+      const { result, summary, of } = await runLoop({ disk });
+      expect(of('review')).toHaveLength(0);
+      expect(summary).toContain('could not check disk space before round 1');
+      expect(summary).not.toContain('low disk space');
+      expect(result.complete).toBe(false);
+    }
   });
 
   it('never blocks on a hands-on check that needs a human', async () => {
@@ -723,6 +844,59 @@ describe('review-loop convergence rules', () => {
     });
     expect(result.complete).toBe(true);
     expect(summary).toContain('**needs a human** · template smoke test');
+  });
+
+  it('never ends ✅ when nothing the tester ran passed', async () => {
+    const { result, summary } = await runLoop({
+      tester: () => ({ findings: [], tested: [{ ...TESTED[0], result: 'n/a', evidence: '-' }] }),
+    });
+    expect(result.complete).toBe(false);
+    expect(summary).toContain('tester (nothing it ran passed)');
+    expect(summary).not.toContain('✅');
+  });
+
+  it('lists a check an earlier tester said needs a human, whatever the latest report says', async () => {
+    const smoke = {
+      claimOrArea: 'template smoke test',
+      stepsOrCommand: 'needs TEMPLATE_MAINTENANCE=true',
+      result: 'needs-human',
+      evidence: 'repository variable',
+    };
+    const { result, summary } = await runLoop({
+      review: reviewerFinds([1]),
+      tester: ({ label }) => ({
+        findings: [],
+        tested: label.endsWith(':r1') ? [...TESTED, smoke] : TESTED,
+      }),
+      fix: fixOpen,
+    });
+    expect(result.complete).toBe(true);
+    expect(summary).toContain('**Hands-on testing** (round 2');
+    expect(summary).toContain('**Earlier hands-on checks that need a human:**');
+    expect(summary).toContain(
+      '- **needs a human** · template smoke test · `needs TEMPLATE_MAINTENANCE=true` · repository variable (round 1)',
+    );
+  });
+
+  it('stops counting an earlier failure once a later tester finds it needs a human', async () => {
+    const counts = {
+      claimOrArea: 'PR says 134 tools tests',
+      stepsOrCommand: 'pnpm check --all',
+      result: 'fail',
+      evidence: '186 tools tests ran',
+    };
+    const { result, summary, of } = await runLoop({
+      tester: ({ label }) =>
+        label.endsWith(':r1')
+          ? { findings: [finding], tested: [...TESTED, counts] }
+          : { findings: [], tested: [...TESTED, { ...counts, result: 'needs-human' }] },
+      fix: fixOpen,
+    });
+    const retest = of('review').find((c) => c.label === 'review:tester:r2')?.prompt;
+    expect(retest).toContain('then report them "needs-human"');
+    expect(result.complete).toBe(true);
+    expect(summary).toContain('✅');
+    expect(summary).toContain('- **needs a human** · PR says 134 tools tests');
   });
 
   it('verifies findings in batches of up to 6, not one agent per finding', async () => {

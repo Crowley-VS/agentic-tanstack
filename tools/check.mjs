@@ -135,7 +135,7 @@ function nxAgentsCheck() {
   }
   const [cmd, ...args] = nx;
   // Nx may install a temporary copy of itself under TMPDIR; give it a private one and delete it,
-  // so repeated checks never pile up in a small /tmp (see docs/decisions/0001).
+  // so repeated checks never pile up in a small /tmp.
   const tmp = mkdtempSync(join(tmpdir(), 'nx-agents-check-'));
   let status;
   try {
