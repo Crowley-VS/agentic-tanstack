@@ -11,7 +11,6 @@ tmp/
 # Nx
 .nx/cache/
 .nx/workspace-data/
-.nx/polygraph/
 .nx/self-healing/
 .nx/migrate-runs/
 
@@ -24,7 +23,6 @@ tmp/
 # Agents: local-only files (plans, logs, spike notes, personal settings, worktrees)
 .agents/ignore/
 .claude/settings.local.json
-.claude/worktrees/
 CLAUDE.local.md
 .playwright-cli/
 
@@ -35,3 +33,7 @@ CLAUDE.local.md
 !.vscode/settings.json
 .DS_Store
 Thumbs.db
+
+# Added by `nx configure-ai-agents` (keep exact lines so re-runs stay no-ops)
+.nx/polygraph
+.claude/worktrees

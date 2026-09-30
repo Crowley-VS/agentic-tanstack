@@ -1,0 +1,35 @@
+{
+  "name": "@acme/tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Repo tooling: dev ports, Claude Code hooks, agent-config sync/check, pnpm check.",
+  "type": "module",
+  "nx": {
+    "name": "tools",
+    "tags": [
+      "scope:tooling",
+      "type:tooling"
+    ],
+    "targets": {
+      "test": {
+        "inputs": [
+          "default",
+          "^production",
+          "{workspaceRoot}/.agents/generated.json",
+          "{workspaceRoot}/.agents/skills/**/*",
+          "{workspaceRoot}/.claude/settings.json",
+          "{workspaceRoot}/.claude/workflows/**/*",
+          "{workspaceRoot}/AGENTS.md",
+          "{workspaceRoot}/eslint.config.mjs",
+          "{workspaceRoot}/lefthook.yml",
+          "{workspaceRoot}/nx.json",
+          "{workspaceRoot}/**/package.json",
+          "{workspaceRoot}/**/project.json",
+          "{workspaceRoot}/**/tsconfig*.json",
+          "{workspaceRoot}/**/{vite,vitest,eslint,oxlint}.config.*",
+          "{workspaceRoot}/**/.oxlintrc.json*"
+        ]
+      }
+    }
+  }
+}

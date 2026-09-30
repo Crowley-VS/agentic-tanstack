@@ -1,0 +1,42 @@
+{
+  "$comment": "Files and marked sections owned by the generic agent kit (agentic-nx-monorepo). Stack-specific content lives in stack-owned files or <!-- stack:... --> sections. `tools/kit-sync.mjs` (added later) copies these from the kit repo; do not put stack-specific content in them.",
+  "files": [
+    "tools/agents.mjs",
+    "tools/check.mjs",
+    "tools/check-versions.mjs",
+    "tools/lib/generated.mjs",
+    "tools/lib/bin.mjs",
+    "tools/lib/file-types.mjs",
+    "tools/test/bin.test.mjs",
+    "tools/agent-hooks/guard-paths.mjs",
+    "tools/agent-hooks/format.mjs",
+    "tools/test/helpers.mjs",
+    "tools/test/helpers.test.mjs",
+    "tools/test/generated.test.mjs",
+    "tools/test/hooks.test.mjs",
+    "tools/test/agents.test.mjs",
+    "lefthook.yml",
+    ".worktreeinclude",
+    "tools/pr-review.mjs",
+    "tools/test/pr-review.test.mjs",
+    ".claude/workflows/review-loop-run.js",
+    "tools/test/review-loop.test.mjs",
+    ".agents/skills/review-loop/SKILL.md",
+    "tools/agent-hooks/pr-opened.mjs",
+    "tools/test/pr-opened.test.mjs"
+  ],
+  "notYetGeneric": {
+    "tools/dev-ports.mjs": "its services (web/api/db ports, the /graphql path, Postgres URLs and database names) are this stack's; it joins the kit once they come from stack config",
+    "tools/test/dev-ports.test.mjs": "tests tools/dev-ports.mjs"
+  },
+  "sections": {
+    "AGENTS.md": ["done", "commands", "navigation", "invariants", "workflow", "pull-requests"]
+  },
+  "merged": {
+    ".claude/settings.json": "kit provides env, hooks, base permissions and plugins; stacks may add permissions and plugins",
+    ".oxlintrc.json": "kit provides base rules; ignorePatterns are rendered by agents:sync",
+    ".oxfmtrc.json": "kit provides base options; ignorePatterns are rendered by agents:sync",
+    ".gitignore": "kit block + stack block",
+    ".gitattributes": "kit provides the base and the linguist-generated block rendered by agents:sync; stacks add their own entries"
+  }
+}

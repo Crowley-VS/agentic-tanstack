@@ -1,0 +1,6 @@
+{
+  "$comment": "Template provenance. Updated by release-please in the upstream repo; bootstrap copies it into package.json#template and removes this file.",
+  "repo": "Crowley-VS/agentic-tanstack",
+  "version": "0.0.0",
+  "commit": null
+}

@@ -1,0 +1,3 @@
+# Keep agent worktrees and local agent files out of the Nx project graph.
+.claude/worktrees/
+.agents/ignore/

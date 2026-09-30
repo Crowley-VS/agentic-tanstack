@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "PLAYWRIGHT_HTML_OPEN": "never"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(pnpm check *)",
+      "Bash(pnpm format)",
+      "Bash(pnpm ports *)",
+      "Bash(pnpm regen *)",
+      "Bash(pnpm agents:sync *)",
+      "Bash(pnpm agents:check *)",
+      "Bash(pnpm agents:nx-check)",
+      "Bash(pnpm nx affected -t lint eslint typecheck test)",
+      "Bash(pnpm nx run tools:lint)",
+      "Bash(pnpm nx run tools:eslint)",
+      "Bash(pnpm nx run tools:test)",
+      "Bash(pnpm nx run validators:lint)",
+      "Bash(pnpm nx run validators:eslint)",
+      "Bash(pnpm nx run validators:typecheck)",
+      "Bash(pnpm nx run validators:test)",
+      "Bash(pnpm nx run scripts:lint)",
+      "Bash(pnpm nx run scripts:eslint)",
+      "Bash(pnpm nx run scripts:typecheck)",
+      "Bash(pnpm nx run scripts:test)",
+      "Bash(pnpm nx show *)",
+      "Bash(node tools/dev-ports.mjs)",
+      "Bash(node tools/dev-ports.mjs --print)",
+      "Bash(node tools/dev-ports.mjs --json)",
+      "Bash(node tools/dev-ports.mjs --env)",
+      "Bash(node tools/dev-ports.mjs --get *)",
+      "Bash(git status *)",
+      "Bash(node tools/pr-review.mjs info *)",
+      "Bash(node tools/pr-review.mjs head *)",
+      "Bash(node tools/pr-review.mjs diff *)",
+      "Bash(node tools/pr-review.mjs threads *)",
+      "Bash(gh pr diff *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh run view *)"
+    ],
+    "ask": [
+      "Bash(pnpm nx *--command*)",
+      "Bash(pnpm nx *--args*)",
+      "Bash(pnpm nx *--graph*)",
+      "Bash(pnpm nx exec *)",
+      "Bash(pnpm add *)",
+      "Bash(pnpm remove *)",
+      "Bash(pnpm dlx *)",
+      "Bash(git push *)",
+      "Bash(node tools/pr-review.mjs post *)",
+      "Bash(node tools/pr-review.mjs resolve *)",
+      "Bash(node tools/pr-review.mjs comment *)",
+      "Bash(railway up *)",
+      "Bash(railway config apply *)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(!.env.example)",
+      "Bash(npx *)",
+      "Bash(pnpm agents:nx *)",
+      "Bash(pnpm nx configure-ai-agents *)",
+      "Bash(pnpm exec nx configure-ai-agents *)",
+      "Bash(nx configure-ai-agents *)",
+      "Edit(/.claude/skills/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/tools/agent-hooks/guard-paths.mjs"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/tools/agent-hooks/format.mjs"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/tools/agent-hooks/pr-opened.mjs"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "nx-claude-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "nrwl/nx-ai-agents-config"
+      }
+    },
+    "railway-skills": {
+      "source": {
+        "source": "github",
+        "repo": "railwayapp/railway-skills"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "typescript-lsp@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "railway@railway-skills": true,
+    "nx@nx-claude-plugins": true
+  },
+  "sandbox": {
+    "filesystem": {
+      "allowRead": ["/tmp/.nx", "~/.nx"],
+      "allowWrite": ["/tmp/.nx", "~/.nx"]
+    },
+    "network": {
+      "allowUnixSockets": ["/tmp/.nx", "~/.nx"]
+    }
+  }
+}

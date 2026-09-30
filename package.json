@@ -1,0 +1,41 @@
+{
+  "name": "@acme/source",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "check": "node tools/check.mjs",
+    "format": "oxfmt",
+    "ports": "node tools/dev-ports.mjs --print",
+    "regen": "node tools/agents.mjs regen",
+    "agents:sync": "node tools/agents.mjs sync",
+    "agents:check": "node tools/agents.mjs check",
+    "agents:nx": "NX_AI_FILES_USE_LOCAL=true nx configure-ai-agents --agents claude --no-interactive",
+    "agents:nx-check": "node tools/check.mjs --nx-agents",
+    "prepare": "node tools/agents.mjs install-hooks"
+  },
+  "devDependencies": {
+    "@nx/eslint": "catalog:",
+    "@nx/eslint-plugin": "catalog:",
+    "@nx/js": "catalog:",
+    "@nx/oxlint": "catalog:",
+    "@nx/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "@typescript-eslint/parser": "catalog:",
+    "eslint": "catalog:",
+    "lefthook": "catalog:",
+    "nx": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "tslib": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.27.1"
+}
