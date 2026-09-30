@@ -176,9 +176,15 @@ importers:
 
   apps/api:
     dependencies:
+      '@acme/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@acme/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@acme/validators':
+        specifier: workspace:*
+        version: link:../../packages/validators
       '@escape.tech/graphql-armor':
         specifier: 'catalog:'
         version: 3.2.0(@envelop/core@5.6.1)(@escape.tech/graphql-armor-types@0.7.0)

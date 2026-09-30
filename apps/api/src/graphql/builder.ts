@@ -3,6 +3,7 @@
 // the request context instead (`client: (ctx) => ctx.db`).
 import type { Db, Relations } from '@acme/db';
 import { relations } from '@acme/db';
+import { NOTE_LIMITS } from '@acme/validators/notes';
 import SchemaBuilder from '@pothos/core';
 import ComplexityPlugin from '@pothos/plugin-complexity';
 import DataloaderPlugin from '@pothos/plugin-dataloader';
@@ -48,13 +49,16 @@ export const builder = new SchemaBuilder<{
   relay: {
     clientMutationId: 'omit',
     cursorType: 'String',
+    // a connection field's own complexity multiplies by its page size (e.g. `notes`), so its
+    // edges must not multiply again by the default list multiplier
+    edgesFieldOptions: { complexity: { field: 1, multiplier: 1 } },
   },
   drizzle: {
     client: (ctx) => ctx.db,
     getTableConfig,
     relations,
     defaultConnectionSize: 20,
-    maxConnectionSize: 50,
+    maxConnectionSize: NOTE_LIMITS.pageSizeMax,
   },
 });
 

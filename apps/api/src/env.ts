@@ -10,6 +10,8 @@ const Env = z
     API_PORT: z.coerce.number().int().positive().optional(),
     DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
     DB_POOL_MAX: z.coerce.number().int().positive().default(10),
+    /** Kill switch: reject every mutation (e.g. while abuse is being dealt with). */
+    READ_ONLY: z.stringbool().default(false),
     /** Shared with the web server (its BFF sends it on every request): the API is private. */
     INTERNAL_API_SECRET: z
       .string()

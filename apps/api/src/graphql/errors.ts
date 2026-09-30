@@ -1,16 +1,21 @@
 import type { StandardSchemaV1 } from '@pothos/plugin-validation';
+import { GraphQLError } from 'graphql';
 
 export type FieldError = { path: string[]; message: string };
 
 /**
- * Invalid input, one entry per field: what the Validation plugin turns Zod issues into, and what
- * mutations return as a `ValidationError` union member (Errors plugin) instead of a GraphQL error.
+ * Invalid input, one entry per field (its path in the arguments, e.g. ["input", "title"]): what
+ * the Validation plugin turns Zod issues into. A mutation returns it as a `ValidationError` union
+ * member (Errors plugin); anywhere else it is a GraphQL error with code BAD_USER_INPUT, not masked
+ * like unexpected errors, because the client needs to know what to fix.
  */
-export class ValidationError extends Error {
+export class ValidationError extends GraphQLError {
   readonly fieldErrors: FieldError[];
 
-  constructor(fieldErrors: FieldError[], message = 'Invalid input') {
-    super(message);
+  constructor(fieldErrors: FieldError[]) {
+    super(`Invalid input: ${fieldErrors.map((e) => e.message).join('; ')}`, {
+      extensions: { code: 'BAD_USER_INPUT', fieldErrors },
+    });
     this.name = 'ValidationError';
     this.fieldErrors = fieldErrors;
   }

@@ -9,6 +9,7 @@ import type { Env } from './env';
 import type { Context } from './graphql/builder';
 import { schema } from './graphql/schema';
 import { useInternalSecret } from './plugins/internal-secret';
+import { useReadOnly } from './plugins/read-only';
 
 export const GRAPHQL_PATH = '/graphql';
 export const HEALTH_PATH = '/health';
@@ -35,6 +36,7 @@ export function createApp({ db, env }: { db: Db; env: Env }) {
       // this header; the BFF's JSON POSTs never do
       useCSRFPrevention({ requestHeaders: ['x-graphql-yoga-csrf'] }),
       ...(production ? [useDisableIntrospection()] : []),
+      useReadOnly(env.READ_ONLY),
       // cheap limits checked before execution; the Complexity plugin (builder.ts) adds per-field cost
       EnvelopArmorPlugin({
         maxDepth: { n: 10 },
