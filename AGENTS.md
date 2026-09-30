@@ -10,7 +10,7 @@ Business logic lives in `packages/core`; apps are thin wrappers around it.
 
 ## Done means
 
-1. `pnpm check` passes (lint, formatting, module boundaries, typecheck, tests, generated-file drift, agent config).
+1. `pnpm check` passes (lint, formatting, module boundaries, typecheck, tests, builds, generated-file drift, agent config).
 2. The stack's extra checks below pass.
 3. If you changed runtime behavior: you ran it and verified the behavior yourself.
 
@@ -34,7 +34,7 @@ Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and U
 | Regenerate generated files                       | `pnpm regen`                                                     |
 | Format everything (hooks format what you edit)   | `pnpm format`                                                    |
 | One target                                       | `pnpm nx run <project>:<target>` (e.g. `pnpm nx run tools:test`) |
-| Only what changed                                | `pnpm nx affected -t lint eslint typecheck test`                 |
+| Only what changed                                | `pnpm nx affected -t lint eslint typecheck test build`           |
 | What exists / depends on what                    | `pnpm nx show projects`, `pnpm nx show project <name> --json`    |
 | Sync agent skills after editing `.agents/skills` | `pnpm agents:sync`                                               |
 
@@ -58,6 +58,14 @@ Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and U
 | Wipe and start fresh                         | `pnpm db:reset`                                                                           |
 | Browse data                                  | `pnpm db:studio` · `pnpm nx run db:db-psql`                                               |
 
+**API** (`apps/api`, GraphQL at `/graphql`, health at `/health`):
+
+| Task                                                   | Command                                                                                    |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| Run it (migrates first; this checkout's port; reloads) | `pnpm nx run api:dev` (GraphiQL at the printed URL)                                        |
+| Change the schema                                      | edit `apps/api/src/graphql/*`, then `pnpm nx run api:print-schema` (or `pnpm regen`)       |
+| Production bundle (what the image runs)                | `pnpm nx run api:build`, then in `apps/api`: `node dist/migrate.mjs`, `node dist/main.mjs` |
+
 <!-- stack:end -->
 
 <!-- kit:start:navigation -->
@@ -73,7 +81,7 @@ Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and U
 
 <!-- stack:start:navigation -->
 
-- **API shape** → `packages/graphql/schema.graphql` (arrives with the API).
+- **API shape** → `packages/graphql/schema.graphql` (printed from `apps/api/src/graphql`; never edit it by hand).
 - **Pages and params** → `apps/web/src/routeTree.gen.ts` (arrives with the web app).
 
 <!-- stack:end -->
@@ -84,8 +92,10 @@ Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and U
 
 | Path                  | What                                                                                                 | Tags                            |
 | --------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `apps/api`            | GraphQL API: Yoga + Pothos on Node; env schema, security defaults, tsdown bundle                     | `scope:api`, `type:app`         |
 | `packages/core`       | business logic: writes and domain errors (`createNote`, `addComment`); takes a `Db`, never a request | `scope:server`, `type:feature`  |
 | `packages/db`         | Drizzle schema, relations, migrations, deterministic seed, per-test-file databases (`testDb()`)      | `scope:server`, `type:data`     |
+| `packages/graphql`    | `schema.graphql`: the API contract clients generate their types from (generated)                     | `scope:shared`, `type:util`     |
 | `packages/validators` | Zod schemas + limits shared by api and web                                                           | `scope:shared`, `type:util`     |
 | `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync                                        | `scope:tooling`, `type:tooling` |
 | `docker-compose.yml`  | the local Postgres (dev, e2e, tests only)                                                            |                                 |
@@ -113,6 +123,13 @@ Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and U
   Drizzle's relational queries (in the API: the Pothos Drizzle plugin), which plan nested data as one statement.
 - **Migrations:** generate them from the schema and commit them. Once git tracks a migration (staged or
   committed) the guard hook blocks edits to it; only a new, untracked one may still be edited.
+- **The schema has no side effects at import:** nothing under `apps/api/src/graphql` reads the environment or opens a
+  connection (the database comes from the request context), so `print-schema` runs with an empty environment; a test
+  enforces it. The environment is validated once, at startup (`apps/api/src/env.ts`).
+- **The API is private and locked down by default:** CSRF prevention, graphql-armor limits, and introspection,
+  GraphiQL and field suggestions in development only. In production it listens for the web server alone and requires
+  `INTERNAL_API_SECRET` on every request but `/health`; in development it listens on 127.0.0.1 without it. Tests pin
+  each default: change one only on purpose.
 - **Tests that touch the database** use `testDb()` from `@acme/db/testing` and assume nothing about other tests'
   rows (tests in one file share its database; files never share).
 

@@ -4,7 +4,7 @@
 //   pnpm check          affected projects only (fast; what agents run before saying "done")
 //   pnpm check --all    every project (what CI's template smoke test runs)
 //
-// Gates: lint (oxlint) · eslint (module boundaries) · typecheck · test · Nx sync (tsconfig
+// Gates: lint (oxlint) · eslint (module boundaries) · typecheck · test · build · Nx sync (tsconfig
 // project references) · lint of the files no project owns · formatting (oxfmt --check) ·
 // agent-config hygiene · Nx's agent config · generated-file drift · pinned version consistency.
 //
@@ -21,7 +21,7 @@ import { SCRIPT_EXTENSIONS } from './lib/file-types.mjs';
 import { findArtifact, loadManifest } from './lib/generated.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const TARGETS = ['lint', 'eslint', 'typecheck', 'test'];
+const TARGETS = ['lint', 'eslint', 'typecheck', 'test', 'build'];
 const all = process.argv.includes('--all');
 
 function hasBaseCommit() {

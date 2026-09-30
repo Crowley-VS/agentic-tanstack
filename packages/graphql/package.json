@@ -1,0 +1,16 @@
+{
+  "name": "@acme/graphql",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The API's GraphQL schema (SDL), printed from the Pothos schema in apps/api: the contract web (and later mobile) clients generate their types from.",
+  "exports": {
+    "./schema.graphql": "./schema.graphql"
+  },
+  "nx": {
+    "name": "graphql",
+    "tags": [
+      "scope:shared",
+      "type:util"
+    ]
+  }
+}

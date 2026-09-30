@@ -1,0 +1,7 @@
+"""An ISO 8601 timestamp in UTC, with milliseconds"""
+scalar DateTime
+
+type Query {
+  """The version of the running API (APP_VERSION, set at deploy time)"""
+  apiVersion: String!
+}

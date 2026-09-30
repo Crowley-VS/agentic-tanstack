@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
@@ -288,6 +288,30 @@ function readmeTitle(): string | undefined {
   return title && /^[a-z0-9][a-z0-9-]*$/.test(title) ? title : undefined;
 }
 
+const DEPENDENCY_FIELDS = [
+  'dependencies',
+  'devDependencies',
+  'peerDependencies',
+  'optionalDependencies',
+] as const;
+
+/**
+ * A renamed package.json, formatted as oxfmt formats it: renaming `@acme/db` to `@yourco/db` can
+ * move it within its dependency map, which oxfmt keeps sorted (and `pnpm check` checks). Written
+ * like JSON.stringify, which is also how oxfmt prints package.json.
+ */
+export function sortedPackageJson(text: string): string {
+  const pkg = JSON.parse(text) as Record<string, unknown>;
+  for (const field of DEPENDENCY_FIELDS) {
+    const deps = pkg[field];
+    if (deps && typeof deps === 'object')
+      pkg[field] = Object.fromEntries(
+        Object.entries(deps).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      );
+  }
+  return `${JSON.stringify(pkg, null, 2)}\n`;
+}
+
 function isText(buf: Buffer): boolean {
   return !buf.subarray(0, 8000).includes(0);
 }
@@ -369,6 +393,7 @@ export async function main() {
       // The deploy config points at the template repo; point it at yours.
       if (template?.repo && file.startsWith('.railway/'))
         after = after.replaceAll(template.repo, repoSlug);
+      if (after !== before && basename(file) === 'package.json') after = sortedPackageJson(after);
       if (after !== before) {
         changed++;
         if (!opts.dryRun) writeFileSync(full, after);
