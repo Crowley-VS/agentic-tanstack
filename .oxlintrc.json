@@ -18,6 +18,7 @@
     "**/.output/**",
     "**/coverage/**",
     ".claude/skills/**",
-    "packages/db/migrations/**"
+    "packages/db/migrations/**",
+    "packages/graphql/schema.graphql"
   ]
 }

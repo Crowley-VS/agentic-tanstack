@@ -12,7 +12,7 @@
       "Bash(pnpm agents:sync *)",
       "Bash(pnpm agents:check *)",
       "Bash(pnpm agents:nx-check)",
-      "Bash(pnpm nx affected -t lint eslint typecheck test)",
+      "Bash(pnpm nx affected -t lint eslint typecheck test build)",
       "Bash(pnpm nx run tools:lint)",
       "Bash(pnpm nx run tools:eslint)",
       "Bash(pnpm nx run tools:test)",
@@ -54,7 +54,14 @@
       "Bash(pnpm nx run db:db-generate)",
       "Bash(pnpm db:up)",
       "Bash(pnpm db:migrate)",
-      "Bash(pnpm db:seed)"
+      "Bash(pnpm db:seed)",
+      "Bash(pnpm nx run api:lint)",
+      "Bash(pnpm nx run api:eslint)",
+      "Bash(pnpm nx run api:typecheck)",
+      "Bash(pnpm nx run api:test)",
+      "Bash(pnpm nx run api:build)",
+      "Bash(pnpm nx run api:print-schema)",
+      "Bash(pnpm nx run api:dev)"
     ],
     "ask": [
       "Bash(pnpm nx *--command*)",
@@ -85,7 +92,8 @@
       "Bash(pnpm nx configure-ai-agents *)",
       "Bash(pnpm exec nx configure-ai-agents *)",
       "Bash(nx configure-ai-agents *)",
-      "Edit(/.claude/skills/**)"
+      "Edit(/.claude/skills/**)",
+      "Edit(/packages/graphql/schema.graphql)"
     ]
   },
   "hooks": {

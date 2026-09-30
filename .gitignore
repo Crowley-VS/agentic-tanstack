@@ -37,3 +37,6 @@ Thumbs.db
 # Added by `nx configure-ai-agents` (keep exact lines so re-runs stay no-ops)
 .nx/polygraph
 .claude/worktrees
+
+# Built API: dist/ above, plus the migrations its build copies next to it
+apps/api/migrations/

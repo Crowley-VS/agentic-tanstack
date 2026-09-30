@@ -14,7 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { needsShell, USAGE, withoutScriptsRules } from '../bootstrap.ts';
+import { needsShell, sortedPackageJson, USAGE, withoutScriptsRules } from '../bootstrap.ts';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const PROJECT = ['--yes', '--scope', '@smoke', '--name', 'smoke-app'];
@@ -257,6 +257,27 @@ describe('bootstrap', () => {
       '{\n  "allow": [\n    "Bash(pnpm nx run scripts:test)",\n    "Bash(pnpm nx run tools:test)"\n  ]\n}\n';
     expect(withoutScriptsRules(text)).toBe(
       '{\n  "allow": [\n    "Bash(pnpm nx run tools:test)"\n  ]\n}\n',
+    );
+  });
+
+  it('re-sorts the dependencies a new scope moves, keeping every other key in place', () => {
+    const renamed = JSON.stringify({
+      name: '@zed/api',
+      dependencies: { '@zed/db': 'workspace:*', '@pothos/core': '^4', graphql: '16' },
+      devDependencies: { tsx: '^4', '@zed/testing': 'workspace:*' },
+      nx: { tags: ['scope:api'] },
+    });
+    expect(sortedPackageJson(renamed)).toBe(
+      `${JSON.stringify(
+        {
+          name: '@zed/api',
+          dependencies: { '@pothos/core': '^4', '@zed/db': 'workspace:*', graphql: '16' },
+          devDependencies: { '@zed/testing': 'workspace:*', tsx: '^4' },
+          nx: { tags: ['scope:api'] },
+        },
+        null,
+        2,
+      )}\n`,
     );
   });
 

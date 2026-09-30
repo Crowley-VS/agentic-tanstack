@@ -1,0 +1,87 @@
+{
+  "name": "@acme/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The GraphQL API (Yoga + Pothos) on Node. Reads through the Drizzle plugin; writes go through @acme/core.",
+  "type": "module",
+  "dependencies": {
+    "@acme/db": "workspace:*",
+    "@escape.tech/graphql-armor": "catalog:",
+    "@graphql-yoga/plugin-csrf-prevention": "catalog:",
+    "@graphql-yoga/plugin-disable-introspection": "catalog:",
+    "@pothos/core": "catalog:",
+    "@pothos/plugin-complexity": "catalog:",
+    "@pothos/plugin-dataloader": "catalog:",
+    "@pothos/plugin-drizzle": "catalog:",
+    "@pothos/plugin-errors": "catalog:",
+    "@pothos/plugin-relay": "catalog:",
+    "@pothos/plugin-validation": "catalog:",
+    "dataloader": "catalog:",
+    "drizzle-orm": "catalog:",
+    "graphql": "catalog:",
+    "graphql-yoga": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "tsdown": "catalog:",
+    "tsx": "catalog:"
+  },
+  "nx": {
+    "name": "api",
+    "tags": [
+      "scope:api",
+      "type:app"
+    ],
+    "targets": {
+      "dev": {
+        "command": "node ../../tools/dev-ports.mjs --exec -- tsx watch src/main.ts",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "continuous": true,
+        "dependsOn": [
+          {
+            "projects": [
+              "db"
+            ],
+            "target": "db-migrate"
+          }
+        ]
+      },
+      "build": {
+        "command": "tsdown",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "cache": true,
+        "inputs": [
+          "production",
+          "^production",
+          {
+            "externalDependencies": [
+              "tsdown"
+            ]
+          }
+        ],
+        "outputs": [
+          "{projectRoot}/dist",
+          "{projectRoot}/migrations"
+        ]
+      },
+      "print-schema": {
+        "command": "tsx src/print-schema.ts ../../packages/graphql/schema.graphql",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "cache": true,
+        "inputs": [
+          "production",
+          "^production"
+        ],
+        "outputs": [
+          "{workspaceRoot}/packages/graphql/schema.graphql"
+        ]
+      }
+    }
+  }
+}
