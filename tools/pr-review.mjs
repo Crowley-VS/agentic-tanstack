@@ -9,11 +9,19 @@
 //   node tools/pr-review.mjs diff    --pr <n>                      the PR's diff, from its per-file
 //        patches: works where `gh pr diff` fails (HTTP 406, too large to render); files without a
 //        patch (removed, binary, huge) are listed at the end, without their changes
-//   node tools/pr-review.mjs post    --pr <n> --round <r>   < findings.json
+//   node tools/pr-review.mjs state   --pr <n> [--files] [--base <sha>]
+//        → everything the workflow needs between rounds, in ONE call (each part is { error } when
+//          it failed): { head (as `head`, then fetched so worktrees can check it out), threads (as
+//          `threads --all --brief`), disk: { freeGb, inodeFreePct } (the lowest of the temp dir,
+//          /tmp and the checkout), files: { count, loop } (--files: how many files the PR changes
+//          and which of them belong to the review loop), fix: { base, files, added, addedNonTest }
+//          (--base: lines the commits base..head add, and how many of them are outside tests) }
+//   node tools/pr-review.mjs post    --pr <n> --round <r> [--list]   < findings.json
 //        findings: [{ id?, path, line?, severity, title, body, suggestion? }]
 //        → one PR review (event COMMENT) with inline comments on diff lines; findings that
 //          can't be anchored to a changed line (file-level ones, files the PR does not change)
-//          go into the review body. Prints { posted: [ids], inline }.
+//          go into the review body. Prints { posted: [ids], inline }; --list adds the
+//          `threads --all --brief` listing after the post as `threads`.
 //   node tools/pr-review.mjs threads --pr <n> [--all] [--brief]    review-loop findings (JSON)
 //        → [{ id, title, severity, path, line, resolved, wontfix, body, ... }]: the threads YOU
 //          started, plus the findings you posted in a review body (threadId null);
@@ -34,7 +42,8 @@
 // repository.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statfsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -464,6 +473,47 @@ export function briefThreads(list) {
   };
 }
 
+/** The review loop's own files: a PR that changes one gets a review-only round (never let the loop fix the loop). */
+export const LOOP_PATHS =
+  /^(?:\.claude\/workflows\/review-loop|tools\/pr-review\.mjs|tools\/agent-hooks\/pr-opened\.mjs|\.agents\/skills\/review-loop\/|\.claude\/skills\/review-loop\/|tools\/test\/(?:review-loop|pr-review|pr-opened)\.test\.mjs)/;
+
+/** Pure: `state --files`. The files API lists at most 3000 files, so a count that reaches it may hide some. */
+export function loopFiles(names) {
+  return { count: names.length, loop: names.filter((f) => LOOP_PATHS.test(f)) };
+}
+
+/**
+ * Pure: the lowest free space (GB, one decimal) and share of free inodes (%, rounded down) over
+ * `fs.statfsSync` results. A filesystem without a fixed inode count (files 0, e.g. btrfs) never
+ * runs out of inodes: it is left out of the inode figure.
+ */
+export function diskFree(stats) {
+  let bytes = Infinity;
+  let inodes = 100;
+  for (const s of stats) {
+    bytes = Math.min(bytes, s.bavail * s.bsize);
+    if (s.files > 0) inodes = Math.min(inodes, (100 * s.ffree) / s.files);
+  }
+  return { freeGb: Math.floor((bytes / 1024 ** 3) * 10) / 10, inodeFreePct: Math.floor(inodes) };
+}
+
+const TEST_PATH = /(?:^|\/)(?:test|tests|__tests__)\/|\.(?:test|spec)\.[cm]?[jt]sx?$/;
+/** Pure: the size of a fix from `git diff --numstat` output; binary files count 0 lines. */
+export function fixSize(numstat) {
+  let files = 0;
+  let added = 0;
+  let addedNonTest = 0;
+  for (const line of numstat.split('\n')) {
+    const m = line.match(/^(\d+|-)\t(?:\d+|-)\t(.+)$/);
+    if (!m) continue;
+    const n = m[1] === '-' ? 0 : Number(m[1]);
+    files++;
+    added += n;
+    if (!TEST_PATH.test(m[2])) addedNonTest += n;
+  }
+  return { files, added, addedNonTest };
+}
+
 /** Pure: ids of fixed/wontfix resolutions that match no review-loop thread (a typo, or a PRRT_ node id). */
 export function unknownIds(resolutions, known) {
   const ids = new Set(known.map((t) => t.id));
@@ -517,6 +567,14 @@ const PR_META =
 
 function prInfo(pr, extra = '') {
   return JSON.parse(gh(['pr', 'view', String(pr), '--json', `${PR_META}${extra}`]));
+}
+
+/** The PR's head, refused for forks, closed PRs and branch names git would not accept. */
+function checkedHead(pr) {
+  const head = headOf(prInfo(pr));
+  // git's own rules on top of isSafeBranch (throws on a name git would not accept)
+  execFileSync('git', ['check-ref-format', '--branch', head.branch], { stdio: 'ignore' });
+  return head;
 }
 
 function viewerLogin() {
@@ -603,6 +661,22 @@ function prFiles(pr) {
     .map((l) => JSON.parse(l));
 }
 
+/** Just the names of the PR's changed files (up to the API's 3000). */
+function prFileNames(pr) {
+  return gh(['api', `repos/${repoSlug()}/pulls/${pr}/files`, '--paginate', '--jq', '.[].filename'])
+    .split('\n')
+    .filter((l) => l.trim());
+}
+
+/** `fn()`, or { error } with its message: one failed part of `state` never hides the others. */
+function part(fn) {
+  try {
+    return fn();
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
 function readStdinJson() {
   const text = readFileSync(0, 'utf8').trim();
   return text ? JSON.parse(text) : [];
@@ -616,7 +690,7 @@ function arg(argv, name) {
 // ---------- CLI ----------
 function main(argv) {
   const [cmd] = argv;
-  const known = ['info', 'head', 'diff', 'post', 'threads', 'resolve', 'comment'];
+  const known = ['info', 'head', 'diff', 'state', 'post', 'threads', 'resolve', 'comment'];
   const pr = known.includes(cmd) ? prNumber(arg(argv, 'pr')) : undefined;
   switch (cmd) {
     case 'diff': {
@@ -630,10 +704,35 @@ function main(argv) {
       );
       return;
     case 'head': {
-      const head = headOf(prInfo(pr));
-      // git's own rules on top of isSafeBranch (throws on a name git would not accept)
-      execFileSync('git', ['check-ref-format', '--branch', head.branch], { stdio: 'ignore' });
-      console.log(JSON.stringify(head));
+      console.log(JSON.stringify(checkedHead(pr)));
+      return;
+    }
+    case 'state': {
+      const base = arg(argv, 'base');
+      if (base !== undefined && !/^[0-9a-f]{40}$/.test(base))
+        throw new Error('--base must be a full commit sha');
+      const head = part(() => {
+        const h = checkedHead(pr);
+        execFileSync('git', ['fetch', '-q', 'origin', `pull/${pr}/head`], { stdio: 'ignore' });
+        return h;
+      });
+      const dirs = [...new Set([tmpdir(), '/tmp', '.'])].filter((d) => existsSync(d));
+      const state = {
+        head,
+        threads: part(() => briefThreads(threads(pr, true))),
+        disk: part(() => diskFree(dirs.map((d) => statfsSync(d)))),
+      };
+      if (argv.includes('--files')) state.files = part(() => loopFiles(prFileNames(pr)));
+      if (base)
+        state.fix = part(() => {
+          if (!head.sha) throw new Error(`no PR head to compare with: ${head.error}`);
+          const numstat = execFileSync('git', ['diff', '--numstat', base, head.sha], {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          return { base, ...fixSize(numstat) };
+        });
+      console.log(JSON.stringify(state, null, 2));
       return;
     }
     case 'post': {
@@ -646,12 +745,13 @@ function main(argv) {
         ['api', `repos/${repoSlug()}/pulls/${pr}/reviews`, '-X', 'POST', '--input', '-'],
         JSON.stringify(review),
       );
-      console.log(
-        JSON.stringify({
-          posted: findings.map((f) => f.id ?? findingId(f)),
-          inline: review.comments.length,
-        }),
-      );
+      const out = {
+        posted: findings.map((f) => f.id ?? findingId(f)),
+        inline: review.comments.length,
+      };
+      // posted either way: a failed listing must not look like a failed post
+      if (argv.includes('--list')) out.threads = part(() => briefThreads(threads(pr, true)));
+      console.log(JSON.stringify(out, null, 2));
       return;
     }
     case 'threads': {
@@ -709,7 +809,7 @@ function main(argv) {
     }
     default:
       console.error(
-        'usage: node tools/pr-review.mjs <info|head|diff|post|threads|resolve|comment> --pr <n> ...',
+        'usage: node tools/pr-review.mjs <info|head|diff|state|post|threads|resolve|comment> --pr <n> ...',
       );
       process.exitCode = 1;
   }

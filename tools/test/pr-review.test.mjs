@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   anchorLine,
@@ -8,9 +9,13 @@ import {
   commentableLines,
   commentBody,
   diffFromFiles,
+  diskFree,
   findingId,
+  fixSize,
   headOf,
   isSafeBranch,
+  LOOP_PATHS,
+  loopFiles,
   MARKER,
   markerId,
   omittedFiles,
@@ -706,5 +711,53 @@ describe('prNumber', () => {
       'o/r#1',
     ])
       expect(() => prNumber(bad)).toThrow('--pr must be a pull request number');
+  });
+});
+
+describe('state: what the review loop reads between rounds', () => {
+  it("finds the review loop's own files among a PR's changed files", () => {
+    const names = [
+      '.claude/workflows/review-loop-run.js',
+      'tools/pr-review.mjs',
+      'tools/agent-hooks/pr-opened.mjs',
+      '.agents/skills/review-loop/SKILL.md',
+      '.claude/skills/review-loop/SKILL.md',
+      'tools/test/review-loop.test.mjs',
+      'tools/test/pr-review.test.mjs',
+      'tools/check.mjs',
+      'packages/db/src/review-loop-notes.ts',
+    ];
+    expect(loopFiles(names)).toEqual({ count: 9, loop: names.slice(0, 7) });
+    expect(LOOP_PATHS.test('docs/review-loop.md')).toBe(false);
+  });
+
+  it('lists the files from the files API, which also works for a PR too large to diff', () => {
+    const source = readFileSync(new URL('../pr-review.mjs', import.meta.url), 'utf8');
+    const fn = source.slice(source.indexOf('function prFileNames'));
+    expect(fn.slice(0, fn.indexOf('\n}'))).toMatch(/pulls\/\$\{pr\}\/files[\s\S]*'--paginate'/);
+    expect(fn.slice(0, fn.indexOf('\n}'))).not.toContain("'diff'"); // HTTP 406 over 300 files
+  });
+
+  it('reports the lowest free space and inode share, skipping filesystems without inode counts', () => {
+    const gb = 1024 ** 3;
+    const tmpfs = { bsize: 4096, bavail: (15.97 * gb) / 4096, files: 1_000_000, ffree: 979_999 };
+    const disk = { bsize: 4096, bavail: (120 * gb) / 4096, files: 5_000_000, ffree: 4_900_000 };
+    const btrfs = { bsize: 4096, bavail: (300 * gb) / 4096, files: 0, ffree: 0 };
+    expect(diskFree([tmpfs, disk, btrfs])).toEqual({ freeGb: 15.9, inodeFreePct: 97 });
+    expect(diskFree([btrfs])).toEqual({ freeGb: 300, inodeFreePct: 100 });
+  });
+
+  it('measures a fix by the lines it adds, in all and outside tests', () => {
+    const numstat = [
+      '4\t1\tpackages/db/scripts/db-up.mjs',
+      '24\t0\ttools/test/db-tasks.test.mjs',
+      '13\t1\tpackages/core/package.json',
+      '9\t2\tpackages/db/src/schema.test.ts',
+      '30\t0\tapps/web/src/__tests__/a.tsx',
+      '-\t-\tdocs/diagram.png',
+      '',
+    ].join('\n');
+    expect(fixSize(numstat)).toEqual({ files: 6, added: 80, addedNonTest: 17 });
+    expect(fixSize('')).toEqual({ files: 0, added: 0, addedNonTest: 0 });
   });
 });
