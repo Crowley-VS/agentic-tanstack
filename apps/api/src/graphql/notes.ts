@@ -58,8 +58,7 @@ builder.queryFields((t) => ({
     type: 'notes',
     nullable: true,
     args: { id: t.arg.id({ required: true, validate: z.uuid({ error: 'Invalid note id' }) }) },
-    resolve: (query, _root, { id }, ctx) =>
-      ctx.db.query.notes.findFirst(query({ where: { id: String(id) } })),
+    resolve: (query, _root, { id }, ctx) => ctx.db.query.notes.findFirst(query({ where: { id } })),
   }),
 }));
 
