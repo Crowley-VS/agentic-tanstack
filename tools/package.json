@@ -23,6 +23,7 @@
           "{workspaceRoot}/eslint.config.mjs",
           "{workspaceRoot}/lefthook.yml",
           "{workspaceRoot}/nx.json",
+          "{workspaceRoot}/packages/graphql/schema.graphql",
           "{workspaceRoot}/**/package.json",
           "{workspaceRoot}/**/project.json",
           "{workspaceRoot}/**/tsconfig*.json",

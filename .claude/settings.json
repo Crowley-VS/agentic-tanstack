@@ -68,6 +68,7 @@
       "Bash(pnpm nx run web:test)",
       "Bash(pnpm nx run web:build)",
       "Bash(pnpm nx run web:generate-routes)",
+      "Bash(pnpm nx run web:codegen)",
       "Bash(pnpm nx run web:dev)",
       "Bash(pnpm nx run web:serve)",
       "Bash(pnpm dev)"
@@ -102,6 +103,7 @@
       "Bash(pnpm exec nx configure-ai-agents *)",
       "Bash(nx configure-ai-agents *)",
       "Edit(/.claude/skills/**)",
+      "Edit(/apps/web/src/gql/**)",
       "Edit(/apps/web/src/routeTree.gen.ts)",
       "Edit(/packages/graphql/schema.graphql)"
     ]

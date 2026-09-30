@@ -1,8 +1,10 @@
-// The HTML shell every page renders in (SSR), plus the not-found page.
-import { createRootRoute, HeadContent, Outlet, Scripts } from '@tanstack/react-router';
+// The HTML shell every page renders in (SSR), plus the not-found page. Loaders get the request's
+// QueryClient as `context.queryClient` (router.tsx).
+import type { QueryClient } from '@tanstack/react-query';
+import { createRootRouteWithContext, HeadContent, Outlet, Scripts } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 
-export const Route = createRootRoute({
+export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   head: () => ({
     meta: [
       { charSet: 'utf-8' },

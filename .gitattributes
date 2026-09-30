@@ -6,6 +6,7 @@
 .claude/skills/** linguist-generated=true
 packages/db/migrations/** linguist-generated=true
 packages/graphql/schema.graphql linguist-generated=true
+apps/web/src/gql/** linguist-generated=true
 apps/web/src/routeTree.gen.ts linguist-generated=true
 # agents:generated:end
 
