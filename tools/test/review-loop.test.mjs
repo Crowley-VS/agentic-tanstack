@@ -34,6 +34,8 @@ const DEFAULTS = {
   post: posted,
   fix: (call) => ({ checkPassed: true, commit: push(call), resolutions: [] }),
   summary: () => 'commented',
+  files: () => ({ files: ['tools/check.mjs'] }),
+  disk: () => ({ freePct: 80 }),
 };
 
 /** A clean hands-on run: what the tester reports unless a test answers for it (`tester`). */
@@ -624,40 +626,30 @@ describe('review-loop convergence rules', () => {
     expect(r2.prompt).toContain(`git diff ${SHA}..`);
   });
 
-  it('stops after fixing when only minor/nit findings were open (no re-review for suggestions)', async () => {
+  it('never fixes minor/nit findings: posts them as suggestions for a human and ends ✅', async () => {
     const { result, summary, of } = await runLoop({
       review: ({ label }) =>
         label === 'review:correctness:r1' ? { findings: [minor] } : { findings: [] },
-      fix: (call) => ({
-        checkPassed: true,
-        commit: push(call),
-        resolutions: [{ path: minor.path, title: minor.title, status: 'fixed' }],
-      }),
     });
-    expect(of('fix')).toHaveLength(1);
+    expect(of('post')).toHaveLength(1);
+    expect(of('fix')).toHaveLength(0);
     expect(of('review').some((c) => c.label.endsWith(':r2'))).toBe(false);
     expect(summary).toContain('✅');
-    expect(summary).toContain(
-      "fix pass for suggestions (1 fixed, 0 won't fix, 0 left open); fixes not re-reviewed",
-    );
+    expect(summary).toContain('1 suggestion(s) left for a human');
+    expect(summary).toContain('Suggestions for a human');
+    expect(summary).toContain(minor.title);
     expect(result.complete).toBe(true);
   });
 
-  it('counts only blocker/major as blocking: an unfixed minor still ends ✅ with an optional note', async () => {
-    const { result, summary } = await runLoop({
+  it('gives the fixer only blocking findings, never the minor ones next to them', async () => {
+    const { of } = await runLoop({
       review: ({ label }) =>
-        label === 'review:correctness:r1' ? { findings: [minor] } : { findings: [] },
-      fix: (call) => ({
-        checkPassed: true,
-        commit: push(call),
-        resolutions: [{ path: minor.path, title: minor.title, status: 'not-done' }],
-      }),
+        label === 'review:correctness:r1' ? { findings: [finding, minor] } : { findings: [] },
+      fix: fixOpen,
     });
-    expect(result.complete).toBe(true);
-    expect(summary).toContain('optional suggestion');
-    // says what the fixer reported, never "fixed" for what it left open
-    expect(summary).toContain("(0 fixed, 0 won't fix, 1 left open)");
-    expect(summary).not.toContain('suggestions fixed');
+    expect(of('fix')).toHaveLength(1);
+    expect(of('fix')[0].prompt).toContain(finding.title);
+    expect(of('fix')[0].prompt).not.toContain(minor.title);
   });
 
   it('stops for a human when blocking findings do not decrease', async () => {
@@ -674,7 +666,63 @@ describe('review-loop convergence rules', () => {
     );
     expect(summary).toContain('not decreasing');
     expect(result.complete).toBe(false);
-    expect(of('review').filter((c) => c.label.startsWith('review:correctness'))).toHaveLength(3);
+    // round 1 posts one, round 2 finds a new one in the fixes: 1 → 1 is not decreasing
+    expect(of('review').filter((c) => c.label.startsWith('review:correctness'))).toHaveLength(2);
+  });
+
+  it('downgrades by likelihood: unusual → at most minor, contrived → nit', async () => {
+    const { of } = await runLoop({
+      review: ({ label }) =>
+        label === 'review:correctness:r1'
+          ? { findings: [blocking('Breaks only on Windows'), blocking('Needs a crafted input')] }
+          : { findings: [] },
+      verify: ({ label }) =>
+        label.includes('Windows')
+          ? { valid: true, reason: 'real', likelihood: 'unusual' }
+          : { valid: true, reason: 'real', likelihood: 'contrived' },
+    });
+    const posted = of('post')[0]?.prompt ?? '';
+    expect(posted).toMatch(
+      /"title": "Breaks only on Windows"[\s\S]*?"severity": "minor"|"severity": "minor"[\s\S]*?"title": "Breaks only on Windows"/,
+    );
+    expect(of('fix')).toHaveLength(0); // nothing blocking left
+  });
+
+  it('reviews only once, with no fixer, when the PR changes the review loop itself', async () => {
+    const { result, summary, of } = await runLoop({
+      files: () => ({ files: ['.claude/workflows/review-loop-run.js', 'tools/check.mjs'] }),
+      review: reviewerFinds([1]),
+    });
+    expect(of('fix')).toHaveLength(0);
+    expect(of('review').some((c) => c.label.endsWith(':r2'))).toBe(false);
+    expect(summary).toContain('review-only: this PR changes the review loop itself');
+    expect(result.complete).toBe(false);
+  });
+
+  it('stops cleanly before a round when disk space is low', async () => {
+    const { result, summary, of } = await runLoop({ disk: () => ({ freePct: 5 }) });
+    expect(of('review')).toHaveLength(0);
+    expect(summary).toContain('low disk space before round 1');
+    expect(result.complete).toBe(false);
+  });
+
+  it('never blocks on a hands-on check that needs a human', async () => {
+    const { result, summary } = await runLoop({
+      tester: () => ({
+        findings: [],
+        tested: [
+          ...TESTED,
+          {
+            claimOrArea: 'template smoke test',
+            stepsOrCommand: 'needs TEMPLATE_MAINTENANCE=true',
+            result: 'needs-human',
+            evidence: 'repository variable',
+          },
+        ],
+      }),
+    });
+    expect(result.complete).toBe(true);
+    expect(summary).toContain('**needs a human** · template smoke test');
   });
 
   it('verifies findings in batches of up to 6, not one agent per finding', async () => {
@@ -752,8 +800,10 @@ describe('review-loop round-5 fixes', () => {
 
 /** The fixer fixes every open finding its prompt lists, and pushes. */
 const fixOpen = (call) => {
-  const start = call.prompt.indexOf('[', call.prompt.indexOf('Open findings (JSON'));
-  const open = JSON.parse(call.prompt.slice(start, call.prompt.indexOf('\n\n1. Address')));
+  const start = call.prompt.indexOf('[', call.prompt.indexOf('Open BLOCKING findings (JSON'));
+  const open = JSON.parse(
+    call.prompt.slice(start, call.prompt.indexOf('\nMinor/nit findings on the PR')),
+  );
   return {
     checkPassed: true,
     commit: push(call),
@@ -1013,10 +1063,9 @@ describe('review-loop round-2 fixes', () => {
       { pr: 7, maxRounds: 5 },
     );
     expect(of('review')).toHaveLength(4);
-    expect(of('fix')).toHaveLength(1);
-    expect(summary).toContain(
-      "fix pass for suggestions (1 fixed, 0 won't fix, 1 left open); fixes not re-reviewed; gaps: tester saw a failure: PR says 134 tools tests",
-    );
+    expect(of('fix')).toHaveLength(0); // minor/nit findings are never fixed by the loop
+    expect(summary).toContain("the tester's report would repeat at the same head");
+    expect(summary).toContain('tester saw a failure: PR says 134 tools tests');
     // the failure was never seen passing
     expect(summary).toContain('⚠️');
     expect(result.complete).toBe(false);

@@ -14,7 +14,7 @@ human to merge. The human still merges; the loop never merges.
 
 The workflow spawns many agents and pushes to the PR branch, so confirm with the user first if they haven't already
 asked for the loop. Then run the saved workflow **`review-loop-run`** (`.claude/workflows/review-loop-run.js`) with
-`args: { pr: <number> }` (optional `maxRounds`, default 5).
+`args: { pr: <number> }` (optional `maxRounds`, default 3).
 
 **When a PR is opened:** the PostToolUse hook `tools/agent-hooks/pr-opened.mjs` sees a successful `gh pr create` (or
 `gh pr ready` for a draft) that opened a PR of THIS repository, and has Claude offer the loop on it. Only the user can
@@ -34,7 +34,7 @@ Each round:
    that is still present reopens it; severity re-graded).
 3. **Post**: confirmed findings become one GitHub review with inline comments (`tools/pr-review.mjs post`); a
    finding that cannot be anchored to a changed line goes into the review body. If posting fails, the loop stops.
-4. **Fix**: a fixer addresses every open finding with the **smallest change** that resolves it (large changes become
+4. **Fix**: a fixer addresses every open **blocker/major** finding with the **smallest change** that resolves it (large changes become
    "won't fix — needs a follow-up"; wrong findings get an evidence-based won't-fix), runs
    `pnpm check`, commits, pushes to the PR branch, and resolves the threads. The loop checks that the fix commit
    became the PR head before it counts anything as fixed.
@@ -42,17 +42,20 @@ Each round:
 Every agent that reads or changes code works in its own git worktree checked out at the PR head, so the main
 checkout is never touched (each agent restores its worktree at the end so it is removed automatically).
 
-**Convergence rules** (why the loop ends): only **blocker/major** findings keep it going (a finding of unknown
-severity counts as one). Minor/nit findings are posted once as suggestions and fixed in the same pass, without
-another review round. It stops ✅ when a complete round (every reviewer and verifier answered, the tester ran
-everything and saw it pass) leaves no blocker/major open; what a round missed is made up in the next one (a reviewer
-that did not answer reviews the whole PR, a finding without a verdict is verified again, and a hands-on check that
-failed or could not run stays failed until a later tester, asked to run it again, reports it passing). It stops early
-for a human when blocking findings stop decreasing. A fix pass that changed nothing ends the run (a finding it calls
-fixed without a fix commit stays open). A tester's failure adds no review round of its own: with no blocker/major
-open, the run stops after the fix pass. Anything else (an agent that returned nothing, a tester that reports nothing
-it ran, something it could not run or a failure, a push that did not land, `maxRounds`) ends with ⚠️ and the open
-findings.
+**Convergence rules** (see `docs/decisions/0001-review-loop-convergence.md` for the data):
+
+- Only **blocker/major** findings keep the loop going, and only they go to the fixer. Minor/nit findings are posted once
+  as **suggestions for a human**; the loop never fixes them (fixing minors caused most follow-up findings).
+- Severity is strict: major = breaks CI or a normal flow in ordinary use; a missing test is never blocking. Verifiers
+  grade likelihood too: unusual → at most minor, contrived → nit.
+- At most 3 rounds by default; it stops for a human when new blocking findings don't decrease (from round 2).
+- A PR that changes the review loop itself gets **one review-only round** (no fixer): never let the loop fix the loop.
+- Hands-on checks no agent can do (repository variables, the author's local commits, exact test counts in the
+  description) are **needs-human**: listed in the summary, never blocking. Write PR descriptions without exact counts.
+- Before each round it checks free space on /tmp and the worktree disk and stops cleanly below 20%.
+
+It ends ✅ when a complete round leaves no blocker/major open. An agent that returned nothing, a failure the tester saw,
+a push that did not land, or `maxRounds` ends with ⚠️ and the open findings.
 
 ## Manual fallback (other agents / no workflows)
 

@@ -6,7 +6,7 @@ export const meta = {
   description:
     'The multi-agent run behind the review-loop skill: review a PR, post findings as inline comments, fix them, re-review only the fixes until no blocker/major issues remain',
   whenToUse:
-    'Only when the review-loop skill says to: after the user confirmed the run, or when the pr-opened hook reports their REVIEW_LOOP_AUTO=1 opt-in (it spawns many agents and pushes to the PR branch). Pass args {pr: <number>, maxRounds?: 5}.',
+    'Only when the review-loop skill says to: after the user confirmed the run, or when the pr-opened hook reports their REVIEW_LOOP_AUTO=1 opt-in (it spawns many agents and pushes to the PR branch). Pass args {pr: <number>, maxRounds?: 3}.',
   phases: [
     {
       title: 'Review',
@@ -31,10 +31,19 @@ export const meta = {
 // fix adds surface):
 //   * Round 1 reviews the whole PR. Later rounds review ONLY the fix commits since the previous
 //     round (plus whether the fixes actually fixed what they claimed).
-//   * Only BLOCKING findings (blocker, major) keep the loop going. Minor/nit findings are posted
-//     once as suggestions and addressed in the same fix pass, never triggering another round.
+//   * Only BLOCKING findings (blocker, major) keep the loop going, and only they go to the fixer.
+//     Minor/nit findings are posted once as suggestions for a human to pick; the loop never fixes
+//     them (in run 2 of PR #1, fixes to minor findings caused 11 of 13 follow-up findings).
+//   * Severity is strict (see FINDINGS): major = breaks CI or a normal flow in ordinary use.
+//     Verifiers also grade likelihood; unusual → at most minor, contrived → nit.
 //   * Fixes are minimal: the smallest change that resolves the finding, no new abstractions.
-//   * Stop early when blocking findings stop decreasing, and hand off to a human.
+//   * Stop early when blocking findings stop decreasing (from round 2), and hand off to a human.
+//   * A PR that changes the review loop itself gets one review-only round (never let the loop fix
+//     the loop). Hands-on checks no agent can do (repo variables, PR-description claims about
+//     local commits, exact test counts) are "needs-human": listed, never blocking.
+//   * Before each round the loop checks free space on /tmp and the worktree disk (agents' copies
+//     once exhausted /tmp's inodes) and stops cleanly below 20% free.
+// See docs/decisions/0001-review-loop-convergence.md for the data behind these rules.
 //   * A fix pass that changed nothing ends the run: another round would review the same head. A
 //     finding it calls "fixed" without a fix commit stays open.
 // The loop ends when a complete round (every reviewer and verifier answered) leaves no blocking
@@ -58,7 +67,7 @@ export const meta = {
 // ---------------------------------------------------------------------------------------------
 const PR = args?.pr;
 if (!PR) throw new Error('review-loop: pass args {pr: <number>}');
-const MAX_ROUNDS = args?.maxRounds ?? 5;
+const MAX_ROUNDS = args?.maxRounds ?? 3;
 
 const SHA = /^[0-9a-f]{40}$/;
 // Pasted into the fixer's `git push`: plain ref-name characters only (see pr-review.mjs head).
@@ -129,7 +138,7 @@ const FINDINGS = {
             type: 'string',
             enum: ['blocker', 'major', 'minor', 'nit'],
             description:
-              'blocker: breaks a core flow, loses data, or is a security hole. major: a real bug users/agents will hit, or changed behavior with no test. minor: edge case, robustness, misleading doc. nit: polish. Do not inflate.',
+              'STRICT. blocker: breaks a core flow, loses data, or is an exploitable security hole in ordinary use. major: breaks CI or a normal user/agent flow in ordinary use, with a reproduction. minor: needs an unusual setup or input (a dead/misbehaving agent, a fork PR, Windows, symlinked checkouts, a contrived command), robustness, a misleading doc, or a missing test. nit: polish. A missing test is NEVER blocker/major.',
           },
           title: {
             type: 'string',
@@ -157,7 +166,12 @@ const TESTED = {
     properties: {
       claimOrArea: { type: 'string', description: 'the claim, test-plan item or area tested' },
       stepsOrCommand: { type: 'string', description: 'the exact command(s) or steps you ran' },
-      result: { type: 'string', enum: ['pass', 'fail', 'could-not-run'] },
+      result: {
+        type: 'string',
+        enum: ['pass', 'fail', 'could-not-run', 'n/a', 'needs-human'],
+        description:
+          "needs-human: a check no agent can do from a worktree (it needs a repository variable, a human's local commit process, an external account) or a PR-description statement that is not a behavior (e.g. exact test counts); n/a: does not apply to this PR",
+      },
       evidence: {
         type: 'string',
         description:
@@ -182,6 +196,12 @@ const VERDICT = {
     valid: { type: 'boolean' },
     reason: { type: 'string', description: 'evidence: file:line references and why' },
     severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
+    likelihood: {
+      type: 'string',
+      enum: ['ordinary', 'unusual', 'contrived'],
+      description:
+        'how likely the failure is in normal use: ordinary (normal flows), unusual (a specific but real setup), contrived (needs a misbehaving agent, a crafted input, or several unlikely conditions)',
+    },
     duplicateOf: {
       type: 'string',
       description: 'title of an earlier finding in the list this duplicates, if any',
@@ -214,7 +234,9 @@ code, confusing names, changes outside the PR's stated scope.`,
 const TESTER_PROMPT = `You are the HANDS-ON TESTER. Your job is to actually run and try the PR, not just read it.
 After the setup above:
 1. Run \`pnpm check --all\`. Any failure is a finding (include the failing output).
-2. Verify EVERY claim in the PR description and every test-plan item by doing it yourself.
+2. Verify every claim in the PR description and every test-plan item that you CAN verify from this worktree by doing
+   it yourself. Mark what you cannot ("needs-human": repository variables, the author's local commit process, external
+   accounts) and treat exact numbers in the description (test counts, line counts) as notes, not claims: never "fail".
 3. Exercise the changed behavior the way a user or agent would: run changed scripts/CLIs with realistic and edge-case
    inputs (against throwaway copies in a temp dir when they modify files, e.g. bootstrap). If the PR changes an app
    the repo can run (see the package.json scripts and AGENTS.md), start it in the background (if the repo gives each
@@ -278,6 +300,13 @@ const POSTED = {
 const keyOf = (f) => `${f.path}::${String(f.title).trim().toLowerCase()}`;
 /** Blocker or major, or a severity the loop does not know (fail closed): only minor/nit are not. */
 const isBlocking = (severity) => severity !== 'minor' && severity !== 'nit';
+/** Strict grading: an unusual failure is at most minor, a contrived one a nit. */
+function graded(severity, likelihood) {
+  const order = ['nit', 'minor', 'major', 'blocker'];
+  const cap = likelihood === 'contrived' ? 'nit' : likelihood === 'unusual' ? 'minor' : 'blocker';
+  const i = Math.min(order.indexOf(severity), order.indexOf(cap));
+  return i < 0 ? severity : order[i];
+}
 /** Head commit reviewed in the previous round: later rounds only review what changed since. */
 let reviewedHead;
 /**
@@ -451,6 +480,46 @@ function openFindings(threads) {
 // First, so a fork PR is refused before any agent reads or runs its code.
 let head = await prHead('head:r1');
 
+// Never let the loop fix the loop: a PR that changes the loop's own files gets a review-only round.
+const LOOP_PATHS =
+  /^(?:\.claude\/workflows\/review-loop|tools\/pr-review\.mjs|tools\/agent-hooks\/pr-opened\.mjs|\.agents\/skills\/review-loop\/|\.claude\/skills\/review-loop\/|tools\/test\/(?:review-loop|pr-review|pr-opened)\.test\.mjs)/;
+const changed = await agent(
+  `Run \`gh pr diff ${PR} --name-only\` and return the file paths it prints as {files}. If it fails, return {files: [], error}.`,
+  {
+    label: 'files:r1',
+    phase: 'Review',
+    effort: 'low',
+    schema: {
+      type: 'object',
+      properties: {
+        files: { type: 'array', items: { type: 'string' } },
+        error: { type: 'string' },
+      },
+      required: ['files'],
+    },
+  },
+);
+const selfReview = (changed?.files ?? []).filter((f) => LOOP_PATHS.test(f)).join(', ');
+
+/** Free space on /tmp and the worktree disk, in percent; stops the run cleanly below 20%. */
+async function diskOk(round) {
+  const out = await agent(
+    `Run \`df -P -i /tmp . && df -P -k /tmp .\` and return the LOWEST "free" percentage over all four lines (100 minus the
+Use%/IUse% column) as {freePct}. If a command fails, return {freePct: -1, error}.`,
+    {
+      label: `disk:r${round}`,
+      phase: 'Review',
+      effort: 'low',
+      schema: {
+        type: 'object',
+        properties: { freePct: { type: 'number' }, error: { type: 'string' } },
+        required: ['freePct'],
+      },
+    },
+  );
+  return typeof out?.freePct === 'number' && out.freePct >= 20 ? true : (out?.freePct ?? -1);
+}
+
 // Threads from an earlier run (or a human re-run) are known findings too: without this, round-1
 // reviewers would re-report them as new and the loop would post duplicate threads.
 const startThreads = await listThreads('threads:start', 'Review');
@@ -472,6 +541,14 @@ let converged = false;
 for (let round = 1; round <= MAX_ROUNDS; round++) {
   // ---- 1. Review (3 code lenses + hands-on tester, in parallel, each at the PR head) ----------
   phase('Review');
+  const disk = await diskOk(round);
+  if (disk !== true) {
+    history.push({
+      round,
+      stoppedBy: `low disk space before round ${round} (${disk}% free on /tmp or the worktree disk; clean up and re-run)`,
+    });
+    break;
+  }
   const known = [...seen.values()]
     .map((s) => `- [${STATUS_LABEL[s.status]}] ${s.finding.path}: ${s.finding.title}`)
     .join('\n');
@@ -544,7 +621,8 @@ ${[...pendingTests.values()].map(({ round: r, entry: t }) => `- ${t?.claimOrArea
     // a check reported both ways counts as not passing
     for (const t of ran) if (t?.result === 'pass') pendingTests.delete(norm(t.claimOrArea));
     for (const t of ran)
-      if (t?.result !== 'pass') pendingTests.set(norm(t?.claimOrArea), { round, entry: t });
+      if (t?.result === 'fail' || t?.result === 'could-not-run')
+        pendingTests.set(norm(t?.claimOrArea), { round, entry: t });
     testing = { round, sha: head.sha, tested: ran };
   }
   for (const { round: r, entry: t } of pendingTests.values())
@@ -560,6 +638,9 @@ ${[...pendingTests.values()].map(({ round: r, entry: t }) => `- ${t?.claimOrArea
   const reopenCandidates = [];
   const batchKeys = new Set();
   // then last round's unjudged findings, unless a reviewer reported them again
+  // Findings carried over from last round's missing verdicts are not new: they don't count toward
+  // the "blocking findings not decreasing" stop.
+  const carriedKeys = new Set(unjudged.map(keyOf));
   for (const f of [...raw, ...unjudged]) {
     const k = keyOf(f);
     if (batchKeys.has(k)) continue;
@@ -653,7 +734,7 @@ ${JSON.stringify(
           // the new report's line only belongs to the prior finding's path if it names that file
           line: f.path === path ? (line ?? f.line) : line,
           title,
-          severity: v.severity ?? f.severity,
+          severity: graded(v.severity ?? f.severity, v.likelihood),
           reason: v.reason,
         });
       }
@@ -662,7 +743,7 @@ ${JSON.stringify(
       if (kind === 'new') seen.set(keyOf(f), { status: outcome, finding: f });
       return;
     }
-    const finding = { ...f, severity: v.severity ?? f.severity };
+    const finding = { ...f, severity: graded(v.severity ?? f.severity, v.likelihood) };
     if (kind === 'reopen') reopen({ ...finding, reason: v.reason });
     else confirmedNew.push(finding);
   });
@@ -708,7 +789,11 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
   }
   const open = openFindings(threads);
   const openBlocking = open.filter((f) => isBlocking(severityOf(f)));
-  const newBlocking = [...confirmedNew, ...reopened].filter((f) => isBlocking(f.severity)).length;
+  // New blocking findings only: a reopened finding gets one more fix attempt (a second reopen of
+  // the same finding stops the run, below).
+  const newBlocking = confirmedNew.filter(
+    (f) => isBlocking(f.severity) && !carriedKeys.has(keyOf(f)),
+  ).length;
   history.push({
     round,
     kind: !delta
@@ -727,18 +812,21 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
   log(
     `round ${round}: posted ${confirmedNew.length}, reopened ${reopened.length}, open ${open.length}${gaps.length ? `, gaps: ${gaps.join('; ')}` : ''}`,
   );
-  if (!gaps.length && !open.length) {
+  if (!gaps.length && !openBlocking.length) {
     converged = true;
+    break;
+  }
+  // Never let the loop fix the loop: one review-only round for PRs that change it.
+  if (selfReview) {
+    history.push({
+      round,
+      stoppedBy: `review-only: this PR changes the review loop itself (${selfReview}); a human fixes and merges`,
+    });
     break;
   }
   // Blocking findings must shrink round over round; if they don't, more rounds won't help.
   const prevBlocking = history.at(-2)?.openBlocking;
-  if (
-    round >= 3 &&
-    prevBlocking !== undefined &&
-    newBlocking > 0 &&
-    openBlocking.length >= prevBlocking
-  ) {
+  if (round >= 2 && prevBlocking > 0 && newBlocking > 0 && openBlocking.length >= prevBlocking) {
     history.push({
       round,
       stoppedBy: `blocking findings not decreasing (${prevBlocking} → ${openBlocking.length})`,
@@ -754,8 +842,8 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
     history.push({ round, stoppedBy: `${MAX_ROUNDS} rounds reached (${why.join(', ')})` });
     break;
   }
-  if (!open.length) {
-    // Nothing to fix, but part of the review never answered: review the same head again. The
+  if (!openBlocking.length) {
+    // Nothing blocking to fix, but part of the review never answered: review the same head again. The
     // tester's own report (could not run, a failure) repeats at the same head: stop instead.
     if (gaps.some(retryable)) continue;
     history.push({
@@ -768,10 +856,11 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
   // ---- 5. Fix --------------------------------------------------------------------------------
   phase('Fix');
   const fix = await agent(
-    `${fixContext(head)}\n\n${checkout(head)}\n\nYou are the FIXER for review-loop round ${round}. Open findings (JSON; "id" = the review-loop id of the finding's GitHub thread, absent when it has none; a finding without a "body" is described in full in its thread: \`node tools/pr-review.mjs threads --pr ${PR}\`):
-${JSON.stringify(open, null, 2)}
+    `${fixContext(head)}\n\n${checkout(head)}\n\nYou are the FIXER for review-loop round ${round}. Open BLOCKING findings (JSON; "id" = the review-loop id of the finding's GitHub thread, absent when it has none; a finding without a "body" is described in full in its thread: \`node tools/pr-review.mjs threads --pr ${PR}\`):
+${JSON.stringify(openBlocking, null, 2)}
+Minor/nit findings on the PR are suggestions for a human: do NOT change code for them.
 
-1. Address EVERY open finding with the SMALLEST change that resolves it: no new abstractions, refactors, extra
+1. Address EVERY finding above with the SMALLEST change that resolves it: no new abstractions, refactors, extra
    options or unrelated hardening. If a finding needs a large change, mark it "wontfix" with note "needs a follow-up:
    <why>". If it is wrong or out of scope, mark it "wontfix" with a specific, evidence-based note.
    Follow AGENTS.md (never hand-edit generated files; regenerate instead; add or adjust tests for behavior you change).
@@ -845,20 +934,9 @@ one resolution per finding (path + title exactly as given).`,
   }
   head = after;
   const done = (status) => settled.filter((r) => r.status === status).length;
-  const pass = `${done('fixed')} fixed, ${done('wontfix')} won't fix, ${Math.max(0, open.length - done('fixed') - done('wontfix'))} left open`;
+  const pass = `${done('fixed')} fixed, ${done('wontfix')} won't fix, ${Math.max(0, openBlocking.length - done('fixed') - done('wontfix'))} left open`;
   const settledKeys = new Set(settled.map(keyOf));
   const blockingLeft = openBlocking.filter((f) => !settledKeys.has(keyOf(f))).length;
-  // Only suggestions (minor/nit) were open: don't re-review for them. What the tester saw fail or
-  // could not run adds no round either (its report would only repeat): the run stops, with ⚠️.
-  if (openBlocking.length === 0 && !gaps.some(retryable)) {
-    converged = !gaps.length;
-    history.push({
-      round: `${round}+`,
-      stoppedBy: `fix pass for suggestions (${pass}); fixes not re-reviewed${gaps.length ? `; gaps: ${gaps.join('; ')}` : ''}`,
-      benign: converged,
-    });
-    break;
-  }
   // A fix pass that changed nothing leaves nothing new to review: another round would review the
   // same head again (unless part of the review never answered). ✅ only if no blocking finding is
   // left open (every one won't fix) and the tester's report is clean.
@@ -896,8 +974,8 @@ const stillOpenBlocking = stillOpen.filter((f) => isBlocking(severityOf(f)));
 const clean = converged && stillOpenBlocking.length === 0 && stopped.length === 0;
 const reasons = [...stopped, ...notes];
 const verdict = clean
-  ? `✅ **Review loop complete** — no blocker/major issues open.${notes.length ? ` (${notes.join('; ')})` : ''}${stillOpen.length ? ` ${stillOpen.length} optional suggestion(s) left open.` : ''}`
-  : `⚠️ **Review loop stopped with ${stillOpen.length} open finding(s)**${reasons.length ? ` (${reasons.join('; ')})` : ''} — needs a human look.`;
+  ? `✅ **Review loop complete** — no blocker/major issues open.${notes.length ? ` (${notes.join('; ')})` : ''}${stillOpen.length ? ` ${stillOpen.length} suggestion(s) left for a human.` : ''}`
+  : `⚠️ **Review loop stopped with ${stillOpenBlocking.length} open blocking finding(s)**${reasons.length ? ` (${reasons.join('; ')})` : ''} — needs a human look.`;
 const list = (title, items) =>
   items.length
     ? `\n\n**${title}:**\n${items.map((f) => `- \`${f.path}\`: ${f.title}`).join('\n')}`
@@ -909,7 +987,13 @@ const oneLine = (text, max) => {
     .trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
-const RESULT_LABEL = { pass: 'pass', fail: '**FAIL**', 'could-not-run': '**could not run**' };
+const RESULT_LABEL = {
+  pass: 'pass',
+  fail: '**FAIL**',
+  'could-not-run': '**could not run**',
+  'n/a': 'n/a',
+  'needs-human': '**needs a human**',
+};
 const testLine = (t) =>
   `- ${RESULT_LABEL[t?.result] ?? '**could not run**'} · ${oneLine(t?.claimOrArea, 120)} · \`${oneLine(t?.stepsOrCommand, 120).replaceAll('`', "'")}\` · ${oneLine(t?.evidence, 200)}`;
 // Checks that failed or could not run in an earlier round, and no later tester saw pass.
@@ -930,7 +1014,10 @@ const testedList = `${
 await agent(
   `Post this markdown as a comment on pull request #${PR} by piping it to \`node tools/pr-review.mjs comment --pr ${PR}\` (heredoc). Post it verbatim.
 
-${verdict}${list('Open', stillOpen)}${list("Won't fix", wontfix)}${testedList}
+${verdict}${list('Open blocking', stillOpenBlocking)}${list(
+    'Suggestions for a human (minor/nit, not fixed by the loop)',
+    stillOpen.filter((f) => !isBlocking(severityOf(f))),
+  )}${list("Won't fix", wontfix)}${testedList}
 
 | Round | Raw findings | Posted | Reopened | Open after round | Gaps |
 | --- | --- | --- | --- | --- | --- |
