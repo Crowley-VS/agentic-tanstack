@@ -190,13 +190,18 @@ export function toEnv(info) {
   };
 }
 
-function main(argv) {
-  const checkout = detectCheckout();
+/** Ports, names and URLs for the checkout that contains `cwd` (what `--json` prints). */
+export function resolveInfo(cwd = process.cwd(), env = process.env) {
+  const checkout = detectCheckout(cwd);
   const block =
     checkout.primary || !checkout.commonDir
       ? undefined
       : worktreeBlock(checkout.root, checkout.commonDir);
-  const info = computePorts({ ...checkout, block }, process.env);
+  return computePorts({ ...checkout, block }, env);
+}
+
+function main(argv) {
+  const info = resolveInfo();
   const [flag, ...rest] = argv;
   switch (flag) {
     case '--json':

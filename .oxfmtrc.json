@@ -2,5 +2,5 @@
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
   "singleQuote": true,
   "printWidth": 100,
-  "ignorePatterns": ["pnpm-lock.yaml", ".claude/skills/**"]
+  "ignorePatterns": ["pnpm-lock.yaml", ".claude/skills/**", "packages/db/migrations/**"]
 }

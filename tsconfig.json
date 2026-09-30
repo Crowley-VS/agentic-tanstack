@@ -8,6 +8,12 @@
     },
     {
       "path": "./scripts"
+    },
+    {
+      "path": "./packages/db"
+    },
+    {
+      "path": "./packages/core"
     }
   ]
 }

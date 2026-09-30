@@ -4,6 +4,7 @@
 # .agents/generated.json by `pnpm agents:sync` (add new artifacts there, not here).
 # agents:generated:start
 .claude/skills/** linguist-generated=true
+packages/db/migrations/** linguist-generated=true
 # agents:generated:end
 
 # Generated, but not a regenerable artifact of .agents/generated.json.

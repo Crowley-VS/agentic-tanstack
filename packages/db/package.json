@@ -1,0 +1,111 @@
+{
+  "name": "@acme/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@acme/source": "./src/index.ts",
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./testing": {
+      "@acme/source": "./src/testing/index.ts",
+      "types": "./src/testing/index.ts",
+      "default": "./src/testing/index.ts"
+    },
+    "./testing/vitest": {
+      "@acme/source": "./src/testing/vitest.ts",
+      "types": "./src/testing/vitest.ts",
+      "default": "./src/testing/vitest.ts"
+    }
+  },
+  "dependencies": {
+    "drizzle-orm": "catalog:",
+    "pg": "catalog:"
+  },
+  "devDependencies": {
+    "@types/pg": "catalog:",
+    "drizzle-kit": "catalog:",
+    "tsx": "catalog:"
+  },
+  "nx": {
+    "name": "db",
+    "tags": [
+      "scope:server",
+      "type:data",
+      "needs-db"
+    ],
+    "targets": {
+      "db-up": {
+        "command": "node scripts/db-up.mjs",
+        "options": {
+          "cwd": "{projectRoot}"
+        }
+      },
+      "db-down": {
+        "command": "node scripts/db-up.mjs down",
+        "options": {
+          "cwd": "{projectRoot}"
+        }
+      },
+      "db-reset": {
+        "command": "node scripts/db-up.mjs reset",
+        "options": {
+          "cwd": "{projectRoot}"
+        }
+      },
+      "db-psql": {
+        "command": "node scripts/db-up.mjs psql",
+        "options": {
+          "cwd": "{projectRoot}"
+        }
+      },
+      "db-generate": {
+        "command": "drizzle-kit generate",
+        "options": {
+          "cwd": "{projectRoot}"
+        }
+      },
+      "db-check": {
+        "command": "drizzle-kit check",
+        "options": {
+          "cwd": "{projectRoot}"
+        }
+      },
+      "db-migrate": {
+        "command": "tsx scripts/migrate.ts",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "dependsOn": [
+          "db-up"
+        ]
+      },
+      "db-seed": {
+        "command": "tsx scripts/seed.ts",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "dependsOn": [
+          "db-migrate"
+        ]
+      },
+      "db-studio": {
+        "command": "drizzle-kit studio --host 127.0.0.1",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "dependsOn": [
+          "db-migrate"
+        ],
+        "continuous": true
+      },
+      "test": {
+        "dependsOn": [
+          "db-check"
+        ]
+      }
+    }
+  }
+}

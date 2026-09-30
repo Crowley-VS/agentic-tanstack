@@ -777,15 +777,15 @@ describe('check', () => {
     const checked = nxStep.command
       .slice(nxStep.command.indexOf('-t') + 1)
       .filter((a) => !a.startsWith('-'));
-    const existing = new Set(
+    const all = new Set(
       show('projects').flatMap((p) =>
-        Object.keys(show('project', p).targets ?? {})
-          .filter((t) => checked.includes(t))
-          .map((t) => `${p}:${t}`),
+        Object.keys(show('project', p).targets ?? {}).map((t) => `${p}:${t}`),
       ),
     );
+    const existing = new Set([...all].filter((pt) => checked.includes(pt.split(':')[1] ?? '')));
+    // extra rules for other real targets (e.g. db:db-up) are fine; rules for missing ones are not
     expect(
-      [...rules].filter((r) => !existing.has(r)),
+      [...rules].filter((r) => !all.has(r)),
       'rules for targets that do not exist',
     ).toEqual([]);
     expect(
