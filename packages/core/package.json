@@ -28,6 +28,18 @@
       "scope:server",
       "type:feature",
       "needs-db"
-    ]
+    ],
+    "targets": {
+      "test": {
+        "dependsOn": [
+          {
+            "projects": [
+              "db"
+            ],
+            "target": "db-up"
+          }
+        ]
+      }
+    }
   }
 }

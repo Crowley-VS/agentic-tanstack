@@ -103,7 +103,8 @@
       },
       "test": {
         "dependsOn": [
-          "db-check"
+          "db-check",
+          "db-up"
         ]
       }
     }

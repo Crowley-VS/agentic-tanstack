@@ -78,7 +78,10 @@ function compose(cfg, args, stdio = ['ignore', 'inherit', 'pipe']) {
 export async function dbUp(cfg = resolveDb()) {
   if (process.env.DATABASE_URL && !process.env.DB_UP_FORCE) return cfg; // an external server: not ours to start
   if (await answers(cfg)) return cfg;
-  const res = compose(cfg, ['up', '-d', '--wait']);
+  let res = compose(cfg, ['up', '-d', '--wait']);
+  // a concurrent `up` of this project (another Nx process or terminal) created it first: wait on it
+  if (/is already in use by container|already exists/i.test(res.stderr ?? ''))
+    res = compose(cfg, ['up', '-d', '--wait']);
   const err = res.stderr ?? '';
   if (res.error?.code === 'ENOENT')
     fail('Docker is not installed (no `docker` on PATH). Install Docker Engine with Compose v2.');
