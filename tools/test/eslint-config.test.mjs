@@ -15,6 +15,12 @@ describe('eslint.config.mjs', () => {
     const [result] = await eslint.lintText(code, { filePath: join(REPO, 'apps/web/src/probe.ts') });
     return result?.messages.map((m) => `${m.line}: ${m.ruleId}`);
   };
+  /** The same, as a component file in packages/ui. */
+  const lintUi = async (code) => {
+    const filePath = join(REPO, 'packages/ui/src/components/probe.tsx');
+    const [result] = await eslint.lintText(code, { filePath });
+    return result?.messages.map((m) => `${m.line}: ${m.ruleId}`);
+  };
 
   it.each(['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs'])(
     'enforces module boundaries on .%s files',
@@ -23,6 +29,14 @@ describe('eslint.config.mjs', () => {
       expect(config.rules['@nx/enforce-module-boundaries']?.[0]).toBe(2); // "error"
     },
   );
+
+  it("allows packages/ui's own #/ subpath imports (what `shadcn add` writes)", async () => {
+    expect(await lintUi("import { Button } from '#/components/button';\n")).toEqual([]);
+    // the rule is live here: a self-import through the package name is still an error
+    expect(await lintUi("import { Button } from '@acme/ui/components/button';\n")).toEqual([
+      '1: @nx/enforce-module-boundaries',
+    ]);
+  });
 
   it('extracts GraphQL operations from apps/web and still enforces boundaries there', async () => {
     const config = await eslint.calculateConfigForFile('apps/web/src/x.tsx');
