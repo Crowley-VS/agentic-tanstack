@@ -124,7 +124,7 @@ Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and U
 
 1. Finish the phase; `pnpm check` must pass.
 2. Commit on a branch (never directly on `main`) and open a PR with a summary and a test plan.
-3. Run the **review loop** (skill `review-loop`): review → post findings → fix → re-review the fixes until no
+3. Run the **review loop** (skill `review-loop`): review → post findings → fix → check the fixes until no
    blocker/major issue is open. When a PR is opened from Claude Code (drafts: on `gh pr ready`), the hook
    `tools/agent-hooks/pr-opened.mjs` has Claude offer it and start it once the user agrees; `REVIEW_LOOP_AUTO=1`
    (the user's opt-in) starts it without asking, `REVIEW_LOOP_AUTO=0` turns the hook off.

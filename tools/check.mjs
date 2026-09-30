@@ -12,7 +12,8 @@
 //   node tools/check.mjs --format       one gate: every file oxfmt formats is formatted
 //   node tools/check.mjs --nx-agents    one gate: `nx configure-ai-agents --check`
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nodeBin, SHELL_ON_WINDOWS } from './lib/bin.mjs';
@@ -133,13 +134,21 @@ function nxAgentsCheck() {
     return 1;
   }
   const [cmd, ...args] = nx;
-  const status =
-    spawnSync(cmd, [...args, 'configure-ai-agents', '--check'], {
-      cwd: ROOT,
-      stdio: 'inherit',
-      // the AI files of the installed Nx version, not the latest ones from the network
-      env: { ...process.env, NX_AI_FILES_USE_LOCAL: 'true' },
-    }).status ?? 1;
+  // Nx may install a temporary copy of itself under TMPDIR; give it a private one and delete it,
+  // so repeated checks never pile up in a small /tmp.
+  const tmp = mkdtempSync(join(tmpdir(), 'nx-agents-check-'));
+  let status;
+  try {
+    status =
+      spawnSync(cmd, [...args, 'configure-ai-agents', '--check'], {
+        cwd: ROOT,
+        stdio: 'inherit',
+        // the AI files of the installed Nx version, not the latest ones from the network
+        env: { ...process.env, NX_AI_FILES_USE_LOCAL: 'true', TMPDIR: tmp, TMP: tmp, TEMP: tmp },
+      }).status ?? 1;
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
   if (status !== 0)
     console.error(
       "✗ Nx's agent config drifted from what `nx configure-ai-agents` writes: a human runs `pnpm agents:nx` and commits the result",
