@@ -107,12 +107,14 @@ Postgres database). The web app (M5+) adds `pnpm nx e2e web-e2e` for route and U
 | `packages/core`       | business logic: writes and domain errors; takes a `Db`, never a request     | `scope:server`, `type:feature`      |
 | `packages/db`         | Drizzle schema, migrations, seed, per-test-file databases (`testDb()`)      | `scope:server`, `type:data`         |
 | `packages/graphql`    | `schema.graphql`: the API contract clients generate types from (generated)  | `scope:shared`, `type:util`         |
+| `packages/ui`         | React components (shadcn/ui, radix-nova) and the Tailwind 4 theme           | `scope:web`, `type:ui`              |
 | `packages/validators` | Zod schemas + limits shared by api and web                                  | `scope:shared`, `type:util`         |
 | `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync               | `scope:tooling`, `type:tooling`     |
 | `docker-compose.yml`  | the local Postgres (dev, e2e, tests only)                                   |                                     |
 
 `tools` is plain `.mjs` with no `typecheck` target: its gates are lint, boundaries and tests. Projects tagged
 `needs-db` need Docker for their tests (`pnpm nx affected -t test --exclude=tag:needs-db` skips them).
+Add a UI component with the pinned CLI: `pnpm --filter @acme/ui exec shadcn add <name>`, then `pnpm format`.
 
 <!-- stack:end -->
 

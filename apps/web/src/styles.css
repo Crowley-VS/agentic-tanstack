@@ -1,0 +1,6 @@
+/* The app's stylesheet (linked in routes/__root.tsx): the @acme/ui theme and component classes,
+   plus the classes of this app's own code. Tailwind scans nothing else (see @acme/ui's
+   globals.css): only files web:build hashes, so a cached build has the CSS a fresh one would. */
+@import '@acme/ui/globals.css';
+@source './**/*.{ts,tsx}';
+@source not './**/*.test.{ts,tsx}';
