@@ -119,6 +119,17 @@ describe('mutations', () => {
     });
   });
 
+  it('adds a comment, anonymous when the name is null', async () => {
+    const note = await newNote('Null name');
+    const { data } = await gql(ADD_COMMENT, {
+      input: { noteId: note.id, authorName: null, body: 'Hi' },
+    });
+    expect(data?.addComment).toMatchObject({
+      __typename: 'MutationAddCommentSuccess',
+      data: { authorName: null, body: 'Hi', note: { id: note.id } },
+    });
+  });
+
   it('returns a comment on a missing note as a NotFoundError', async () => {
     const id = '0199aa00-0000-7000-8000-000000000000';
     const { data } = await gql(ADD_COMMENT, { input: { noteId: id, body: 'hello?' } });
