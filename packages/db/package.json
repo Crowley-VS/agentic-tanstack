@@ -92,7 +92,7 @@
         ]
       },
       "db-studio": {
-        "command": "drizzle-kit studio --host 127.0.0.1",
+        "command": "node scripts/db-up.mjs studio",
         "options": {
           "cwd": "{projectRoot}"
         },
@@ -102,9 +102,13 @@
         "continuous": true
       },
       "test": {
+        "inputs": [
+          "default",
+          "^production",
+          "dbServer"
+        ],
         "dependsOn": [
-          "db-check",
-          "db-up"
+          "db-check"
         ]
       }
     }

@@ -1,11 +1,11 @@
 // `pnpm nx run db:db-seed`: replace this checkout's dev data with the deterministic seed.
 // @ts-expect-error plain .mjs script
-import { resolveDb } from './db-up.mjs';
+import { isLocalUrl, resolveDb } from './db-up.mjs';
 import { createDb } from '../src/client';
 import { SEED, seed } from '../src/seed';
 
 const { url } = resolveDb();
-if (!/127\.0\.0\.1|localhost/.test(new URL(url).hostname)) {
+if (!isLocalUrl(url)) {
   console.error(`[db] refusing to seed a non-local database (${new URL(url).hostname})`);
   process.exit(1);
 }

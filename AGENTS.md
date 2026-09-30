@@ -111,7 +111,8 @@ Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and U
 - Boundary rules (full list in `eslint.config.mjs`): `scope:shared` → shared only; `scope:tooling` → tooling only; `scope:web` → web/shared; `scope:api` → api/server/shared; `scope:server` → server/shared; `type:util` → util only, and imports no frameworks, Drizzle or `pg`.
 - **Writes go through `packages/core`** (validated again there, domain errors like `NotFoundError`); reads use
   Drizzle's relational queries (in the API: the Pothos Drizzle plugin), which plan nested data as one statement.
-- **Migrations:** generate them from the schema, commit them, never edit an applied one (the guard hook blocks it).
+- **Migrations:** generate them from the schema and commit them. Once git tracks a migration (staged or
+  committed) the guard hook blocks edits to it; only a new, untracked one may still be edited.
 - **Tests that touch the database** use `testDb()` from `@acme/db/testing` and assume nothing about other tests'
   rows (tests in one file share its database; files never share).
 

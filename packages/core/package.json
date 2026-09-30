@@ -31,13 +31,10 @@
     ],
     "targets": {
       "test": {
-        "dependsOn": [
-          {
-            "projects": [
-              "db"
-            ],
-            "target": "db-up"
-          }
+        "inputs": [
+          "default",
+          "^production",
+          "dbServer"
         ]
       }
     }

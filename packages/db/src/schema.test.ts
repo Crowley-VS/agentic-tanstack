@@ -5,12 +5,23 @@ import { SEED, seed } from './seed';
 import { testDb } from './testing';
 
 describe('schema (migrated test database)', () => {
-  it('stores notes with time-ordered uuidv7 ids and millisecond timestamps', async () => {
+  it('stores notes with time-ordered uuidv7 ids', async () => {
     const { db } = testDb();
     const [a] = await db.insert(notes).values({ title: 'A', body: 'x' }).returning();
     const [b] = await db.insert(notes).values({ title: 'B', body: 'y' }).returning();
     expect(a!.id < b!.id).toBe(true); // uuidv7 sorts by creation time
-    expect(a!.createdAt.getMilliseconds()).toBe(a!.createdAt.getTime() % 1000); // ms precision
+  });
+
+  it('keeps created_at to milliseconds, which a JS Date (a cursor) round-trips exactly', async () => {
+    const { db } = testDb();
+    const { rows } = await db.execute(sql`
+      select table_name, datetime_precision from information_schema.columns
+      where column_name = 'created_at' and table_name in ('notes', 'comments')
+      order by table_name`);
+    expect(rows).toEqual([
+      { table_name: 'comments', datetime_precision: 3 },
+      { table_name: 'notes', datetime_precision: 3 },
+    ]);
   });
 
   it('deletes a note’s comments with it (foreign key cascade)', async () => {

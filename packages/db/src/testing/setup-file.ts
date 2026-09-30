@@ -1,5 +1,6 @@
 // Vitest setupFiles entry: runs in the worker before EACH test file and gives it a fresh database
-// cloned from test_template. `testDb()` (./index.ts) returns a handle to it.
+// cloned from this checkout's test template (see global-setup.ts). `testDb()` (./index.ts) returns
+// a handle to it.
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { afterAll, inject } from 'vitest';
