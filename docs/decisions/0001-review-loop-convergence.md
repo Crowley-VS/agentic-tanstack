@@ -1,6 +1,6 @@
 # 0001 — Review loop: why it did not converge on PR #1, and what changed
 
-- **Status:** accepted (2026-09-30)
+- **Status:** accepted (2026-09-30); amended the same day after the loop ran on PRs #3 and #4 (section 6)
 - **Context:** the `review-loop-run` workflow ran twice on PR #1 (M1 workspace skeleton + the loop itself) and
   never reached ✅. Run 1: 5 rounds, 93 findings posted, 153 agents, ~13M tokens. Run 2 (redesigned: fixes-only
   follow-up rounds, blocker/major gate, batched verification): 34 agents, ~4.5M tokens, ended by `/tmp` inode
@@ -146,3 +146,46 @@ See `guidelines`. In short:
 - The strict severity grades are [A2]'s reading; no one re-ran the reproductions.
 - About 813k inodes (78%) are unattributed. The cause of the 150-minute stall is unconfirmed.
 - How far this generalizes is unknown. PR #1 was 43% loop code, and product phase PRs have not been tested: the validators package, the only product code, drew just 2 nits.
+
+## 6. Follow-up: PRs #3 and #4 (2026-09-30)
+
+The P0 loop ran on PR #4 (M2 data layer, +2,246 lines). The loop at session start ran on PR #3 (this retrospective's
+changes) by mistake, because a named workflow resolves to the version loaded when the session started.
+
+| Run                    | Blocking in round 1        | What later rounds found                                                      | Cost                            |
+| ---------------------- | -------------------------- | ---------------------------------------------------------------------------- | ------------------------------- |
+| PR #1 run 1 (whole PR) | 9                          | 13 blocking in code round 1 missed (5, 5, 2, 1 per round), 8 caused by fixes | 153 agents, ~13M tokens, 4 h    |
+| PR #1 run 2 (fixes)    | 3                          | 4 blocking, all in code the fixer wrote for minor findings                   | 34 agents, ~4.5M tokens, 4.6 h  |
+| PR #3 (old loop)       | 1 of 15                    | 0 blocking: 4 minor caused by the fixes, 1 incomplete fix                    | 27 agents, ~2.8M tokens, 59 min |
+| PR #4 (P0 loop)        | 1 of 16 (real: CI was red) | round 2, stopped half-way: 0 blocking, 2 minor about the fix                 | 22 agents, ~2.0M tokens, 42 min |
+
+- **Round 1 carries the value.** On PRs #3 and #4 every blocking finding came from round 1. On PR #4 it was the
+  reason CI was red: two test tasks raced a cold `docker compose up`. The hands-on tester found it and the fixer
+  reproduced it. The fix was +43/-3, of which 19 lines were outside tests. Later rounds found real misses only when
+  they re-reviewed the whole PR (PR #1 run 1), because every round-1 reviewer had hit the 8-finding cap.
+- **Re-review rounds mostly review the loop's own fixes.** When the fixer wrote a lot (fixing minors), they found its
+  regressions. When the fix was small and blocking-only (PR #4), four reviewers plus a tester (~0.5M tokens so far)
+  found nothing blocking.
+- **The P0 gate contradicted the P0 fixer.** Any failed hands-on check blocked ✅, but the fixer may only fix blocking
+  findings. PR #4 had 8 failed checks, and 7 were tied to minor/nit findings, so the run could never end ✅.
+- **Relay agents cost ~40k tokens each**: head, files, threads, disk and post. That is about 20% of a round, just to
+  pass a command's output through.
+
+**Changes (in the loop, `pr-review.mjs` and the skill):**
+
+- **Round 1:** reviewers report every blocker/major finding, plus at most 8 minor/nit each. The tester starts from
+  CI and turns failed checks into findings with their cause.
+- **After a fix pass:** one fix checker runs instead of a review round. It reproduces each fixed finding, waits for
+  CI, runs `pnpm check --all` and reads only the fix diff. A fix adding more than `fixBudget` (150) non-test lines,
+  or one of unknown size, still gets the follow-up review by all four.
+- **Same-head retries:** at the same head, only the agents that gave no answer run again.
+- **Failed checks weigh what their finding weighs.** Each failed check names the finding it produced and blocks only
+  when that finding does. It stays blocking when the finding is unknown, not judged yet or not named.
+- **Fewer relay agents:** one `pr-review.mjs state` call replaces the head, files, threads and disk relays, and
+  `post --list` returns the threads after posting. On a one-fix run that is 5 relays instead of 11.
+
+**Still open:**
+
+- Round-1 recall without the cap is untested on a fresh PR.
+- A re-run on a PR the loop already reviewed still starts with a full round 1. Starting from the last loop review
+  (checking only the commits since) would make resuming cheap.

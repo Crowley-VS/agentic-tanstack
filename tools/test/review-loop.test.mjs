@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { installHooks } from '../agents.mjs';
 import { nodeBin } from '../lib/bin.mjs';
-import { commentBody, findingId } from '../pr-review.mjs';
+import { commentBody, findingId, LOOP_PATHS } from '../pr-review.mjs';
 import { commitAll, makeRepo, tempDir } from './helpers.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
@@ -36,7 +36,11 @@ const DEFAULTS = {
   summary: () => 'commented',
   files: () => ({ files: ['tools/check.mjs'] }),
   disk: () => ({ freeGb: 100, inodeFreePct: 80 }),
+  // a small fix: the next round is one fix checker (see BIG_FIX)
+  fixStat: () => ({ files: 1, added: 12, addedNonTest: 10 }),
 };
+/** A fix over the budget: the next round is a follow-up review by all four reviewers. */
+const BIG_FIX = () => ({ files: 9, added: 700, addedNonTest: 400 });
 
 /** A clean hands-on run: what the tester reports unless a test answers for it (`tester`). */
 const TESTED = [
@@ -55,6 +59,10 @@ const parallel = (thunks) => Promise.all(thunks.map((t) => t().catch(() => null)
  * Run the workflow; `responders[kind](call)` answers agent calls (kind = label prefix). The tester
  * is a reviewer (`review`), answered by `responders.tester` when a test gives one; otherwise its
  * `review` answer comes with a clean hands-on run (TESTED), since most tests are about findings.
+ * The fix checker (`review:checker:…`) is answered by `responders.checker`, else like the tester.
+ * A `state` call (`pr-review.mjs state`) is answered part by part, each part recorded as its own
+ * call: `head`, `threads` (`threads:start` in round 1), `disk`, `files` (--files) and, with
+ * --base, the fix size from `fixStat`. A `post --list` also gets its thread listing from `threads`.
  */
 async function runLoop(responders = {}, args = { pr: 7, maxRounds: 3 }) {
   const calls = [];
@@ -85,10 +93,47 @@ async function runLoop(responders = {}, args = { pr: 7, maxRounds: 3 }) {
       return { verdicts };
     }
     calls.push(call);
-    const tester = String(opts.label).startsWith('review:tester');
-    if (tester && responders.tester) return responders.tester(call);
-    const out = await (responders[call.kind] ?? DEFAULTS[call.kind])(call);
-    return tester && Array.isArray(out?.findings) && !('tested' in out)
+    const answer = (kind, label) => {
+      const sub = { ...call, kind, label, sub: true }; // a part of one call, not an agent
+      if (label !== call.label) calls.push(sub);
+      return (responders[kind] ?? DEFAULTS[kind])(sub);
+    };
+    if (call.kind === 'state') {
+      const round = String(opts.label).split(':')[1];
+      const out = {
+        head: await answer('head', `head:${round}`),
+        threads: await answer(
+          'threads',
+          round === 'r1' ? 'threads:start' : `threads:state:${round}`,
+        ),
+        disk: await answer('disk', `disk:${round}`),
+      };
+      if (prompt.includes('--files')) {
+        const f = await answer('files', `files:${round}`);
+        out.files = Array.isArray(f?.files)
+          ? {
+              count: f.files.length,
+              loop: f.files.filter((x) => LOOP_PATHS.test(x)),
+              error: f.error,
+            }
+          : f;
+      }
+      const base = prompt.match(/--base ([0-9a-f]{40})/)?.[1];
+      if (base) out.fix = { base, ...(await answer('fixStat', `fixStat:${round}`)) };
+      return out;
+    }
+    const handsOn = String(opts.label).match(/^review:(tester|checker):/)?.[1];
+    const scripted =
+      handsOn === 'checker'
+        ? (responders.checker ?? responders.tester)
+        : handsOn && responders.tester;
+    const out = await (scripted ?? responders[call.kind] ?? DEFAULTS[call.kind])(call);
+    if (call.kind === 'post' && prompt.includes('--list') && out && !out.error)
+      return {
+        ...out,
+        threads: await answer('threads', `threads:post:${String(opts.label).split(':')[1]}`),
+      };
+    return handsOn && !scripted && Array.isArray(out?.findings) && !('tested' in out)
       ? { ...out, tested: TESTED }
       : out;
   };
@@ -167,9 +212,10 @@ describe('review-loop workflow', () => {
   it("never re-verifies or re-posts a won't-fix finding, and still converges", async () => {
     const { result, summary, of } = await runLoop({
       review: reviewerFinds(),
+      checker: () => ({ findings: [finding], tested: TESTED }), // reports it again
       fix: (call) => ({
         checkPassed: true,
-        commit: push(call), // it fixed something else, so round 2 reviews the fix commits
+        commit: push(call), // it fixed something else, so round 2 checks the fix commits
         resolutions: [{ path: finding.path, title: finding.title, status: 'wontfix', note: 'n/a' }],
       }),
     });
@@ -178,7 +224,7 @@ describe('review-loop workflow', () => {
     ]);
     expect(of('post')).toHaveLength(1);
     expect(of('fix')).toHaveLength(1);
-    const round2 = of('review').find((c) => c.label === 'review:correctness:r2');
+    const round2 = of('review').find((c) => c.label === 'review:checker:r2');
     expect(round2?.prompt).toContain("[won't fix — do not re-report] tools/check.mjs: Gate order");
     expect(summary).toContain('✅');
     expect(summary).toContain("**Won't fix:**");
@@ -219,8 +265,13 @@ describe('review-loop workflow', () => {
     expect(of('verify')).toHaveLength(0);
     expect(of('post')).toHaveLength(0);
     expect(of('fix')).toHaveLength(1);
-    // the thread carries no severity: it counts as blocking, so its fix is reviewed in round 2
-    expect(of('review').filter(inRound(2))).toHaveLength(4);
+    // the thread carries no severity: it counts as blocking, so its fix is checked in round 2
+    expect(
+      of('review')
+        .filter(inRound(2))
+        .map((c) => c.label),
+    ).toEqual(['review:checker:r2']);
+    expect(of('review').filter(inRound(2))[0]?.prompt).toContain(`"id": "${id}"`);
     expect(summary).toContain('✅');
     expect(result.complete).toBe(true);
     expect(commentBody({ ...finding, id }, 1)).toContain(id); // same id scheme as the threads
@@ -248,7 +299,12 @@ describe('review-loop workflow', () => {
 
   it('re-posts a fixed finding that is STILL present, and fixes it again', async () => {
     const { result, summary, of } = await runLoop({
-      review: reviewerFinds([1, 2]),
+      review: reviewerFinds([1]),
+      // the fix checker of round 2 still sees it; round 3's sees it gone
+      checker: ({ label }) => ({
+        findings: label.endsWith(':r2') ? [finding] : [],
+        tested: TESTED,
+      }),
       fix: (call) => ({
         checkPassed: true,
         commit: push(call),
@@ -264,13 +320,18 @@ describe('review-loop workflow', () => {
     expect(of('post')[1]?.prompt).toContain('Gate order hides drift');
     expect(of('fix').map((c) => c.label)).toEqual(['fix:r1', 'fix:r2']);
     expect(of('fix')[1]?.prompt).toContain('Gate order hides drift');
+    // round 3 checks only the second fix: round 2's checker already checked the first
+    expect(of('review').find((c) => c.label === 'review:checker:r3')?.prompt).toContain(
+      `pushed the commits ${'1'.padStart(40, '0')}..`,
+    );
     expect(summary).toContain('✅');
     expect(result).toMatchObject({ complete: true, open: [] });
   });
 
   it('posts nothing when the verifier says a reported fixed finding is gone', async () => {
     const { result, of } = await runLoop({
-      review: reviewerFinds([1, 2]),
+      review: reviewerFinds([1]),
+      checker: () => ({ findings: [finding], tested: TESTED }),
       verify: ({ label }) =>
         label.startsWith('verify:reopen')
           ? { valid: false, reason: 'the fix holds' }
@@ -329,8 +390,14 @@ describe('review-loop: an agent that returns nothing is never a clean answer', (
           ? Promise.reject(new Error('worktree setup failed'))
           : { findings: [] },
     });
-    expect(of('review')).toHaveLength(8); // two full rounds
+    // round 2 runs again only the reviewer that gave no answer, at the same head
+    expect(
+      of('review')
+        .filter(inRound(2))
+        .map((c) => c.label),
+    ).toEqual(['review:tester:r2']);
     expect(of('review').filter(inRound(2))[0]?.prompt).toContain(SHA);
+    expect(result.rounds[1]?.kind).toBe('same head: tester');
     expect(of('fix')).toHaveLength(0);
     expect(summary).toContain('reviewer tester'); // round 1's gap is in the table
     expect(summary).toContain('✅');
@@ -392,7 +459,12 @@ describe('review-loop: the hands-on tester shows what it ran', () => {
   it('does not post ✅ when the tester reports nothing it ran', async () => {
     for (const tester of [() => ({ findings: [] }), () => ({ findings: [], tested: [] })]) {
       const { result, summary, of } = await runLoop({ tester });
-      expect(of('review').filter(inRound(3))).toHaveLength(4); // each round had a gap
+      // each round had a gap: the tester runs again at the same head, alone
+      expect(
+        of('review')
+          .filter(inRound(3))
+          .map((c) => c.label),
+      ).toEqual(['review:tester:r3']);
       expect(of('fix')).toHaveLength(0);
       expect(summary).not.toContain('✅');
       expect(summary).toContain('⚠️');
@@ -491,7 +563,7 @@ describe('review-loop: duplicates are resolved once every verdict is in', () => 
     expect(of('fix')[0]?.prompt).not.toContain('Leak B');
     expect(of('post')[0]?.prompt).toContain('Leak A');
     expect(of('post')[0]?.prompt).not.toContain('Leak B');
-    const round2 = of('review').find((c) => c.label === 'review:correctness:r2');
+    const round2 = of('review').find((c) => c.label === 'review:checker:r2');
     expect(round2?.prompt).toContain('[duplicate of a posted finding — do not re-report]');
   });
 
@@ -505,8 +577,10 @@ describe('review-loop: duplicates are resolved once every verdict is in', () => 
       'verifier of tools/check.mjs: Leak A (wrong framing)',
       'tools/check.mjs: Leak B (correct) (a duplicate of a finding that got no verdict)',
     ]);
-    const round2 = of('review').find((c) => c.label === 'review:tests:r2');
-    expect(round2?.prompt).not.toContain('Leak B');
+    // every reviewer answered: at the same head, round 2 only verifies both again
+    expect(of('review').filter(inRound(2))).toEqual([]);
+    expect(of('verify').filter((c) => c.batchLabel === 'verify:batch1:r2')).toHaveLength(2);
+    expect(result.rounds[1]?.kind).toBe('same head, verify only');
     expect(summary).toContain('Leak B (correct) (a duplicate');
   });
 });
@@ -623,7 +697,7 @@ describe('review-loop convergence rules', () => {
   const blocking = (title) => ({ ...finding, title });
 
   it('reviews the whole PR in round 1 and only the fix commits afterwards', async () => {
-    const { of } = await runLoop({ review: reviewerFinds([1]) });
+    const { of } = await runLoop({ review: reviewerFinds([1]), fixStat: BIG_FIX });
     const r1 = of('review').find((c) => c.label === 'review:correctness:r1');
     const r2 = of('review').find((c) => c.label === 'review:correctness:r2');
     expect(r1.prompt).not.toContain('FOLLOW-UP round');
@@ -665,6 +739,7 @@ describe('review-loop convergence rules', () => {
           label.startsWith('review:correctness')
             ? { findings: [blocking(`Regression introduced ${label.slice(-2)}`)] }
             : { findings: [] },
+        fixStat: BIG_FIX,
         fix: (call) => ({ checkPassed: true, commit: push(call), resolutions: [] }),
       },
       { pr: 7, maxRounds: 6 },
@@ -684,6 +759,7 @@ describe('review-loop convergence rules', () => {
             : label === 'review:correctness:r2'
               ? { findings: [blocking('Bug B, from the fix of A')] }
               : { findings: [] },
+        fixStat: BIG_FIX,
         fix: fixOpen,
       },
       { pr: 7, maxRounds: 6 },
@@ -712,7 +788,7 @@ describe('review-loop convergence rules', () => {
 
   it('stops for a human when a fixed blocking finding is reopened a second time', async () => {
     const { result, summary, of } = await runLoop(
-      { review: reviewerFinds([1, 2, 3, 4, 5]), fix: fixOpen },
+      { review: reviewerFinds([1, 2, 3, 4, 5]), fix: fixOpen, fixStat: BIG_FIX },
       { pr: 7, maxRounds: 5 },
     );
     // round 2 reopens it and it gets one more fix; round 3 reopens it again
@@ -737,6 +813,7 @@ describe('review-loop convergence rules', () => {
         reason: 'still there',
         likelihood: batchLabel.endsWith(':r3') ? 'unusual' : 'ordinary',
       }),
+      fixStat: BIG_FIX,
       // fixes `finding` each time; `other` stays open, so the run goes on to round 3
       fix: (call) => ({
         checkPassed: true,
@@ -851,9 +928,8 @@ describe('review-loop convergence rules', () => {
       review: reviewerFinds([1]),
       fix: fixOpen,
     });
-    const listing = of('files')[0]?.prompt;
-    expect(listing).toContain('pulls/7/files');
-    expect(listing).not.toContain('gh pr diff'); // HTTP 406 over 300 files or 20,000 lines
+    // `state --files` lists them from the files API (see pr-review.test.mjs)
+    expect(of('state')[0]?.prompt).toContain('node tools/pr-review.mjs state --pr 7 --files');
     expect(of('fix')).toHaveLength(1);
   });
 
@@ -959,7 +1035,7 @@ describe('review-loop convergence rules', () => {
           : { findings: [], tested: [...TESTED, { ...counts, result: 'needs-human' }] },
       fix: fixOpen,
     });
-    const retest = of('review').find((c) => c.label === 'review:tester:r2')?.prompt;
+    const retest = of('review').find((c) => c.label === 'review:checker:r2')?.prompt;
     expect(retest).toContain('then report them "needs-human"');
     expect(result.complete).toBe(true);
     expect(summary).toContain('✅');
@@ -1076,17 +1152,30 @@ describe('review-loop round-1 fixes', () => {
   });
 
   it('has a reviewer that gave no answer review the WHOLE PR in the next round, after fixes too', async () => {
-    const { result, of } = await runLoop({
-      review: (call) => (call.label === 'review:consistency:r1' ? null : reviewerFinds([1])(call)),
-      fix: fixOpen,
-    });
-    const r2 = (key) => of('review').find((c) => c.label === `review:${key}:r2`)?.prompt;
-    expect(r2('correctness')).toContain('FOLLOW-UP round');
-    expect(r2('consistency')).not.toContain('FOLLOW-UP round');
-    expect(r2('consistency')).toContain('Review ONLY what this PR changes');
-    expect(result.rounds.map((r) => r.kind)).toEqual(['full', 'fixes only; whole PR: consistency']);
-    expect(result.rounds[1]?.gaps).toEqual([]);
-    expect(result.complete).toBe(true);
+    for (const [fixStat, kind, others] of [
+      [BIG_FIX, 'fixes only; whole PR: consistency', ['correctness', 'tests', 'tester']],
+      [undefined, 'fix check; whole PR: consistency', ['checker']],
+    ]) {
+      const { result, of } = await runLoop({
+        review: (call) =>
+          call.label === 'review:consistency:r1' ? null : reviewerFinds([1])(call),
+        fix: fixOpen,
+        ...(fixStat && { fixStat }),
+      });
+      const r2 = (key) => of('review').find((c) => c.label === `review:${key}:r2`)?.prompt;
+      expect(r2('consistency'), kind).not.toContain('FOLLOW-UP round');
+      expect(r2('consistency'), kind).toContain('Review ONLY what this PR changes');
+      expect(
+        of('review')
+          .filter(inRound(2))
+          .map((c) => c.label.split(':')[1]),
+      ).toEqual(expect.arrayContaining(others));
+      if (fixStat) expect(r2('correctness')).toContain('FOLLOW-UP round');
+      else expect(r2('correctness')).toBeUndefined();
+      expect(result.rounds.map((r) => r.kind)).toEqual(['full', kind]);
+      expect(result.rounds[1]?.gaps).toEqual([]);
+      expect(result.complete).toBe(true);
+    }
   });
 
   it('verifies a finding that got no verdict again next round, even when no reviewer repeats it', async () => {
@@ -1261,8 +1350,8 @@ describe('review-loop round-2 fixes', () => {
         fix: fixOpen,
       });
       const label = `${result1} → ${round2.length}`;
-      // the follow-up tester is asked to run it again
-      expect(of('review').find((c) => c.label === 'review:tester:r2')?.prompt, label).toContain(
+      // the fix checker is asked to run it again
+      expect(of('review').find((c) => c.label === 'review:checker:r2')?.prompt, label).toContain(
         `- bootstrap --dry-run lists the files (round 1: ${result1}; ran: scripts/bootstrap --dry-run)`,
       );
       expect(result.complete, label).toBe(complete);
@@ -1364,7 +1453,8 @@ describe('review-loop round-2 fixes', () => {
       fix: fixOpen,
     });
     const r2 = (key) => of('review').find((c) => c.label === `review:${key}:r2`)?.prompt;
-    expect(r2('correctness')).toContain('FOLLOW-UP round');
+    expect(r2('checker')).toContain('You are the FIX CHECKER');
+    expect(r2('correctness')).toBeUndefined();
     expect(r2('tester')).not.toContain('FOLLOW-UP round');
     expect(r2('tester')).toContain('Review ONLY what this PR changes');
     expect(result.rounds[0]?.gaps).toEqual(['tester (reported nothing it ran)']);
@@ -1426,5 +1516,201 @@ describe('review-loop round-2 fixes', () => {
     expect(post).toContain('"path": ".github/workflows/ci.yml"');
     expect(post).toContain('"title": "CI is stale"');
     expect(post).not.toContain('"line": 40');
+  });
+});
+
+/** A hands-on check with the given result (and fields). */
+const check = (result, extra = {}) => ({
+  claimOrArea: 'db-up in a second worktree',
+  stepsOrCommand: 'pnpm nx run db:db-up',
+  result,
+  evidence: 'port taken',
+  ...extra,
+});
+
+describe('review-loop: round 1 carries the value, a fix gets a check (PRs #3 and #4)', () => {
+  const minor = { ...finding, severity: 'minor', title: 'Wording could be clearer' };
+  const fixNoted = (call) => ({
+    checkPassed: true,
+    commit: push(call),
+    resolutions: [
+      { path: finding.path, title: finding.title, status: 'fixed', note: 'moved the gate' },
+    ],
+  });
+
+  it('asks round 1 for every blocker/major and at most 8 minor/nit, and the tester to start from CI', async () => {
+    const { of } = await runLoop();
+    const r1 = (key) => of('review').find((c) => c.label === `review:${key}:r1`)?.prompt;
+    for (const key of ['correctness', 'tests', 'consistency', 'tester'])
+      expect(r1(key), key).toContain(
+        'Report EVERY blocker/major problem you find, and at\nmost 8 minor/nit ones.',
+      );
+    expect(r1('tester')).toContain('0. Start from CI: `gh pr checks 7`');
+    expect(r1('tester')).toContain('gh pr checks 7 --watch');
+  });
+
+  it('checks a small fix with one fix checker instead of four reviewers', async () => {
+    const { result, summary, of } = await runLoop({ review: reviewerFinds([1]), fix: fixNoted });
+    const r2 = of('review').filter(inRound(2));
+    expect(r2.map((c) => c.label)).toEqual(['review:checker:r2']);
+    const prompt = r2[0].prompt;
+    expect(prompt).toContain('You are the FIX CHECKER');
+    expect(prompt).toContain(`pushed the commits ${SHA}..<the PR head>`);
+    expect(prompt).toContain(`git diff ${SHA} HEAD`);
+    expect(prompt).toContain('"title": "Gate order hides drift"');
+    expect(prompt).toContain('"note": "moved the gate"');
+    expect(prompt).toContain('claimOrArea "fix: <path>: <title>"');
+    expect(prompt).toContain('gh pr checks 7 --watch');
+    expect(prompt).not.toContain('FOLLOW-UP round');
+    expect(r2[0].opts).toMatchObject({
+      isolation: 'worktree',
+      schema: { required: ['findings', 'tested'] },
+    });
+    // the state after the fix measured it from the reviewed head
+    expect(of('state').find((c) => c.label === 'state:r2')?.prompt).toContain(`--base ${SHA}`);
+    expect(result.rounds.map((r) => r.kind)).toEqual(['full', 'fix check']);
+    expect(summary).toContain('✅');
+    expect(result.complete).toBe(true);
+  });
+
+  it('has all four review a fix over budget, or one whose size is unknown', async () => {
+    for (const [name, opts, args] of [
+      ['over the default budget', { fixStat: BIG_FIX }, { pr: 7 }],
+      ['size unknown', { fixStat: () => ({ error: 'bad object' }) }, { pr: 7 }],
+      ['over a smaller budget', {}, { pr: 7, fixBudget: 5 }],
+    ]) {
+      const { result, of } = await runLoop(
+        { review: reviewerFinds([1]), fix: fixOpen, ...opts },
+        args,
+      );
+      const r2 = of('review').filter(inRound(2));
+      expect(
+        r2.map((c) => c.label.split(':')[1]).toSorted((a, b) => a.localeCompare(b)),
+        name,
+      ).toEqual(['consistency', 'correctness', 'tester', 'tests']);
+      expect(r2[0]?.prompt, name).toContain('FOLLOW-UP round');
+      expect(result.rounds[1]?.kind, name).toBe('fixes only');
+    }
+  });
+
+  it('runs a fix checker that gave no answer again, at the same head and on the same fixes', async () => {
+    const { result, of } = await runLoop({
+      review: reviewerFinds([1]),
+      checker: ({ label }) => (label.endsWith(':r2') ? null : { findings: [], tested: TESTED }),
+      fix: fixNoted,
+    });
+    expect(
+      of('review')
+        .filter(inRound(3))
+        .map((c) => c.label),
+    ).toEqual(['review:checker:r3']);
+    expect(of('review').find((c) => c.label === 'review:checker:r3')?.prompt).toContain(
+      `pushed the commits ${SHA}..`,
+    );
+    expect(of('fix')).toHaveLength(1);
+    expect(result.rounds[1]?.gaps).toEqual(['reviewer checker']);
+    expect(result.rounds.map((r) => r.kind)).toEqual(['full', 'fix check', 'same head: checker']);
+    expect(result.complete).toBe(true);
+  });
+
+  it('treats a failed check on a minor finding as a suggestion, and ends ✅', async () => {
+    const { result, summary, of } = await runLoop({
+      tester: ({ label }) =>
+        label.endsWith(':r1')
+          ? { findings: [minor], tested: [...TESTED, check('fail', { finding: minor.title })] }
+          : { findings: [], tested: TESTED },
+    });
+    expect(of('fix')).toHaveLength(0);
+    expect(result.rounds[0]?.gaps).toEqual([]);
+    expect(summary).toContain('✅');
+    expect(summary).toContain(
+      '- fail (not blocking: its finding is minor/nit) · db-up in a second',
+    );
+    expect(result.complete).toBe(true);
+  });
+
+  it('keeps a failed check on a blocking finding a gap until the fix checker sees it pass', async () => {
+    for (const { name, round2, complete } of [
+      { name: 'passes', round2: [...TESTED, check('pass', { evidence: 'ok' })], complete: true },
+      { name: 'left out', round2: TESTED, complete: false }, // not seen passing
+    ]) {
+      const { result, summary, of } = await runLoop({
+        tester: () => ({
+          findings: [finding],
+          tested: [...TESTED, check('fail', { finding: finding.title })],
+        }),
+        checker: () => ({ findings: [], tested: round2 }),
+        fix: fixNoted,
+      });
+      expect(result.rounds[0]?.gaps).toEqual(['tester saw a failure: db-up in a second worktree']);
+      expect(of('review').find((c) => c.label === 'review:checker:r2')?.prompt).toContain(
+        '- db-up in a second worktree (round 1: fail; ran: pnpm nx run db:db-up)',
+      );
+      expect(result.complete, name).toBe(complete);
+      expect(summary.includes('✅'), name).toBe(complete);
+    }
+  });
+
+  it('never blocks on a failed check whose finding was rejected, or duplicates a minor one', async () => {
+    // graded major by the tester: as a duplicate it weighs what the minor original weighs
+    const tester = { ...finding, title: 'Unclear wording (seen by hand)' };
+    for (const { name, verify, why } of [
+      {
+        name: 'rejected',
+        verify: ({ label }) =>
+          label.includes('(seen by hand)')
+            ? { valid: false, reason: 'cannot reproduce' }
+            : { valid: true, reason: 'ok' },
+        why: 'its finding was rejected',
+      },
+      {
+        name: 'duplicate of a minor',
+        verify: ({ label }) =>
+          label.includes('(seen by hand)')
+            ? { valid: true, reason: 'same', duplicateOf: `${minor.path}: ${minor.title}` }
+            : { valid: true, reason: 'ok', severity: 'minor' },
+        why: 'its finding is minor/nit',
+      },
+    ]) {
+      const { result, summary } = await runLoop({
+        review: ({ label }) =>
+          label === 'review:correctness:r1' ? { findings: [minor] } : { findings: [] },
+        tester: () => ({
+          findings: [tester],
+          tested: [...TESTED, check('fail', { finding: tester.title })],
+        }),
+        verify,
+      });
+      expect(result.rounds[0]?.gaps, name).toEqual([]);
+      expect(summary, name).toContain(`- fail (not blocking: ${why})`);
+      expect(result.complete, name).toBe(true);
+    }
+  });
+
+  it('keeps a failed check a gap when it names no finding, or one nobody reported', async () => {
+    for (const named of [undefined, 'Something nobody reported']) {
+      const { result, summary } = await runLoop({
+        tester: () => ({ findings: [], tested: [...TESTED, check('fail', { finding: named })] }),
+      });
+      expect(result.rounds[0]?.gaps, named).toEqual([
+        'tester saw a failure: db-up in a second worktree',
+      ]);
+      expect(summary, named).toContain('- **FAIL** · db-up in a second worktree');
+      expect(result.complete, named).toBe(false);
+    }
+  });
+
+  it('reads GitHub through one state call per step, not an agent per command', async () => {
+    const { calls } = await runLoop({ review: reviewerFinds([1]), fix: fixOpen });
+    const relays = calls
+      .filter(
+        (c) =>
+          !c.sub &&
+          ['state', 'head', 'files', 'disk', 'threads', 'post', 'summary'].includes(c.kind),
+      )
+      .map((c) => c.label);
+    // before: head, files, threads:start, disk, post, threads, head, disk, threads, threads:final, summary
+    expect(relays).toEqual(['state:r1', 'post:r1', 'state:r2', 'threads:r2', 'summary']);
+    expect(calls.find((c) => c.label === 'post:r1')?.prompt).toContain('--round 1 --list');
   });
 });

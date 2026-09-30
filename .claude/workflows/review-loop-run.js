@@ -4,13 +4,14 @@
 export const meta = {
   name: 'review-loop-run',
   description:
-    'The multi-agent run behind the review-loop skill: review a PR, post findings as inline comments, fix the blocker/major ones, re-review only the fixes until none remain',
+    'The multi-agent run behind the review-loop skill: review a PR, post findings as inline comments, fix the blocker/major ones, then check the fixes until none remain',
   whenToUse:
-    'Only when the review-loop skill says to: after the user confirmed the run, or when the pr-opened hook reports their REVIEW_LOOP_AUTO=1 opt-in (it spawns many agents and pushes to the PR branch). Pass args {pr: <number>, maxRounds?: 3}.',
+    'Only when the review-loop skill says to: after the user confirmed the run, or when the pr-opened hook reports their REVIEW_LOOP_AUTO=1 opt-in (it spawns many agents and pushes to the PR branch). Pass args {pr: <number>, maxRounds?: 3, fixBudget?: 150}.',
   phases: [
     {
       title: 'Review',
-      detail: '3 code reviewers + 1 hands-on tester, each in its own worktree at the PR head',
+      detail:
+        'round 1: 3 code reviewers + 1 hands-on tester; after a fix: 1 fix checker (all 4, on the fix commits, when the fix is large); each in its own worktree at the PR head',
     },
     {
       title: 'Verify',
@@ -27,11 +28,15 @@ export const meta = {
 };
 
 // ---------------------------------------------------------------------------------------------
-// Loop: review → verify → post → fix. CONVERGENCE RULES (learned the hard way: re-reviewing a whole
-// PR every round never converges — a fresh reviewer always finds ~10 more minor issues, and every
-// fix adds surface):
-//   * Round 1 reviews the whole PR. Later rounds review ONLY the fix commits since the previous
-//     round (plus whether the fixes actually fixed what they claimed).
+// Loop: review → verify → post → fix → check. CONVERGENCE RULES (learned the hard way: re-reviewing
+// a whole PR every round never converges — a fresh reviewer always finds ~10 more minor issues, and
+// every fix adds surface; docs/decisions/0001-review-loop-convergence.md):
+//   * Round 1 is where the value is (on PRs #1-#4 every real blocking bug came from it), so it
+//     reviews the whole PR with no cap on blocker/major findings, and its tester starts from CI.
+//   * After a fix pass, ONE fix checker runs instead of a review: it reproduces each fixed
+//     finding at the new head, waits for CI, runs `pnpm check --all` and reads only the fix diff.
+//     Only a fix that adds more than `fixBudget` (150) lines outside tests gets a follow-up review
+//     of the fix commits by all four reviewers.
 //   * Only BLOCKING findings (blocker, major) keep the loop going, and only they go to the fixer.
 //     Minor/nit findings are posted once as suggestions for a human to pick; the loop never fixes
 //     them (in the loop's own retrospective, fixes to minor findings caused 11 of 13 follow-up
@@ -50,29 +55,37 @@ export const meta = {
 //     /tmp's inodes) and stops cleanly below 2 GB or 20% of inodes free, or when it cannot check.
 //   * A fix pass that changed nothing ends the run: another round would review the same head. A
 //     finding it calls "fixed" without a fix commit stays open.
+//   * What the loop reads from GitHub between rounds comes from ONE `pr-review.mjs state` call
+//     (head, threads, disk, the PR's files, the fix size), and a post lists the threads it leaves:
+//     agents that only relay a command's output cost ~40k tokens each.
 // The loop ends when a complete round (every reviewer and verifier answered) leaves no blocking
-// finding open, or maxRounds is hit. What a round missed is made up in the next one, even when
-// the fixes moved the head: a reviewer that did not answer reviews the WHOLE PR there, and a
-// finding with no verdict is verified again without waiting for a reviewer to repeat it. A
-// finding with an unknown severity (e.g. a thread posted before severities were listed) counts
-// as blocking. GitHub is the durable
-// record (every posted finding carries a stable id: inline ones as review threads, the rest in the
-// review body, which `pr-review.mjs threads` lists too; only what the `gh` user running the loop
-// posted counts); this script keeps per-run memory so rejected and won't-fix findings are not
-// re-litigated. Every agent that reads or changes code works in its own git worktree checked out
-// at the PR head, never in the main checkout. An agent that returns nothing (it died, timed out
-// or was skipped) is a gap, never a clean answer: only a converged run posts ✅. So is a tester
-// that reports nothing it ran, nothing that passed (only n/a or needs-human), something it could
-// not run, or a failure: ✅ needs evidence of hands-on testing that passed, and the summary lists
-// what the tester ran. A check that failed or could not run stays a gap in every later round until
-// a tester reports that same check passing, or needing a human (the next tester is asked to run it
-// again). The tester's failures repeat at the same head, so they never re-run every reviewer on an
-// unchanged head, and never add a round of their own: with no blocker/major open, the run stops
-// (⚠️) without a fix pass.
+// finding open, or maxRounds is hit. What a round missed is made up in the next one: a reviewer
+// that did not answer reviews the WHOLE PR there (at the same head, only the reviewers that did not
+// answer run again), and a finding with no verdict is verified again without waiting for a
+// reviewer to repeat it. A finding with an unknown severity (e.g. a thread posted before
+// severities were listed) counts as blocking. GitHub is the durable record (every posted finding
+// carries a stable id: inline ones as review threads, the rest in the review body, which
+// `pr-review.mjs threads` lists too; only what the `gh` user running the loop posted counts); this
+// script keeps per-run memory so rejected and won't-fix findings are not re-litigated. Every agent
+// that reads or changes code works in its own git worktree checked out at the PR head, never in
+// the main checkout. An agent that returns nothing (it died, timed out or was skipped) is a gap,
+// never a clean answer: only a converged run posts ✅. So is a hands-on report (the tester's or the
+// fix checker's) with nothing it ran, nothing that passed (only n/a or needs-human), or something
+// it could not run: ✅ needs evidence of hands-on testing that passed, and the summary lists what
+// was run. A FAILED check names the finding it produced and weighs what that finding weighs: on a
+// blocker/major (or a finding of unknown severity, one not judged yet, or none) it is a gap; on a
+// minor/nit finding it is a suggestion like the finding itself, since the fixer never touches those
+// (on PR #4, 7 of 8 failed checks were minor ones, and the run could never have ended ✅). A gap
+// check stays one in every later round until a hands-on agent reports it passing or needing a
+// human (the next one is asked to run it again). Hands-on failures repeat at the same head, so
+// they never re-run a reviewer on an unchanged head and never add a round of their own: with no
+// blocker/major open, the run stops (⚠️) without a fix pass.
 // ---------------------------------------------------------------------------------------------
 const PR = args?.pr;
 if (!PR) throw new Error('review-loop: pass args {pr: <number>}');
 const MAX_ROUNDS = args?.maxRounds ?? 3;
+/** A fix adding more non-test lines than this gets a follow-up review by all four reviewers. */
+const FIX_BUDGET = args?.fixBudget ?? 150;
 
 const SHA = /^[0-9a-f]{40}$/;
 // Pasted into the fixer's `git push`: plain ref-name characters only (see pr-review.mjs head).
@@ -185,6 +198,11 @@ const TESTED = {
         description:
           'what you observed: the deciding output line, exit code, URL and what the page showed; for could-not-run, why',
       },
+      finding: {
+        type: 'string',
+        description:
+          'for a "fail": the exact title of the finding it produced (one in your `findings`, or a finding already known to the loop)',
+      },
     },
     required: ['claimOrArea', 'stepsOrCommand', 'result', 'evidence'],
   },
@@ -242,6 +260,9 @@ code, confusing names, changes outside the PR's stated scope.`,
 // the main checkout.
 const TESTER_PROMPT = `You are the HANDS-ON TESTER. Your job is to actually run and try the PR, not just read it.
 After the setup above:
+0. Start from CI: \`gh pr checks ${PR}\`. Every failed check is a finding, with its failing lines (\`gh run view <id>
+   --log-failed\`) and, reproduced locally where you can, its cause. Checks still running: come back to them before you
+   answer (\`gh pr checks ${PR} --watch\`, at most 10 minutes; then list CI as "could-not-run").
 1. Run \`pnpm check --all\`. Any failure is a finding (include the failing output).
 2. Verify every claim in the PR description and every test-plan item that you CAN verify from this worktree by doing
    it yourself. Mark what you cannot ("needs-human": repository variables, the author's local commit process, external
@@ -259,8 +280,29 @@ Also return \`tested\`: one entry per thing from steps 1-3 (\`pnpm check --all\`
 script you ran, each page you opened), with the exact command or steps, the result and the evidence you saw. If you
 could not do something this worktree should be able to do (the install failed, the app would not start, you have no
 browser tools), list it as "could-not-run" with the reason; never leave it out. A check no agent can do from a
-worktree is "needs-human", not "could-not-run". The loop only reports a clean run when something passed and nothing
-failed or could not run.`;
+worktree is "needs-human", not "could-not-run". Every "fail" names, in its "finding" field, the finding it produced
+(report one for each failure you see: the finding's severity decides whether the failure blocks). The loop only reports
+a clean run when something passed and nothing blocking failed or could not run.`;
+
+// After a fix pass: one agent checks the fixes by running them, instead of four re-reviewing.
+function checkerPrompt({ base, fixed }) {
+  return `You are the FIX CHECKER. The loop's fixer pushed the commits ${base}..<the PR head> to fix the blocking findings
+below. Check the fixes by RUNNING things; do NOT review the rest of the PR again. After the setup above:
+1. For EACH finding below, reproduce its failure at the PR head the way its body (or its thread: \`node tools/pr-review.mjs
+   threads --pr ${PR}\`) describes, and list it in \`tested\` with claimOrArea "fix: <path>: <title>": "pass" when the
+   failure is gone; "fail" when it is still there, and then ALSO report that finding again with the SAME path and title.
+2. CI: \`gh pr checks ${PR} --watch\` (at most 10 minutes; then list CI as "could-not-run"). A failed check is a finding,
+   with its failing lines (\`gh run view <id> --log-failed\`) and, if you can tell, its cause.
+3. Run \`pnpm check --all\`. Any failure is a finding (include the failing output).
+4. Read the fix diff (\`git diff ${base} HEAD\`). Report problems these commits INTRODUCED that break CI or a normal
+   user/agent flow (blocker/major, with a reproduction), and at most 3 minor ones. Code they did not touch is out of scope.
+5. Stop any processes/containers you started before you finish.
+Rules: never commit or push; never post to GitHub; anything you change in this worktree is discarded. Report only what
+you observed, with exact steps and observed vs expected. Return \`tested\` with one entry per thing you ran (steps 1-3).
+Every "fail" names, in its "finding" field, the finding it produced.
+FINDINGS THE FIXER MARKED FIXED (JSON; "note" is the fixer's):
+${JSON.stringify(fixed, null, 2)}`;
+}
 
 // `pr-review.mjs threads --brief`: bodies are left out so the relay stays small, and `count` lets
 // the script notice a relayed list that lost entries.
@@ -298,13 +340,49 @@ const HEAD = {
   },
 };
 
-// `pr-review.mjs post` prints {posted: [ids], inline}; the relay adds {error} when it failed.
+// `pr-review.mjs post --list` prints {posted: [ids], inline, threads}; the relay adds {error}
+// when it failed.
 const POSTED = {
   type: 'object',
   properties: {
     posted: { type: 'array', items: { type: 'string' }, description: 'the "posted" ids' },
     inline: { type: 'integer', description: 'the "inline" count' },
+    threads: THREADS,
     error: { type: 'string', description: 'the error message, if the command failed' },
+  },
+};
+
+// `pr-review.mjs state`: every part is {error} when it failed.
+const STATE = {
+  type: 'object',
+  properties: {
+    head: HEAD,
+    threads: { ...THREADS, required: [] },
+    disk: {
+      type: 'object',
+      properties: {
+        freeGb: { type: 'number' },
+        inodeFreePct: { type: 'number' },
+        error: { type: 'string' },
+      },
+    },
+    files: {
+      type: 'object',
+      properties: {
+        count: { type: 'integer' },
+        loop: { type: 'array', items: { type: 'string' } },
+        error: { type: 'string' },
+      },
+    },
+    fix: {
+      type: 'object',
+      properties: {
+        addedNonTest: { type: 'integer' },
+        added: { type: 'integer' },
+        error: { type: 'string' },
+      },
+    },
+    error: { type: 'string', description: 'the error message, if the command itself failed' },
   },
 };
 
@@ -349,6 +427,35 @@ const pendingTests = new Map();
  * again (the latest report decides): the summary lists them whatever round they came from.
  */
 const needsHuman = new Map();
+/** The finding a title (or "path: title") names: { status: 'unjudged' }, { status, finding } or undefined. */
+function findingNamed(ref) {
+  const r = loose(ref);
+  if (!r) return undefined;
+  const is = (f) => loose(f.title) === r || loose(`${f.path}: ${f.title}`) === r;
+  if (unjudged.some(is)) return { status: 'unjudged' };
+  return [...seen.values()].find((s) => is(s.finding));
+}
+/**
+ * The finding a failed hands-on check names in its `finding` field, as this run knows it now:
+ * { status, finding }, { status: 'unjudged' } (no verdict yet), or undefined (it names none, or
+ * none by that title). A duplicate stands for its original (when that is unknown: its own grade).
+ */
+function failedFinding(t) {
+  let s = findingNamed(t?.finding);
+  for (let hops = 0; s?.status === 'duplicate' && s.of && hops < 3; hops++) s = findingNamed(s.of);
+  return s;
+}
+/**
+ * Whether a hands-on check that did not pass keeps the run from ✅: one that could not run always
+ * does; a failure does unless the finding it produced is minor/nit, rejected or won't fix (the
+ * fixer never touches those, so it could never pass). Naming no finding blocks: fail closed.
+ */
+function blocksDone(t) {
+  if (t?.result !== 'fail') return true;
+  const s = failedFinding(t);
+  if (s?.status === 'rejected' || s?.status === 'wontfix') return false;
+  return !s?.finding || isBlocking(s.finding.severity);
+}
 /** How often this run reopened each blocking finding: a second reopen stops it for a human. */
 const reopens = new Map();
 const short = (sha) => String(sha ?? '?').slice(0, 7);
@@ -441,6 +548,12 @@ function verdictsOf(batch, answer) {
   return batch.map((_, i) => (usable ? got.find((v) => v.index === i + 1) : undefined));
 }
 
+/** A relayed `{count, threads}` listing, or undefined when it failed or lost entries on the way. */
+const threadList = (out) =>
+  Array.isArray(out?.threads) && out.threads.length === out.count && !out.error
+    ? out.threads
+    : undefined;
+
 /**
  * Review-loop threads on the PR (started by our `gh` user), resolved ones included, or undefined
  * when the listing failed or came back incomplete: never mistake a failed listing for "no threads".
@@ -451,22 +564,35 @@ async function listThreads(label, phaseTitle) {
 ({count, threads}). Do not drop, merge or edit entries. If the command fails, return {count: -1, threads: []}.`,
     { label, phase: phaseTitle, effort: 'low', schema: THREADS },
   );
-  if (!Array.isArray(out?.threads) || out.threads.length !== out.count) return undefined;
-  return out.threads;
+  return threadList(out);
 }
 
 /**
- * The PR head right now (it moves when the fixer pushes), fetched so worktrees can check it out.
- * Refuses fork PRs: the loop pushes to the head branch and runs the PR's code with this checkout's
- * environment, which is only safe for branches of this repository.
+ * Everything the loop reads between rounds, from ONE `pr-review.mjs state` call: the PR head right
+ * now (it moves when the fixer pushes; fetched so worktrees can check it out), the review threads,
+ * free disk space and, on request, the loop files the PR changes (`files`) and the size of the
+ * commits since `base`.
  */
-async function prHead(label) {
+async function prState(label, { files = false, base } = {}) {
+  const flags = `${files ? ' --files' : ''}${base ? ` --base ${base}` : ''}`;
   const out = await agent(
-    `Run \`node tools/pr-review.mjs head --pr ${PR}\`, then \`git fetch -q origin "pull/${PR}/head"\`.
-Return the first command's JSON output verbatim ({sha, branch, crossRepository}). If a command fails, return {error}
-with its error message instead.`,
-    { label, phase: 'Review', effort: 'low', schema: HEAD },
+    `Run \`node tools/pr-review.mjs state --pr ${PR}${flags}\` and return its JSON output verbatim. Do not drop, merge
+or edit entries. If the command fails, return {error} with its error message instead.`,
+    { label, phase: 'Review', effort: 'low', schema: STATE },
   );
+  if (!out || out.error)
+    throw new Error(
+      `review-loop: could not read the state of PR #${PR}${out?.error ? `: ${out.error}` : ''}`,
+    );
+  return out;
+}
+
+/**
+ * The PR head of a state. Refuses fork PRs: the loop pushes to the head branch and runs the PR's
+ * code with this checkout's environment, which is only safe for branches of this repository.
+ */
+function headOf(state) {
+  const out = state.head;
   if (!out) throw new Error(`review-loop: could not resolve the head commit of PR #${PR}`);
   if (out.error) throw new Error(`review-loop: ${out.error}`);
   if (out.crossRepository !== false)
@@ -501,72 +627,36 @@ function openFindings(threads) {
 }
 
 // First, so a fork PR is refused before any agent reads or runs its code.
-let head = await prHead('head:r1');
+let state = await prState('state:r1', { files: true });
+let head = headOf(state);
 
-// Never let the loop fix the loop: a PR that changes the loop's own files gets a review-only round.
-const LOOP_PATHS =
-  /^(?:\.claude\/workflows\/review-loop|tools\/pr-review\.mjs|tools\/agent-hooks\/pr-opened\.mjs|\.agents\/skills\/review-loop\/|\.claude\/skills\/review-loop\/|tools\/test\/(?:review-loop|pr-review|pr-opened)\.test\.mjs)/;
-// From the files API, not `gh pr diff --name-only`: that downloads the whole diff, which GitHub
-// refuses (HTTP 406) for a PR over 300 files or 20,000 lines. The API lists up to 3000 files.
+// Never let the loop fix the loop: a PR that changes the loop's own files (LOOP_PATHS in
+// tools/pr-review.mjs) gets a review-only round. The files API lists up to 3000 files; unlike
+// `gh pr diff --name-only` it also works for a PR too large to diff (HTTP 406).
 const MAX_LISTED = 3000;
-const changed = await agent(
-  `Run \`gh api --paginate "repos/{owner}/{repo}/pulls/${PR}/files" --jq '.[].filename'\` and return the file paths it prints as {files}. If it fails, return {files: [], error}.`,
-  {
-    label: 'files:r1',
-    phase: 'Review',
-    effort: 'low',
-    schema: {
-      type: 'object',
-      properties: {
-        files: { type: 'array', items: { type: 'string' } },
-        error: { type: 'string' },
-      },
-      required: ['files'],
-    },
-  },
-);
+const files = state.files;
 // Why this run is review-only ('' if it is not). Fails closed: a listing that failed, came back
 // empty or reached the API's cap (the rest is cut off) may hide the loop's own files.
-const loopFiles =
-  Array.isArray(changed?.files) &&
-  changed.files.length &&
-  changed.files.length < MAX_LISTED &&
-  !changed.error
-    ? changed.files.filter((f) => LOOP_PATHS.test(f))
-    : undefined;
-const selfReview = !loopFiles
-  ? `the PR's changed files could not be listed (${changed?.error ?? (changed?.files?.length >= MAX_LISTED ? `GitHub lists at most ${MAX_LISTED}` : 'no usable answer')}), so it may change the review loop itself`
-  : loopFiles.length
-    ? `this PR changes the review loop itself (${loopFiles.join(', ')})`
+const listed =
+  !files?.error &&
+  Number.isInteger(files?.count) &&
+  files.count > 0 &&
+  files.count < MAX_LISTED &&
+  Array.isArray(files.loop);
+const selfReview = !listed
+  ? `the PR's changed files could not be listed (${files?.error ?? (files?.count >= MAX_LISTED ? `GitHub lists at most ${MAX_LISTED}` : 'no usable answer')}), so it may change the review loop itself`
+  : files.loop.length
+    ? `this PR changes the review loop itself (${files.loop.join(', ')})`
     : '';
 
 /**
- * Space and inodes on /tmp and the worktree disk: true, or why no round may start (below 2 GB or
- * 20% of inodes free, or the check itself failed).
+ * Space and inodes on /tmp and the worktree disk (from a state): true, or why no round may start
+ * (below 2 GB or 20% of inodes free, or the check itself failed).
  */
-async function diskOk(round) {
-  const out = await agent(
-    `Run \`df -P -k /tmp .\`, then \`df -P -i /tmp .\`. Return {freeGb}: the LOWEST "Available" value of the first
-command's lines, in GB (KB / 1048576, one decimal), and {inodeFreePct}: the LOWEST 100 minus "IUse%" of the second
-command's lines (skip a line whose IUse% is "-": that filesystem has no fixed inode count; 100 if every line is
-skipped). If a command fails, return {error} with its message instead.`,
-    {
-      label: `disk:r${round}`,
-      phase: 'Review',
-      effort: 'low',
-      schema: {
-        type: 'object',
-        properties: {
-          freeGb: { type: 'number' },
-          inodeFreePct: { type: 'number' },
-          error: { type: 'string' },
-        },
-      },
-    },
-  );
-  const { freeGb, inodeFreePct } = out ?? {};
-  if (out?.error || typeof freeGb !== 'number' || typeof inodeFreePct !== 'number')
-    return `could not check disk space before round ${round} (${out?.error ?? 'no usable answer'}); check /tmp and the worktree disk and re-run`;
+function diskOk(disk, round) {
+  const { freeGb, inodeFreePct } = disk ?? {};
+  if (disk?.error || typeof freeGb !== 'number' || typeof inodeFreePct !== 'number')
+    return `could not check disk space before round ${round} (${disk?.error ?? 'no usable answer'}); check /tmp and the worktree disk and re-run`;
   if (freeGb < 2 || inodeFreePct < 20)
     return `low disk space before round ${round} (${freeGb} GB and ${inodeFreePct}% of inodes free on /tmp or the worktree disk; clean up and re-run)`;
   return true;
@@ -574,7 +664,7 @@ skipped). If a command fails, return {error} with its message instead.`,
 
 // Threads from an earlier run (or a human re-run) are known findings too: without this, round-1
 // reviewers would re-report them as new and the loop would post duplicate threads.
-const startThreads = await listThreads('threads:start', 'Review');
+const startThreads = threadList(state.threads);
 if (!startThreads) throw new Error(`review-loop: could not list the review threads of PR #${PR}`);
 for (const t of startThreads) {
   if (!t.title || !t.path) continue;
@@ -588,12 +678,26 @@ for (const t of startThreads) {
   const status = !t.resolved ? 'open' : t.wontfix ? 'wontfix' : 'resolved';
   seen.set(keyOf(finding), { status, finding });
 }
+/** The latest listing of the threads (undefined when it failed): what the summary reports open. */
+let latestThreads = startThreads;
+/**
+ * What the next hands-on agent checks after a fix pass: { base (the head before the first fix not
+ * checked yet), fixed (the findings the fixer marked fixed), size (lines the fixes add outside
+ * tests; undefined when unknown, which counts as over budget) }. Cleared once it is checked.
+ */
+let fixRange;
 
 let converged = false;
 for (let round = 1; round <= MAX_ROUNDS; round++) {
-  // ---- 1. Review (3 code lenses + hands-on tester, in parallel, each at the PR head) ----------
+  // ---- 1. Review ----------------------------------------------------------------------------
+  // Round 1: 3 code lenses + the hands-on tester on the whole PR. After a fix pass: one fix
+  // checker, or all four on the fix commits when the fix is over budget. At the same head again:
+  // only the agents that gave no answer. All in parallel, each in its own worktree at the PR head.
   phase('Review');
-  const disk = await diskOk(round);
+  // the state read after the fix pass, or a fresh one (a round at the same head)
+  state ??= await prState(`state:r${round}`);
+  const disk = diskOk(state.disk, round);
+  state = undefined;
   if (disk !== true) {
     history.push({ round, stoppedBy: disk });
     break;
@@ -601,9 +705,16 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
   const known = [...seen.values()]
     .map((s) => `- [${STATUS_LABEL[s.status]}] ${s.finding.path}: ${s.finding.title}`)
     .join('\n');
-  const delta = Boolean(reviewedHead) && reviewedHead !== head.sha;
+  const firstReview = !reviewedHead;
+  const sameHead = reviewedHead === head.sha;
+  const delta = !firstReview && !sameHead;
+  // A fix within budget gets one fix checker; a larger one, or one of unknown size, a follow-up review.
+  const checkOnly = delta && fixRange?.size <= FIX_BUDGET;
   // A reviewer that owes a review of the whole PR gets the full scope, even in a follow-up round.
   const followsUp = (key) => delta && !owesFullReview.has(key);
+  const knownNote = `Findings already known in this loop (do NOT report them again unless a "resolved" one is still broken in
+the current code — then report it again with the SAME path and title; never re-report "won't fix" or "rejected" ones):
+${known || '(none yet)'}`;
   const rules = (key) => `${
     followsUp(key)
       ? `This is a FOLLOW-UP round. Review ONLY the fix commits since the last review:
@@ -611,21 +722,21 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
 Report (a) problems INTRODUCED by these fixes and (b) previously "resolved" findings that are still broken.
 Do NOT review unchanged code again and do NOT report new minor/nit issues in code these commits did not touch.
 At most 5 findings.`
-      : `Review ONLY what this PR changes (and code it directly breaks). At most 8 findings.`
+      : `Review ONLY what this PR changes (and code it directly breaks). Report EVERY blocker/major problem you find, and at
+most 8 minor/nit ones.`
   }
 Report real problems with concrete evidence; skip formatting/style (oxfmt handles it) and pure preferences.
 Most severe first; use the severity definitions strictly. Use a stable, specific title for each finding.
-Findings already known in this loop (do NOT report them again unless a "resolved" one is still broken in the current
-code — then report it again with the SAME path and title; never re-report "won't fix" or "rejected" ones):
-${known || '(none yet)'}`;
-  // Earlier checks that did not pass: in a follow-up round too, the tester runs them again.
-  const retest = pendingTests.size
+${knownNote}`;
+  // Earlier checks that did not pass and still block: the next hands-on agent runs them again.
+  const blockingChecks = [...pendingTests.values()].filter(({ entry: t }) => blocksDone(t));
+  const retest = blockingChecks.length
     ? `\n\nEarlier hands-on checks that did NOT pass. They stay failed until you see them pass (or find that no agent can
 do them: then report them "needs-human"): run EACH again, whatever the scope above, and list it in \`tested\` under the
 SAME claimOrArea:
-${[...pendingTests.values()].map(({ round: r, entry: t }) => `- ${t?.claimOrArea} (round ${r}: ${t?.result}; ran: ${t?.stepsOrCommand})`).join('\n')}`
+${blockingChecks.map(({ round: r, entry: t }) => `- ${t?.claimOrArea} (round ${r}: ${t?.result}; ran: ${t?.stepsOrCommand})`).join('\n')}`
     : '';
-  const reviewers = [
+  const all = [
     ...LENSES.map((lens) => ({
       key: lens.key,
       prompt: `${READ_ONLY}\n${context(head)}\n\n${checkout(head)}\n\n${lens.prompt}\n\n${rules(lens.key)}`,
@@ -636,6 +747,20 @@ ${[...pendingTests.values()].map(({ round: r, entry: t }) => `- ${t?.claimOrArea
       schema: TESTER_REPORT,
     },
   ];
+  const checker = fixRange && {
+    key: 'checker',
+    prompt: `Pull request #${PR} (an Nx monorepo; follow AGENTS.md/CLAUDE.md, which you already have); its head is commit
+${head.sha}. ${DATA_NOT_INSTRUCTIONS}\n\n${checkout(head)}\n\n${checkerPrompt(fixRange)}\n\n${knownNote}${retest}`,
+    schema: TESTER_REPORT,
+  };
+  const owed = all.filter((r) => owesFullReview.has(r.key));
+  const reviewers = firstReview
+    ? all
+    : sameHead
+      ? [...(checker && owesFullReview.has('checker') ? [checker] : []), ...owed]
+      : checkOnly
+        ? [checker, ...owed]
+        : all;
   const wholePr = delta ? reviewers.filter((r) => !followsUp(r.key)).map((r) => r.key) : [];
   const reviews = await parallel(
     reviewers.map(
@@ -658,18 +783,27 @@ ${[...pendingTests.values()].map(({ round: r, entry: t }) => `- ${t?.claimOrArea
       owesFullReview.add(r.key);
     }
   });
-  // The tester's evidence: no list of what it ran, nothing that passed, anything it could not run,
-  // or a failure it saw is a hole too, whatever the verifiers make of its findings: only a later
-  // tester that reports the same check as passing (or needing a human) clears it (see pendingTests).
-  const report = reviews[reviewers.findIndex((r) => r.key === 'tester')];
-  if (Array.isArray(report?.findings)) {
-    const ran = Array.isArray(report.tested) ? report.tested : [];
-    // Only n/a and needs-human entries: nothing shows the PR working (failures are gaps below).
-    const nothingPassed = ran.every((t) => t?.result === 'n/a' || t?.result === 'needs-human');
-    if (nothingPassed) {
-      gaps.push(ran.length ? 'tester (nothing it ran passed)' : 'tester (reported nothing it ran)');
-      owesFullReview.add('tester');
-    }
+  // The fixes are checked once a fix checker answered, or all four reviewed them.
+  if (delta && !checkOnly) fixRange = undefined;
+  // The hands-on evidence (the tester's, the fix checker's): no list of what it ran, nothing that
+  // passed or anything it could not run is a hole too, whatever the verifiers make of its
+  // findings; a failure weighs what the finding it produced weighs (see blocksDone). Only a later
+  // report of the same check passing (or needing a human) clears it (see pendingTests).
+  const ran = [];
+  reviewers.forEach((r, i) => {
+    const report = reviews[i];
+    if (!r.schema || !Array.isArray(report?.findings)) return;
+    const tested = Array.isArray(report.tested) ? report.tested : [];
+    // Only n/a and needs-human entries: nothing shows the PR working.
+    if (tested.every((t) => t?.result === 'n/a' || t?.result === 'needs-human')) {
+      gaps.push(
+        tested.length ? `${r.key} (nothing it ran passed)` : `${r.key} (reported nothing it ran)`,
+      );
+      owesFullReview.add(r.key);
+    } else if (r.key === 'checker') fixRange = undefined; // the fixes are checked
+    ran.push(...tested);
+  });
+  if (reviewers.some((r, i) => r.schema && Array.isArray(reviews[i]?.findings))) {
     // a check reported both ways counts as not passing; one no agent can do needs a human instead
     for (const t of ran) {
       if (t?.result === 'pass' || t?.result === 'needs-human')
@@ -683,10 +817,6 @@ ${[...pendingTests.values()].map(({ round: r, entry: t }) => `- ${t?.claimOrArea
         needsHuman.set(norm(t.claimOrArea), { round, entry: t });
     testing = { round, sha: head.sha, tested: ran };
   }
-  for (const { round: r, entry: t } of pendingTests.values())
-    gaps.push(
-      `${t?.result === 'fail' ? TESTER_FAILED : TESTER_COULD_NOT_RUN} ${t?.claimOrArea ?? '?'}${r === round ? '' : ` (round ${r})`}`,
-    );
   const raw = reviews.flatMap((r, i) =>
     Array.isArray(r?.findings) ? r.findings.map((f) => ({ ...f, source: reviewers[i].key })) : [],
   );
@@ -801,7 +931,11 @@ ${JSON.stringify(
       }
     }
     if (outcome !== 'confirmed') {
-      if (kind === 'new') seen.set(keyOf(f), { status: outcome, finding: f });
+      // a duplicate remembers its original: a failed check that names it weighs what that weighs
+      const original = outcome === 'duplicate' && knownFinding(v.duplicateOf)?.finding;
+      const of = original ? `${original.path}: ${original.title}` : v.duplicateOf;
+      if (kind === 'new')
+        seen.set(keyOf(f), { status: outcome, finding: f, ...(outcome === 'duplicate' && { of }) });
       return;
     }
     const finding = { ...f, severity: graded(v.severity ?? f.severity, v.likelihood) };
@@ -814,15 +948,16 @@ ${JSON.stringify(
   phase('Post');
   const toPost = [...confirmedNew, ...reopened];
   let postError;
+  let postedThreads;
   if (toPost.length) {
     const reopenNote = reopened.length
       ? `\nAlso, these previously resolved findings are STILL present — include them in the same post (same path/title, body prefixed with "Still present: " and the reason):\n${JSON.stringify(reopened, null, 2)}`
       : '';
     const out = await agent(
       `Post these review findings to pull request #${PR} by piping the JSON array to:
-\`node tools/pr-review.mjs post --pr ${PR} --round ${round}\` (use a heredoc: <<'JSON' ... JSON).
-Do not change the findings' wording. Return the command's JSON output verbatim ({posted, inline}). If the command
-fails, return {error} with its error message instead.
+\`node tools/pr-review.mjs post --pr ${PR} --round ${round} --list\` (use a heredoc: <<'JSON' ... JSON).
+Do not change the findings' wording. Return the command's JSON output verbatim ({posted, inline, threads}), without
+dropping, merging or editing entries. If the command fails, return {error} with its error message instead.
 FINDINGS:
 ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
       { label: `post:r${round}`, phase: 'Post', effort: 'low', schema: POSTED },
@@ -832,6 +967,7 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
       postError =
         out?.error ??
         `the post step reported ${out?.posted?.length ?? 'no'} of ${toPost.length} findings posted`;
+    postedThreads = threadList(out?.threads);
   }
   // Posted or not, confirmed findings are open: the summary lists them if they never reach GitHub.
   for (const f of toPost) seen.set(keyOf(f), { status: 'open', finding: f });
@@ -842,12 +978,21 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
   }
 
   // ---- 4. Stop condition ---------------------------------------------------------------------
-  // What this run confirmed counts as much as GitHub does (a listing can lag behind a post).
-  const threads = await listThreads(`threads:r${round}`, 'Post');
+  // What this run confirmed counts as much as GitHub does (a listing can lag behind a post). A post
+  // lists the threads it leaves; without one (or when its listing failed), list them here.
+  const threads = postedThreads ?? (await listThreads(`threads:r${round}`, 'Post'));
+  latestThreads = threads;
   if (!threads) {
     history.push({ round, stoppedBy: 'could not list the review threads' });
     break;
   }
+  // Hands-on checks that did not pass, weighed now that the findings they produced are judged: a
+  // failure on a minor/nit, rejected or won't-fix finding is a suggestion, never a gap (blocksDone).
+  for (const { round: r, entry: t } of pendingTests.values())
+    if (blocksDone(t))
+      gaps.push(
+        `${t?.result === 'fail' ? TESTER_FAILED : TESTER_COULD_NOT_RUN} ${t?.claimOrArea ?? '?'}${r === round ? '' : ` (round ${r})`}`,
+      );
   const open = openFindings(threads);
   const openBlocking = open.filter((f) => isBlocking(severityOf(f)));
   // New blocking findings only: a reopened finding gets one more fix attempt (a second reopen of
@@ -860,11 +1005,11 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
   const reopenedTwice = reopened.filter((f) => reopens.get(keyOf(f)) >= 2);
   history.push({
     round,
-    kind: !delta
+    kind: firstReview
       ? 'full'
-      : wholePr.length
-        ? `fixes only; whole PR: ${wholePr.join(', ')}`
-        : 'fixes only',
+      : sameHead
+        ? `same head${reviewers.length ? `: ${reviewers.map((r) => r.key).join(', ')}` : ', verify only'}`
+        : `${checkOnly ? 'fix check' : 'fixes only'}${wholePr.length ? `; whole PR: ${wholePr.join(', ')}` : ''}`,
     raw: raw.length,
     posted: confirmedNew.length,
     reopened: reopened.length,
@@ -981,8 +1126,12 @@ one resolution per finding (path + title exactly as given).`,
     break;
   }
   // The fixes count only once they are the PR head: a refused or rejected push leaves them in a
-  // throwaway worktree, and the next round would re-review the old code.
-  const after = await prHead(`head:r${round + 1}`);
+  // throwaway worktree, and the next round would re-review the old code. The same state brings the
+  // threads the fixer resolved, the next round's disk check and the size of the fixes.
+  const base = fixRange?.base ?? head.sha;
+  state = await prState(`state:r${round + 1}`, { base });
+  const after = headOf(state);
+  latestThreads = threadList(state.threads);
   if (after.sha !== fix.commit) {
     log(`round ${round}: PR head is ${short(after.sha)}, not the fixer's ${short(fix.commit)}`);
     history.push({
@@ -1005,6 +1154,18 @@ one resolution per finding (path + title exactly as given).`,
     });
   }
   head = after;
+  if (!unchanged) {
+    // What the next round checks: every fix since `base`, earlier unchecked ones included.
+    const fixed = settled
+      .filter((r) => r.status === 'fixed')
+      .map((r) => ({ ...openBlocking.find((f) => keyOf(f) === keyOf(r)), ...r }));
+    const size = state.fix?.error ? undefined : state.fix?.addedNonTest;
+    fixRange = {
+      base,
+      fixed: [...(fixRange?.fixed ?? []), ...fixed],
+      size: Number.isInteger(size) ? size : undefined,
+    };
+  }
   const done = (status) => settled.filter((r) => r.status === status).length;
   const pass = `${done('fixed')} fixed, ${done('wontfix')} won't fix, ${Math.max(0, openBlocking.length - done('fixed') - done('wontfix'))} left open`;
   const settledKeys = new Set(settled.map(keyOf));
@@ -1025,7 +1186,8 @@ one resolution per finding (path + title exactly as given).`,
 
 // ---- Summary ---------------------------------------------------------------------------------
 phase('Summary');
-const finalThreads = await listThreads('threads:final', 'Summary');
+// The latest listing is current: every step that changes threads (post, fix) lists them after.
+const finalThreads = latestThreads ?? (await listThreads('threads:final', 'Summary'));
 if (!finalThreads)
   history.push({ round: 'end', stoppedBy: 'could not list the review threads for the summary' });
 const stillOpen = openFindings(finalThreads ?? []);
@@ -1066,8 +1228,20 @@ const RESULT_LABEL = {
   'n/a': 'n/a',
   'needs-human': '**needs a human**',
 };
+/** A failure that does not block names why (see blocksDone); the rest show their result. */
+const resultLabel = (t) => {
+  if (t?.result !== 'fail' || blocksDone(t)) return RESULT_LABEL[t?.result] ?? '**could not run**';
+  const s = failedFinding(t)?.status;
+  const why =
+    s === 'rejected'
+      ? 'its finding was rejected'
+      : s === 'wontfix'
+        ? "its finding is won't fix"
+        : 'its finding is minor/nit';
+  return `fail (not blocking: ${why})`;
+};
 const testLine = (t) =>
-  `- ${RESULT_LABEL[t?.result] ?? '**could not run**'} · ${oneLine(t?.claimOrArea, 120)} · \`${oneLine(t?.stepsOrCommand, 120).replaceAll('`', "'")}\` · ${oneLine(t?.evidence, 200)}`;
+  `- ${resultLabel(t)} · ${oneLine(t?.claimOrArea, 120)} · \`${oneLine(t?.stepsOrCommand, 120).replaceAll('`', "'")}\` · ${oneLine(t?.evidence, 200)}`;
 // Checks that failed or could not run in an earlier round, and no later tester saw pass.
 const notSeenPassing = [...pendingTests.values()].filter((p) => p.round !== testing?.round);
 // Checks an earlier tester said need a human (the latest report lists its own).

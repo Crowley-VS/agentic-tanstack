@@ -87,7 +87,7 @@ export function reviewLoopContext(input, env = process.env, repo) {
         ];
   return [
     ...start,
-    'It reviews (3 lenses + a hands-on tester), posts findings as inline comments, fixes them, and re-reviews the fixes',
+    'It reviews (3 lenses + a hands-on tester), posts findings as inline comments, fixes the blocker/major ones, and checks the fixes',
     'until no blocker/major issue is open. It works in its own git worktrees, so the user can keep working; never merge the PR.',
   ].join('\n');
 }
