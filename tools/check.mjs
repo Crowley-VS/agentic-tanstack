@@ -4,9 +4,13 @@
 //   pnpm check          affected projects only (fast; what agents run before saying "done")
 //   pnpm check --all    every project (what CI's template smoke test runs)
 //
-// Gates: lint (oxlint) · eslint (module boundaries) · typecheck · test · build · Nx sync (tsconfig
-// project references) · lint of the files no project owns · formatting (oxfmt --check) ·
-// agent-config hygiene · Nx's agent config · generated-file drift · pinned version consistency.
+// Gates, in order: agent-config hygiene · Nx's agent config · generated-file drift · lint (oxlint) ·
+// eslint (module boundaries) · typecheck · test · build · Nx sync (tsconfig project references) ·
+// lint of the files no project owns · formatting (oxfmt --check) · pinned version consistency.
+//
+// Generated-file drift runs BEFORE the nx step. It reports the files regen changes, compared with
+// the tree as regen found it. A task in the nx step may depend on a generator and rewrite a
+// committed generated file; checked after that, a stale file in the commit would pass unnoticed.
 //
 //   node tools/check.mjs --lint-loose   one gate: oxlint on the files no project owns
 //   node tools/check.mjs --format       one gate: every file oxfmt formats is formatted
@@ -41,11 +45,15 @@ function hasBaseCommit() {
 }
 
 /**
- * The gates, in order. `agent config` runs BEFORE `generated files`: regen runs `pnpm agents:sync`,
- * which rewrites the synced files in place, so a check after it would only ever see a fresh sync.
+ * The gates, in order. `generated files` runs BEFORE `nx` (see the header). `agent config` runs
+ * BEFORE `generated files`: regen runs `pnpm agents:sync`, which rewrites the synced files in
+ * place, so a check after it would only ever see a fresh sync.
  * @type {(nxMode: string[]) => { name: string, command: string[] }[]}
  */
 export const steps = (nxMode) => [
+  { name: 'agent config', command: ['node', 'tools/agents.mjs', 'check'] },
+  { name: 'nx agent config', command: ['node', 'tools/check.mjs', '--nx-agents'] },
+  { name: 'generated files', command: ['node', 'tools/agents.mjs', 'regen', '--check'] },
   { name: 'nx', command: ['pnpm', 'nx', ...nxMode, '-t', ...TARGETS, '--outputStyle=static'] },
   // Nx skips its sync generators (tsconfig project references) when CI is set: check them here,
   // so CI and local runs agree
@@ -54,9 +62,6 @@ export const steps = (nxMode) => [
   // the hooks format edits and commits, but a commit made without them (--no-verify, a web edit,
   // a bot, a clone without hooks) is only caught here
   { name: 'format', command: ['node', 'tools/check.mjs', '--format'] },
-  { name: 'agent config', command: ['node', 'tools/agents.mjs', 'check'] },
-  { name: 'nx agent config', command: ['node', 'tools/check.mjs', '--nx-agents'] },
-  { name: 'generated files', command: ['node', 'tools/agents.mjs', 'regen', '--check'] },
   { name: 'versions', command: ['node', 'tools/check-versions.mjs'] },
 ];
 
