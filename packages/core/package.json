@@ -1,0 +1,42 @@
+{
+  "name": "@acme/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Business logic (writes, domain errors). Framework-free: takes a Db, never a request.",
+  "type": "module",
+  "exports": {
+    "./errors": {
+      "@acme/source": "./src/errors.ts",
+      "types": "./src/errors.ts",
+      "default": "./src/errors.ts"
+    },
+    "./notes": {
+      "@acme/source": "./src/notes/index.ts",
+      "types": "./src/notes/index.ts",
+      "default": "./src/notes/index.ts"
+    }
+  },
+  "dependencies": {
+    "@acme/db": "workspace:*",
+    "@acme/validators": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "zod": "catalog:"
+  },
+  "nx": {
+    "name": "core",
+    "tags": [
+      "scope:server",
+      "type:feature",
+      "needs-db"
+    ],
+    "targets": {
+      "test": {
+        "inputs": [
+          "default",
+          "^production",
+          "dbServer"
+        ]
+      }
+    }
+  }
+}

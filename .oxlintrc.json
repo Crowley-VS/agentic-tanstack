@@ -13,5 +13,11 @@
     "typescript/no-misused-promises": "error",
     "import/no-cycle": "error"
   },
-  "ignorePatterns": ["**/dist/**", "**/.output/**", "**/coverage/**", ".claude/skills/**"]
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/.output/**",
+    "**/coverage/**",
+    ".claude/skills/**",
+    "packages/db/migrations/**"
+  ]
 }

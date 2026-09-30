@@ -10,6 +10,7 @@
       "!{projectRoot}/vitest.config.{ts,mts}",
       "!{projectRoot}/test/**/*"
     ],
+    "dbServer": ["{workspaceRoot}/docker-compose.yml", "{workspaceRoot}/tools/dev-ports.mjs"],
     "sharedGlobals": [
       "{workspaceRoot}/tsconfig.base.json",
       "{workspaceRoot}/.prototools",

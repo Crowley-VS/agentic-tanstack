@@ -25,6 +25,7 @@ const CLEAN_ENV = Object.fromEntries(
         'WEB_PORT',
         'API_PORT',
         'DB_PORT',
+        'DB_STUDIO_PORT',
         'WEB_E2E_PORT',
         'API_E2E_PORT',
         'COMPOSE_PROJECT_NAME',
@@ -46,7 +47,14 @@ const worktreeNames = Array.from(
 describe('computePorts', () => {
   it('uses fixed, memorable ports in the primary checkout', () => {
     const info = computePorts({ root: '/work/my-app', primary: true });
-    expect(info.ports).toEqual({ web: 3000, api: 4000, db: 5432, webE2e: 3100, apiE2e: 4100 });
+    expect(info.ports).toEqual({
+      web: 3000,
+      api: 4000,
+      db: 5432,
+      studio: 4983, // drizzle-kit studio's own default
+      webE2e: 3100,
+      apiE2e: 4100,
+    });
     expect(info.composeProject).toBe('my-app');
     expect(info.urls.web).toBe('http://localhost:3000');
     expect(info.databaseUrls.dev).toBe('postgres://postgres:postgres@127.0.0.1:5432/app');
@@ -60,6 +68,7 @@ describe('computePorts', () => {
     expect(a.ports.web).toBeGreaterThanOrEqual(20000);
     expect(a.ports.apiE2e).toBeLessThan(60000);
     expect(a.ports.api).toBe(a.ports.web + 1);
+    expect(a.ports.studio).toBe(a.ports.web + 3); // never drizzle-kit's default 4983
     expect(a.composeProject).toBe(`a-${pathHash('/work/my-app/.claude/worktrees/a')}`);
     expect(b.composeProject).not.toBe(a.composeProject);
   });
@@ -67,10 +76,11 @@ describe('computePorts', () => {
   it('lets environment variables override ports and the compose project', () => {
     const info = computePorts(
       { root: '/work/my-app', primary: true },
-      { WEB_PORT: '8080', DB_PORT: '6543', COMPOSE_PROJECT_NAME: 'ci' },
+      { WEB_PORT: '8080', DB_PORT: '6543', DB_STUDIO_PORT: '5983', COMPOSE_PROJECT_NAME: 'ci' },
     );
     expect(info.ports.web).toBe(8080);
     expect(info.ports.db).toBe(6543);
+    expect(info.ports.studio).toBe(5983);
     expect(info.composeProject).toBe('ci');
     expect(info.databaseUrls.e2e).toBe('postgres://postgres:postgres@127.0.0.1:6543/e2e');
   });
@@ -198,7 +208,15 @@ describe('CLI modes', () => {
   it('--env prints KEY=VALUE lines, overrides included', () => {
     const cwd = tempDir();
     const lines = cli(['--env'], { cwd, env: { API_PORT: '4999' } }).stdout.split('\n');
-    expect(lines).toEqual(expect.arrayContaining(['WEB_PORT=3000', 'API_PORT=4999']));
+    expect(lines).toEqual(
+      expect.arrayContaining(['WEB_PORT=3000', 'API_PORT=4999', 'DB_STUDIO_PORT=4983']),
+    );
+  });
+
+  it('--print lists the URLs, Drizzle Studio on its own port included', () => {
+    const out = cli(['--print'], { cwd: tempDir(), env: { DB_STUDIO_PORT: '5983' } }).stdout;
+    expect(out).toContain('http://localhost:3000');
+    expect(out).toContain('https://local.drizzle.studio?port=5983');
   });
 
   it('--exec runs the command with the env (existing env wins) and passes its exit code on', () => {
@@ -228,6 +246,7 @@ describe('toEnv', () => {
       WEB_PORT: '3000',
       API_PORT: '4000',
       DB_PORT: '5432',
+      DB_STUDIO_PORT: '4983',
       API_HOST: 'localhost',
       COMPOSE_PROJECT_NAME: 'my-app',
     });

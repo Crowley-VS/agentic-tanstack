@@ -19,7 +19,9 @@ Never claim "done" without running these. If a check fails, fix the cause; never
 
 <!-- stack:start:done -->
 
-Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route and UI changes.
+Stack checks: `pnpm check` also runs the database tests, which need **Docker** (each test file gets its own
+Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and UI changes.
+
 <!-- stack:end -->
 
 <!-- kit:start:commands -->
@@ -46,6 +48,16 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 
 - **Where is the app running?** `pnpm ports` prints this checkout's URLs, ports and database URLs.
 
+**Database** (Postgres 18 in Docker, one per checkout/worktree; Docker must be running):
+
+| Task                                         | Command                                                                                   |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Start it (fast no-op when running)           | `pnpm db:up`                                                                              |
+| Apply migrations / reseed deterministic data | `pnpm db:migrate` / `pnpm db:seed`                                                        |
+| Change the schema                            | edit `packages/db/src/schema/*`, then `pnpm nx run db:db-generate --args="--name=<what>"` |
+| Wipe and start fresh                         | `pnpm db:reset`                                                                           |
+| Browse data                                  | `pnpm db:studio` · `pnpm nx run db:db-psql`                                               |
+
 <!-- stack:end -->
 
 <!-- kit:start:navigation -->
@@ -70,12 +82,16 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 
 ## Repo map
 
-| Path                  | What                                                          | Tags                            |
-| --------------------- | ------------------------------------------------------------- | ------------------------------- |
-| `packages/validators` | Zod schemas + limits shared by api and web                    | `scope:shared`, `type:util`     |
-| `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync | `scope:tooling`, `type:tooling` |
+| Path                  | What                                                                                                 | Tags                            |
+| --------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `packages/core`       | business logic: writes and domain errors (`createNote`, `addComment`); takes a `Db`, never a request | `scope:server`, `type:feature`  |
+| `packages/db`         | Drizzle schema, relations, migrations, deterministic seed, per-test-file databases (`testDb()`)      | `scope:server`, `type:data`     |
+| `packages/validators` | Zod schemas + limits shared by api and web                                                           | `scope:shared`, `type:util`     |
+| `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync                                        | `scope:tooling`, `type:tooling` |
+| `docker-compose.yml`  | the local Postgres (dev, e2e, tests only)                                                            |                                 |
 
-`tools` is plain `.mjs` with no `typecheck` target: its gates are lint, boundaries and tests.
+`tools` is plain `.mjs` with no `typecheck` target: its gates are lint, boundaries and tests. Projects tagged
+`needs-db` need Docker for their tests (`pnpm nx affected -t test --exclude=tag:needs-db` skips them).
 
 <!-- stack:end -->
 
@@ -93,6 +109,12 @@ Stack checks: none yet. The web app (M2+) adds `pnpm nx e2e web-e2e` for route a
 <!-- stack:start:invariants -->
 
 - Boundary rules (full list in `eslint.config.mjs`): `scope:shared` → shared only; `scope:tooling` → tooling only; `scope:web` → web/shared; `scope:api` → api/server/shared; `scope:server` → server/shared; `type:util` → util only, and imports no frameworks, Drizzle or `pg`.
+- **Writes go through `packages/core`** (validated again there, domain errors like `NotFoundError`); reads use
+  Drizzle's relational queries (in the API: the Pothos Drizzle plugin), which plan nested data as one statement.
+- **Migrations:** generate them from the schema and commit them. Once git tracks a migration (staged or
+  committed) the guard hook blocks edits to it; only a new, untracked one may still be edited.
+- **Tests that touch the database** use `testDb()` from `@acme/db/testing` and assume nothing about other tests'
+  rows (tests in one file share its database; files never share).
 
 <!-- stack:end -->
 

@@ -2,15 +2,16 @@
 // Deterministic ports + names per checkout, so parallel worktrees (and the agents
 // running in them) never fight over ports or share a database.
 //
-//   primary checkout  -> fixed, memorable defaults (web 3000, api 4000, db 5432) and
-//                        databases app / e2e
+//   primary checkout  -> fixed, memorable defaults (web 3000, api 4000, db 5432, Drizzle Studio
+//                        4983) and databases app / e2e
 //   linked worktree   -> its own block of 100 ports in 20000-59999, recorded in
 //                        <git common dir>/dev-ports.json: the block its path hashes to, or the
 //                        next free one, so no two worktrees of this repository share a block;
 //                        its own compose project (so its own Postgres), and databases named
 //                        app_<hash> / e2e_<hash>, which stay apart even when an override
 //                        points several worktrees at one Postgres server
-//   env overrides     -> WEB_PORT, API_PORT, DB_PORT, WEB_E2E_PORT, API_E2E_PORT, COMPOSE_PROJECT_NAME
+//   env overrides     -> WEB_PORT, API_PORT, DB_PORT, DB_STUDIO_PORT, WEB_E2E_PORT, API_E2E_PORT,
+//                        COMPOSE_PROJECT_NAME
 //   test database URL -> the server's `postgres` maintenance database, for tests that create
 //                        databases of their own
 //
@@ -28,12 +29,13 @@ import { fileURLToPath } from 'node:url';
 
 const BLOCKS = 400; // blocks of 100 ports in 20000-59999
 const REGISTRY = 'dev-ports.json';
-const PRIMARY = { web: 3000, api: 4000, db: 5432, webE2e: 3100, apiE2e: 4100 };
-const OFFSETS = { web: 0, api: 1, db: 2, webE2e: 10, apiE2e: 11 };
+const PRIMARY = { web: 3000, api: 4000, db: 5432, studio: 4983, webE2e: 3100, apiE2e: 4100 };
+const OFFSETS = { web: 0, api: 1, db: 2, studio: 3, webE2e: 10, apiE2e: 11 };
 const ENV_KEYS = {
   web: 'WEB_PORT',
   api: 'API_PORT',
   db: 'DB_PORT',
+  studio: 'DB_STUDIO_PORT',
   webE2e: 'WEB_E2E_PORT',
   apiE2e: 'API_E2E_PORT',
 };
@@ -180,6 +182,7 @@ export function toEnv(info) {
     WEB_PORT: String(info.ports.web),
     API_PORT: String(info.ports.api),
     DB_PORT: String(info.ports.db),
+    DB_STUDIO_PORT: String(info.ports.studio),
     WEB_E2E_PORT: String(info.ports.webE2e),
     API_E2E_PORT: String(info.ports.apiE2e),
     API_HOST: 'localhost',
@@ -190,13 +193,18 @@ export function toEnv(info) {
   };
 }
 
-function main(argv) {
-  const checkout = detectCheckout();
+/** Ports, names and URLs for the checkout that contains `cwd` (what `--json` prints). */
+export function resolveInfo(cwd = process.cwd(), env = process.env) {
+  const checkout = detectCheckout(cwd);
   const block =
     checkout.primary || !checkout.commonDir
       ? undefined
       : worktreeBlock(checkout.root, checkout.commonDir);
-  const info = computePorts({ ...checkout, block }, process.env);
+  return computePorts({ ...checkout, block }, env);
+}
+
+function main(argv) {
+  const info = resolveInfo();
   const [flag, ...rest] = argv;
   switch (flag) {
     case '--json':
@@ -239,6 +247,7 @@ function main(argv) {
       console.log(`  web        ${info.urls.web}`);
       console.log(`  api        ${info.urls.api}`);
       console.log(`  postgres   ${info.databaseUrls.dev}`);
+      console.log(`  db studio  https://local.drizzle.studio?port=${info.ports.studio}`);
       console.log(`  e2e web    ${info.urls.webE2e}`);
       console.log(`  e2e api    ${info.urls.apiE2e}`);
     }

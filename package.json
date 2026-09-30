@@ -13,7 +13,12 @@
     "agents:check": "node tools/agents.mjs check",
     "agents:nx": "NX_AI_FILES_USE_LOCAL=true nx configure-ai-agents --agents claude --no-interactive",
     "agents:nx-check": "node tools/check.mjs --nx-agents",
-    "prepare": "node tools/agents.mjs install-hooks"
+    "prepare": "node tools/agents.mjs install-hooks",
+    "db:up": "nx run db:db-up",
+    "db:migrate": "nx run db:db-migrate",
+    "db:seed": "nx run db:db-seed",
+    "db:reset": "nx run db:db-reset",
+    "db:studio": "nx run db:db-studio"
   },
   "devDependencies": {
     "@nx/eslint": "catalog:",

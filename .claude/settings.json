@@ -37,7 +37,24 @@
       "Bash(node tools/pr-review.mjs threads *)",
       "Bash(gh pr diff *)",
       "Bash(gh pr checks *)",
-      "Bash(gh run view *)"
+      "Bash(gh run view *)",
+      "Bash(pnpm nx run core:lint)",
+      "Bash(pnpm nx run core:eslint)",
+      "Bash(pnpm nx run core:typecheck)",
+      "Bash(pnpm nx run core:test)",
+      "Bash(pnpm nx run db:lint)",
+      "Bash(pnpm nx run db:eslint)",
+      "Bash(pnpm nx run db:typecheck)",
+      "Bash(pnpm nx run db:test)",
+      "Bash(pnpm nx run db:db-up)",
+      "Bash(pnpm nx run db:db-down)",
+      "Bash(pnpm nx run db:db-migrate)",
+      "Bash(pnpm nx run db:db-seed)",
+      "Bash(pnpm nx run db:db-check)",
+      "Bash(pnpm nx run db:db-generate)",
+      "Bash(pnpm db:up)",
+      "Bash(pnpm db:migrate)",
+      "Bash(pnpm db:seed)"
     ],
     "ask": [
       "Bash(pnpm nx *--command*)",
@@ -52,7 +69,12 @@
       "Bash(node tools/pr-review.mjs resolve *)",
       "Bash(node tools/pr-review.mjs comment *)",
       "Bash(railway up *)",
-      "Bash(railway config apply *)"
+      "Bash(railway config apply *)",
+      "Bash(pnpm nx run db:db-reset)",
+      "Bash(pnpm nx run db:db-psql)",
+      "Bash(pnpm nx run db:db-studio)",
+      "Bash(pnpm db:reset)",
+      "Bash(pnpm db:studio)"
     ],
     "deny": [
       "Read(.env)",

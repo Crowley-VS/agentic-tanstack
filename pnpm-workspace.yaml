@@ -24,14 +24,19 @@ catalog:
   '@nx/oxlint': 23.2.1
   '@nx/vitest': 23.2.1
   '@types/node': ^24.19.0
+  '@types/pg': ^8.23.1
   '@typescript-eslint/parser': ^8.70.0
+  drizzle-kit: 1.0.0-rc.4
+  drizzle-orm: 1.0.0-rc.4
   eslint: ^10.11.0
   lefthook: ^2.1.14
   nx: 23.2.1
   oxfmt: ^0.70.0
-  oxlint: ^1.85.0
   oxlint-tsgolint: ^7.0.2003
+  oxlint: ^1.85.0
+  pg: ^8.23.0
   tslib: ^2.8.1
+  tsx: ^4.23.0
   typescript: 6.0.3
   vite: ^8.3.1
   vitest: 4.1.11
