@@ -65,6 +65,8 @@
         "cache": true,
         "inputs": [
           "{projectRoot}/src/routes/**/*",
+          "{projectRoot}/src/{start,router}.{ts,js,mts,mjs,tsx,jsx}",
+          "{projectRoot}/tsr.config.json",
           "{projectRoot}/vite.config.ts",
           "{projectRoot}/scripts/generate-routes.mjs",
           {
