@@ -215,7 +215,8 @@ const VERDICT = {
       description: 'title of an earlier finding in the list this duplicates, if any',
     },
   },
-  required: ['index', 'valid', 'reason', 'likelihood'],
+  // severity too: without it the reviewer's grade would reach the fixer unchecked
+  required: ['index', 'valid', 'reason', 'severity', 'likelihood'],
 };
 
 const LENSES = [
@@ -505,8 +506,11 @@ let head = await prHead('head:r1');
 // Never let the loop fix the loop: a PR that changes the loop's own files gets a review-only round.
 const LOOP_PATHS =
   /^(?:\.claude\/workflows\/review-loop|tools\/pr-review\.mjs|tools\/agent-hooks\/pr-opened\.mjs|\.agents\/skills\/review-loop\/|\.claude\/skills\/review-loop\/|tools\/test\/(?:review-loop|pr-review|pr-opened)\.test\.mjs)/;
+// From the files API, not `gh pr diff --name-only`: that downloads the whole diff, which GitHub
+// refuses (HTTP 406) for a PR over 300 files or 20,000 lines. The API lists up to 3000 files.
+const MAX_LISTED = 3000;
 const changed = await agent(
-  `Run \`gh pr diff ${PR} --name-only\` and return the file paths it prints as {files}. If it fails, return {files: [], error}.`,
+  `Run \`gh api --paginate "repos/{owner}/{repo}/pulls/${PR}/files" --jq '.[].filename'\` and return the file paths it prints as {files}. If it fails, return {files: [], error}.`,
   {
     label: 'files:r1',
     phase: 'Review',
@@ -521,14 +525,17 @@ const changed = await agent(
     },
   },
 );
-// Why this run is review-only ('' if it is not). Fails closed: a listing that failed or came back
-// empty may hide the loop's own files.
+// Why this run is review-only ('' if it is not). Fails closed: a listing that failed, came back
+// empty or reached the API's cap (the rest is cut off) may hide the loop's own files.
 const loopFiles =
-  Array.isArray(changed?.files) && changed.files.length && !changed.error
+  Array.isArray(changed?.files) &&
+  changed.files.length &&
+  changed.files.length < MAX_LISTED &&
+  !changed.error
     ? changed.files.filter((f) => LOOP_PATHS.test(f))
     : undefined;
 const selfReview = !loopFiles
-  ? `the PR's changed files could not be listed (${changed?.error ?? 'no usable answer'}), so it may change the review loop itself`
+  ? `the PR's changed files could not be listed (${changed?.error ?? (changed?.files?.length >= MAX_LISTED ? `GitHub lists at most ${MAX_LISTED}` : 'no usable answer')}), so it may change the review loop itself`
   : loopFiles.length
     ? `this PR changes the review loop itself (${loopFiles.join(', ')})`
     : '';
@@ -726,6 +733,8 @@ For findings from hands-on testing, try the reproduction steps yourself (on thro
 If it is speculative, already handled, out of the PR's scope, or pure style, mark valid=false. Re-grade severity
 strictly by the definitions in the schema's "severity" field, and grade EVERY item's likelihood (ordinary, unusual or
 contrived, as the "likelihood" field defines them): an unusual failure counts as at most minor, a contrived one as a nit.
+The one exception: a "blocker" keeps its grade whatever the likelihood, so grade "blocker" only what breaks a core flow,
+loses data or is an exploitable security hole in ordinary use (untrusted input is ordinary), never a contrived failure.
 All new findings this round, for duplicate detection (set duplicateOf to the EARLIER entry's "path: title"):
 ${fresh.map((x, i) => `${i + 1}. ${x.path}: ${x.title}`).join('\n') || '(none)'}
 Findings already known to this loop (if a "new" item is the same issue reworded, set duplicateOf to "known: <path: title>";

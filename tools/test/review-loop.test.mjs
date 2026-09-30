@@ -722,6 +722,38 @@ describe('review-loop convergence rules', () => {
     expect(result.complete).toBe(false);
   });
 
+  it('never counts a reopen the verifier grades minor toward the second-reopen stop', async () => {
+    const other = blocking('Another bug, never fixed');
+    const { result, summary, of } = await runLoop({
+      review: ({ label }) =>
+        label === 'review:correctness:r1'
+          ? { findings: [finding, other] }
+          : label.startsWith('review:correctness')
+            ? { findings: [finding] }
+            : { findings: [] },
+      // round 2 reopens it as major (one more fix attempt); round 3 as minor
+      verify: ({ batchLabel }) => ({
+        valid: true,
+        reason: 'still there',
+        likelihood: batchLabel.endsWith(':r3') ? 'unusual' : 'ordinary',
+      }),
+      // fixes `finding` each time; `other` stays open, so the run goes on to round 3
+      fix: (call) => ({
+        checkPassed: true,
+        commit: push(call),
+        resolutions: [
+          { path: finding.path, title: finding.title, status: 'fixed' },
+          { path: other.path, title: other.title, status: 'not-done' },
+        ],
+      }),
+    });
+    expect(of('post').map((c) => c.label)).toEqual(['post:r1', 'post:r2', 'post:r3']);
+    expect(of('post')[2]?.prompt).toContain('"severity": "minor"');
+    expect(summary).not.toContain('reopened a second time');
+    expect(summary).toContain('3 rounds reached');
+    expect(result.complete).toBe(false);
+  });
+
   it('downgrades by likelihood: unusual → at most minor, contrived → nit, a blocker never', async () => {
     const hole = {
       ...finding,
@@ -772,10 +804,17 @@ describe('review-loop convergence rules', () => {
     });
     const verify = of('verify')[0];
     const verdict = verify?.opts.schema.properties.verdicts.items;
-    expect(verdict.required).toContain('likelihood');
+    // the verifier's grade, never the reviewer's, is the one that reaches the fixer
+    expect(verdict.required).toEqual(expect.arrayContaining(['severity', 'likelihood']));
     expect(verdict.properties.severity.description).toContain('A missing test is NEVER');
     expect(verdict.properties.likelihood.description).not.toContain('a crafted input');
+    expect(verdict.properties.likelihood.description).toContain(
+      'Input an untrusted party controls (PR text, branch names, file contents) is ordinary: it never makes a security hole contrived.',
+    );
     expect(verify?.prompt).toContain("grade EVERY item's likelihood");
+    // and knows that the likelihood cap spares a blocker (see graded)
+    expect(verify?.prompt).toContain('a "blocker" keeps its grade whatever the likelihood');
+    expect(verify?.prompt).toContain('never a contrived failure');
   });
 
   it('reviews only once, with no fixer, when the PR changes the review loop itself', async () => {
@@ -791,15 +830,31 @@ describe('review-loop convergence rules', () => {
 
   it('reviews only once, with no fixer, when the changed files cannot be listed', async () => {
     for (const files of [
-      () => ({ files: [], error: 'HTTP 406' }),
+      () => ({ files: [], error: 'HTTP 502' }),
       () => null,
       () => ({ files: [] }),
+      // a partial list next to an error may leave out the loop's own files
+      () => ({ files: ['tools/check.mjs'], error: 'HTTP 502 on page 2' }),
+      // the files API lists at most 3000: the rest is cut off
+      () => ({ files: Array.from({ length: 3000 }, (_, i) => `gen/f${i}.ts`) }),
     ]) {
       const { result, summary, of } = await runLoop({ files, review: reviewerFinds([1]) });
       expect(of('fix')).toHaveLength(0);
       expect(summary).toContain("review-only: the PR's changed files could not be listed");
       expect(result.complete).toBe(false);
     }
+  });
+
+  it('lists the changed files from the files API, which also works for a PR too large to diff', async () => {
+    const { of } = await runLoop({
+      files: () => ({ files: Array.from({ length: 2999 }, (_, i) => `gen/f${i}.ts`) }),
+      review: reviewerFinds([1]),
+      fix: fixOpen,
+    });
+    const listing = of('files')[0]?.prompt;
+    expect(listing).toContain('pulls/7/files');
+    expect(listing).not.toContain('gh pr diff'); // HTTP 406 over 300 files or 20,000 lines
+    expect(of('fix')).toHaveLength(1);
   });
 
   it('stops cleanly before a round when disk space or inodes are low', async () => {
@@ -815,6 +870,10 @@ describe('review-loop convergence rules', () => {
     // a 1 TB disk 81% used still has ~190 GB free
     const big = await runLoop({ disk: () => ({ freeGb: 190, inodeFreePct: 90 }) });
     expect(big.result.complete).toBe(true);
+    // exactly at the floors: enough
+    const floor = await runLoop({ disk: () => ({ freeGb: 2, inodeFreePct: 20 }) });
+    expect(floor.summary).not.toContain('low disk space');
+    expect(floor.result.complete).toBe(true);
   });
 
   it('says it could not check disk space, instead of calling it low, when the check fails', async () => {
@@ -855,27 +914,35 @@ describe('review-loop convergence rules', () => {
     expect(summary).not.toContain('✅');
   });
 
-  it('lists a check an earlier tester said needs a human, whatever the latest report says', async () => {
+  it('lists a check an earlier tester said needs a human until a later tester reports it again', async () => {
     const smoke = {
       claimOrArea: 'template smoke test',
       stepsOrCommand: 'needs TEMPLATE_MAINTENANCE=true',
       result: 'needs-human',
       evidence: 'repository variable',
     };
-    const { result, summary } = await runLoop({
-      review: reviewerFinds([1]),
-      tester: ({ label }) => ({
-        findings: [],
-        tested: label.endsWith(':r1') ? [...TESTED, smoke] : TESTED,
-      }),
-      fix: fixOpen,
-    });
+    const run = (round2) =>
+      runLoop({
+        review: reviewerFinds([1]),
+        tester: ({ label }) => ({
+          findings: [],
+          tested: label.endsWith(':r1') ? [...TESTED, smoke] : round2,
+        }),
+        fix: fixOpen,
+      });
+    // round 2's tester leaves it out: still listed
+    const { result, summary } = await run(TESTED);
     expect(result.complete).toBe(true);
     expect(summary).toContain('**Hands-on testing** (round 2');
     expect(summary).toContain('**Earlier hands-on checks that need a human:**');
     expect(summary).toContain(
       '- **needs a human** · template smoke test · `needs TEMPLATE_MAINTENANCE=true` · repository variable (round 1)',
     );
+    // round 2's tester ran it and it passed: the latest report decides
+    const passed = await run([...TESTED, { ...smoke, result: 'pass', evidence: 'ran it' }]);
+    expect(passed.result.complete).toBe(true);
+    expect(passed.summary).not.toContain('**Earlier hands-on checks that need a human:**');
+    expect(passed.summary).toContain('- pass · template smoke test');
   });
 
   it('stops counting an earlier failure once a later tester finds it needs a human', async () => {
