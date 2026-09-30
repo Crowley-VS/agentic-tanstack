@@ -49,9 +49,8 @@ export const builder = new SchemaBuilder<{
   relay: {
     clientMutationId: 'omit',
     cursorType: 'String',
-    // a connection field's own complexity multiplies by its page size (e.g. `notes`), so its
-    // edges must not multiply again by the default list multiplier
-    edgesFieldOptions: { complexity: { field: 1, multiplier: 1 } },
+    // no global edges complexity: each connection prices its own page (see `notes`), and
+    // complexity.test.ts fails for one that does not
   },
   drizzle: {
     client: (ctx) => ctx.db,

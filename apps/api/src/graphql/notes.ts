@@ -43,17 +43,22 @@ const Comment = builder.drizzleObject('comments', {
 });
 
 builder.queryFields((t) => ({
-  notes: t.drizzleConnection({
-    type: 'notes',
-    description: 'Every note, newest first',
-    // priced by the page size asked for (the plugin caps pages at NOTE_LIMITS.pageSizeMax)
-    complexity: (args) => ({
-      field: 1,
-      multiplier: Math.min(args.first ?? args.last ?? 20, NOTE_LIMITS.pageSizeMax),
-    }),
-    resolve: (query, _root, _args, ctx) =>
-      ctx.db.query.notes.findMany(query({ orderBy: newestFirst })),
-  }),
+  notes: t.drizzleConnection(
+    {
+      type: 'notes',
+      description: 'Every note, newest first',
+      // priced by the page size asked for (the plugin caps pages at NOTE_LIMITS.pageSizeMax)
+      complexity: (args) => ({
+        field: 1,
+        multiplier: Math.min(args.first ?? args.last ?? 20, NOTE_LIMITS.pageSizeMax),
+      }),
+      resolve: (query, _root, _args, ctx) =>
+        ctx.db.query.notes.findMany(query({ orderBy: newestFirst })),
+    },
+    // the page size above already counts the rows: the edges must not multiply again by the
+    // default list multiplier
+    { edgesField: { complexity: { field: 1, multiplier: 1 } } },
+  ),
   note: t.drizzleField({
     type: 'notes',
     nullable: true,
