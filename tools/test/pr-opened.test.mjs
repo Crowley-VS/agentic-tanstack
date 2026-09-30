@@ -15,6 +15,8 @@ const URL = 'https://github.com/acme/app/pull/42\n';
 const REPO = 'acme/app';
 /** reviewLoopContext for this repository (acme/app), with the default environment. */
 const ctx = (payload, env = {}) => reviewLoopContext(payload, env, REPO);
+/** What `gh pr ready` prints (on stderr) for PR #n of `repo`. */
+const marked = (repo, n) => `✓ Pull request ${repo}#${n} is marked as "ready for review"\n`;
 
 describe('reviewLoopContext', () => {
   it('has Claude offer review-loop on the new PR, and start it once the user agrees', () => {
@@ -36,28 +38,52 @@ describe('reviewLoopContext', () => {
 
   it('works when gh pr create is part of a longer command', () => {
     expect(ctx(bash('git push -u origin b && gh pr create --fill', URL))).toContain('PR #42');
-    // a draft flag of ANOTHER command in the chain is not the PR's
+    // a draft flag of ANOTHER command in the chain is not the PR's, before or after it
     expect(ctx(bash('git branch -d old && gh pr create --fill', URL))).toContain('Ask the user');
+    expect(ctx(bash('gh pr create --fill && git branch -d old', URL))).toContain('Ask the user');
   });
 
   it('offers the loop when a draft is marked ready', () => {
-    expect(ctx(bash('gh pr ready 7'))).toContain('{"pr": 7}');
+    expect(ctx(bash('gh pr ready 7', '', 0, marked(REPO, 7)))).toContain('{"pr": 7}');
+    expect(ctx(bash('gh pr ready', '', 0, marked(REPO, 8)))).toContain('{"pr": 8}');
     expect(
-      ctx(bash('gh pr ready', '', 0, '✓ Pull request acme/app#8 is marked as "ready for review"')),
-    ).toContain('{"pr": 8}');
-    expect(ctx(bash('gh pr ready 7 --undo'))).toBeUndefined();
-    // another repository, or no PR it can name
-    expect(ctx(bash('gh pr ready 7 -R someone/other'))).toBeUndefined();
-    expect(ctx(bash('cd ../other && gh pr ready 7'))).toBeUndefined();
-    expect(
-      ctx(bash('gh pr ready', '', 0, '✓ Pull request someone/other#8 is marked')),
+      ctx(bash('gh pr ready 7 --undo', '', 0, '✓ Pull request acme/app#7 is converted to "draft"')),
     ).toBeUndefined();
+    // another repository, or no PR it can name
+    expect(
+      ctx(bash('gh pr ready 7 -R someone/other', '', 0, marked('someone/other', 7))),
+    ).toBeUndefined();
+    expect(ctx(bash('cd ../other && gh pr ready 7'))).toBeUndefined();
+    expect(ctx(bash('gh pr ready', '', 0, marked('someone/other', 8)))).toBeUndefined();
+    // run in another checkout (a `cd` in an earlier command): gh names that repository
+    expect(ctx(bash('gh pr ready 7', '', 0, marked('someone/other', 7)))).toBeUndefined();
+    expect(ctx(bash('gh pr ready 7', '', 0, marked(REPO, 8)))).toBeUndefined();
+    expect(ctx(bash('gh pr ready 7'))).toBeUndefined();
     expect(ctx(bash('gh pr ready'))).toBeUndefined();
   });
 
   it('does not offer the loop for drafts, which it says to start on `gh pr ready`', () => {
-    for (const cmd of ['gh pr create --draft --fill', 'gh pr create -d --fill', 'gh pr create -df'])
+    for (const cmd of [
+      'gh pr create --draft --fill',
+      'gh pr create -d --fill',
+      'gh pr create -df',
+      // the flag after a multi-line body, or after quoted text with `&`, `;` or `|`
+      `gh pr create --title "T" --body "$(cat <<'EOF'\n## Summary\n- it's done; see -d\nEOF\n)" --draft`,
+      "gh pr create --body-file - --draft <<'EOF'\nbody\nEOF",
+      'gh pr create --title "R&D notes; a|b" --draft',
+    ])
       expect(ctx(bash(cmd, URL)), cmd).toContain('DRAFT');
+  });
+
+  it('reads draft flags, not quoted text or a body that mentions them', () => {
+    for (const cmd of [
+      'gh pr create --title "Run docker compose up -d in CI" --fill',
+      'gh pr create --title "feat: add --draft support to bootstrap" --body-file body.md',
+      "gh pr create --fill --body 'Adds dev-ports -d flag'",
+      `gh pr create --title "T" --body "$(cat <<'EOF'\nRun it with -d or --draft\nEOF\n)"`,
+      'gh pr create --fill --body-file - <<EOF\nuse --draft\nEOF',
+    ])
+      expect(ctx(bash(cmd, URL)), cmd).toContain('Ask the user');
   });
 
   it('stays silent when no PR of this repository was opened', () => {
@@ -115,6 +141,13 @@ describe('pr-opened hook (process)', () => {
       env: { REVIEW_LOOP_AUTO: '', CLAUDE_PROJECT_DIR: project() },
     });
     expect(other.stdout).toBe('');
+    // `gh pr ready` run in another checkout: gh names that repository, whatever the number
+    const elsewhere = runHook(
+      HOOK,
+      bash('gh pr ready 3', '', 0, '✓ Pull request x/y#3 is marked as "ready for review"'),
+      { env: { REVIEW_LOOP_AUTO: '1', CLAUDE_PROJECT_DIR: project() } },
+    );
+    expect(elsewhere.stdout).toBe('');
   });
 
   it('prints nothing for unrelated commands and never fails on garbage', () => {

@@ -46,10 +46,13 @@ checkout is never touched (each agent restores its worktree at the end so it is 
 severity counts as one). Minor/nit findings are posted once as suggestions and fixed in the same pass, without
 another review round. It stops ✅ when a complete round (every reviewer and verifier answered, the tester ran
 everything and saw it pass) leaves no blocker/major open; what a round missed is made up in the next one (a reviewer
-that did not answer reviews the whole PR, a finding without a verdict is verified again). It stops early for a human
-when blocking findings stop decreasing. A fix pass that changed nothing ends the run. Anything else (an agent that
-returned nothing, a tester that reports nothing it ran, something it could not run or a failure, a push that did not
-land, `maxRounds`) ends with ⚠️ and the open findings.
+that did not answer reviews the whole PR, a finding without a verdict is verified again, and a hands-on check that
+failed or could not run stays failed until a later tester, asked to run it again, reports it passing). It stops early
+for a human when blocking findings stop decreasing. A fix pass that changed nothing ends the run (a finding it calls
+fixed without a fix commit stays open). A tester's failure adds no review round of its own: with no blocker/major
+open, the run stops after the fix pass. Anything else (an agent that returned nothing, a tester that reports nothing
+it ran, something it could not run or a failure, a push that did not land, `maxRounds`) ends with ⚠️ and the open
+findings.
 
 ## Manual fallback (other agents / no workflows)
 

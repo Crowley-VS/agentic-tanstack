@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -451,10 +452,29 @@ describe('sync --stage (pre-commit)', () => {
         encoding: 'utf8',
         env,
       });
-    expect(prepare(wt).stdout).toContain('git hooks skipped (linked worktree');
-    expect(existsSync(join(root, '.git/hooks/pre-commit'))).toBe(false);
     // the main checkout installs them
     expect(prepare(root).stdout).toContain('git hooks installed');
+    const hook = join(root, '.git/hooks/pre-commit');
+    writeFileSync(hook, `${readFileSync(hook, 'utf8')}# main checkout\n`);
+    // a linked worktree leaves them as they are
+    expect(prepare(wt).stdout).toContain('git hooks skipped (linked worktree');
+    expect(readFileSync(hook, 'utf8')).toMatch(/# main checkout\n$/);
+  }, 30_000);
+
+  it('install-hooks installs from a linked worktree when no checkout has installed them', () => {
+    // e.g. `git clone --bare` + `git worktree add`: there is no main checkout to install from
+    const root = lefthookRepo();
+    const wt = join(tempDir(), 'wt');
+    git(root, 'worktree', 'add', '-q', '--detach', wt);
+    symlinkSync(join(REPO, 'node_modules'), join(wt, 'node_modules'), 'dir');
+    const env = hookEnv();
+    delete env.CI;
+    const res = spawnSync(process.execPath, ['tools/agents.mjs', 'install-hooks'], {
+      cwd: wt,
+      encoding: 'utf8',
+      env,
+    });
+    expect(res.stdout).toContain('git hooks installed');
     expect(existsSync(join(root, '.git/hooks/pre-commit'))).toBe(true);
   }, 30_000);
 

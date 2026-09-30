@@ -9,8 +9,8 @@
 //
 // Fires only for a PR it can name in this repository: `gh pr create` prints the new PR's URL (no
 // URL of this repository = nothing was opened here: --help, --web, --dry-run, -R, another
-// checkout); `gh pr ready` needs the PR number in the command or `<owner>/<repo>#<n>` in its output.
-// Draft PRs are skipped (the loop starts on `gh pr ready`).
+// checkout); `gh pr ready` prints `<owner>/<repo>#<n>`, which must name this repository (and the
+// number in the command, if any). Draft PRs are skipped (the loop starts on `gh pr ready`).
 // Never blocks and never fails the tool call: always exits 0.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -29,6 +29,14 @@ export function githubRepo(remoteUrl) {
 const segment = (command, sub) =>
   command.match(new RegExp(`(?:^|[\\s;&|(])(gh\\s+pr\\s+${sub}\\b[^;&|\\n]*)`))?.[1];
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * The command with heredoc bodies removed and quoted strings emptied: what is left are its words
+ * and flags (a title or body may say `-d`, `--draft` or `&`).
+ */
+const withoutText = (command) =>
+  command
+    .replace(/<<-?[ \t]*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, '$3')
+    .replace(/"(?:[^"\\]|\\[\s\S])*"|'[^']*'/g, '""');
 
 /**
  * Pure: decide what to tell Claude for a Bash PostToolUse payload (or undefined = nothing).
@@ -49,16 +57,19 @@ export function reviewLoopContext(input, env = process.env, repo) {
     pr = output.match(
       new RegExp(`https://github\\.com/${escapeRe(repo)}/pull/(\\d+)(?![\\w/])`, 'i'),
     )?.[1];
-    // `-d`, also in a group of short flags (`-df`), or `--draft`
-    if (pr && /\s(?:--draft\b|-[A-Za-z]*d[A-Za-z]*(?=\s|$))/.test(create))
+    // `-d`, also in a group of short flags (`-df`), or `--draft`: flags, not quoted text
+    const flags = segment(withoutText(command), 'create') ?? create;
+    if (pr && /\s(?:--draft\b|-[A-Za-z]*d[A-Za-z]*(?=\s|$))/.test(flags))
       return `A DRAFT pull request (#${pr}) was opened. The review loop is offered when it is marked ready (\`gh pr ready\`); do not run it now.`;
   } else if (ready !== undefined) {
     // --undo makes it a draft again; -R/--repo or a `cd` may name another repository
     if (/\s(?:--undo|-R|--repo)\b/.test(ready) || /(?:^|[\s;&|(])cd\s/.test(command))
       return undefined;
-    pr =
-      ready.match(/^gh\s+pr\s+ready\s+(\d+)(?=\s|$)/)?.[1] ??
-      output.match(new RegExp(`(?:^|[\\s(])${escapeRe(repo)}#(\\d+)\\b`, 'im'))?.[1];
+    // gh names the PR's repository in its output: a PR of the repository the command ran in,
+    // which need not be this one (the working directory carries over between commands)
+    pr = output.match(new RegExp(`(?:^|[\\s(])${escapeRe(repo)}#(\\d+)\\b`, 'im'))?.[1];
+    const asked = ready.match(/^gh\s+pr\s+ready\s+(\d+)(?=\s|$)/)?.[1];
+    if (asked && asked !== pr) return undefined;
   }
   if (!pr) return undefined;
 

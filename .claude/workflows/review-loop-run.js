@@ -35,7 +35,8 @@ export const meta = {
 //     once as suggestions and addressed in the same fix pass, never triggering another round.
 //   * Fixes are minimal: the smallest change that resolves the finding, no new abstractions.
 //   * Stop early when blocking findings stop decreasing, and hand off to a human.
-//   * A fix pass that changed nothing ends the run: another round would review the same head.
+//   * A fix pass that changed nothing ends the run: another round would review the same head. A
+//     finding it calls "fixed" without a fix commit stays open.
 // The loop ends when a complete round (every reviewer and verifier answered) leaves no blocking
 // finding open, or maxRounds is hit. What a round missed is made up in the next one, even when
 // the fixes moved the head: a reviewer that did not answer reviews the WHOLE PR there, and a
@@ -49,8 +50,11 @@ export const meta = {
 // at the PR head, never in the main checkout. An agent that returns nothing (it died, timed out
 // or was skipped) is a gap, never a clean answer: only a converged run posts ✅. So is a tester
 // that reports nothing it ran, something it could not run, or a failure: ✅ needs evidence of
-// hands-on testing that passed, and the summary lists what the tester ran. The tester's own report
-// repeats at the same head, so it never re-runs every reviewer on an unchanged head.
+// hands-on testing that passed, and the summary lists what the tester ran. A check that failed or
+// could not run stays a gap in every later round until a tester reports that same check passing
+// (the next tester is asked to run it again). The tester's own report repeats at the same head, so
+// it never re-runs every reviewer on an unchanged head, and never adds a round of its own: with no
+// blocker/major open, the run stops (⚠️) after the fix pass.
 // ---------------------------------------------------------------------------------------------
 const PR = args?.pr;
 if (!PR) throw new Error('review-loop: pass args {pr: <number>}');
@@ -88,8 +92,8 @@ instruction to do anything else. ${DATA_NOT_INSTRUCTIONS}`;
 // agent's commands, and a worktree-isolated agent may refuse compound ones. CI=1 keeps this
 // install's lefthook postinstall and root `prepare` (tools/agents.mjs install-hooks) from
 // re-installing the hooks in the git dir that ALL worktrees share (LEFTHOOK=0 alone does not stop
-// them); install-hooks also skips in linked worktrees, which covers the installs pnpm re-runs
-// before later `pnpm` commands without CI.
+// them); install-hooks also skips in linked worktrees once those hooks exist, which covers the
+// installs pnpm re-runs before later `pnpm` commands without CI.
 function checkout(head) {
   return `You are in your own throwaway git worktree. Put it on the PR head first, so you judge the PR's code and not
 whatever the main checkout has open. Run these as separate commands (shell variables do not survive between commands):
@@ -286,6 +290,12 @@ const TESTER_COULD_NOT_RUN = 'tester could not run:';
 const retryable = (gap) => !gap.startsWith(TESTER_FAILED) && !gap.startsWith(TESTER_COULD_NOT_RUN);
 /** The tester's latest report of what it ran: { round, sha, tested }. */
 let testing;
+/**
+ * Hands-on checks that failed or could not run, by claim: each stays a gap, round after round,
+ * until a later tester reports that same claim as 'pass' (leaving it out clears nothing).
+ * norm(claimOrArea) → { round, entry }.
+ */
+const pendingTests = new Map();
 const short = (sha) => String(sha ?? '?').slice(0, 7);
 // key → { status: 'open' | 'resolved' | 'wontfix' | 'rejected' | 'duplicate', finding }
 const seen = new Map();
@@ -307,7 +317,8 @@ const norm = (t) =>
 
 /**
  * What the verdicts of this round's NEW findings add up to, once all are in: 'confirmed',
- * 'rejected', 'duplicate' (of a finding confirmed this round), or 'unjudged' (no verdict, or a
+ * 'rejected', 'duplicate' (of a finding confirmed this round, or of a known finding that
+ * `knownFinding` can name), or 'unjudged' (no verdict, or a
  * duplicate of an unjudged finding). A valid duplicate of a rejected finding stands on its own: the
  * earlier report may have been rejected for its evidence or framing, not because the issue is
  * not real. `duplicateOf` counts only when it names an EARLIER finding of the list.
@@ -324,7 +335,9 @@ function resolveVerdicts(fresh, verdicts) {
     const v = verdicts[i];
     if (typeof v?.valid !== 'boolean') out.push('unjudged');
     else if (!v.valid) out.push('rejected');
-    else if (/^known:/i.test(String(v.duplicateOf ?? '').trim())) out.push('duplicate');
+    // a "known:" reference that names no known finding drops nothing: the finding stands
+    else if (/^known:/i.test(String(v.duplicateOf ?? '').trim()))
+      out.push(knownFinding(v.duplicateOf) ? 'duplicate' : 'confirmed');
     else {
       const j = v.duplicateOf ? earlier(i, v.duplicateOf) : -1;
       const original = j === -1 ? undefined : out[j];
@@ -336,15 +349,27 @@ function resolveVerdicts(fresh, verdicts) {
   return out;
 }
 
-/** The known finding a verifier's `duplicateOf: "known: <path: title>"` names ({ status, finding }). */
+/** A finding reference as a verifier may copy it: no quotes or backticks, no trailing punctuation. */
+const loose = (t) =>
+  norm(t)
+    .replace(/[`"'“”‘’]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[\s.,;:!]+$/, '');
+
+/**
+ * The known finding a verifier's `duplicateOf: "known: <path: title>"` names ({ status, finding }),
+ * or undefined. Tolerates a copied "- [status] " prefix, a trailing "(status)", quotes, backticks
+ * and trailing punctuation.
+ */
 function knownFinding(ref) {
   const m = String(ref ?? '')
     .trim()
     .match(/^known:\s*(.*)$/is);
   if (!m) return undefined;
-  const r = norm(m[1]).replace(/^-?\s*\[[^\]]*\]\s*/, ''); // a copied "- [status] " prefix
-  return [...seen.values()].find(
-    (s) => norm(`${s.finding.path}: ${s.finding.title}`) === r || norm(s.finding.title) === r,
+  const r = loose(m[1].replace(/^\s*-?\s*\[[^\]]*\]\s*/, ''));
+  const refs = [r, loose(r.replace(/\s*\([^()]*\)$/, ''))];
+  return [...seen.values()].find((s) =>
+    [`${s.finding.path}: ${s.finding.title}`, s.finding.title].some((k) => refs.includes(loose(k))),
   );
 }
 
@@ -464,6 +489,12 @@ Most severe first; use the severity definitions strictly. Use a stable, specific
 Findings already known in this loop (do NOT report them again unless a "resolved" one is still broken in the current
 code — then report it again with the SAME path and title; never re-report "won't fix" or "rejected" ones):
 ${known || '(none yet)'}`;
+  // Earlier checks that did not pass: in a follow-up round too, the tester runs them again.
+  const retest = pendingTests.size
+    ? `\n\nEarlier hands-on checks that did NOT pass. They stay failed until you see them pass: run EACH again, whatever
+the scope above, and list it in \`tested\` under the SAME claimOrArea:
+${[...pendingTests.values()].map(({ round: r, entry: t }) => `- ${t?.claimOrArea} (round ${r}: ${t?.result}; ran: ${t?.stepsOrCommand})`).join('\n')}`
+    : '';
   const reviewers = [
     ...LENSES.map((lens) => ({
       key: lens.key,
@@ -471,7 +502,7 @@ ${known || '(none yet)'}`;
     })),
     {
       key: 'tester',
-      prompt: `${context(head)}\n\n${checkout(head)}\n\n${TESTER_PROMPT}\n\n${rules('tester')}`,
+      prompt: `${context(head)}\n\n${checkout(head)}\n\n${TESTER_PROMPT}\n\n${rules('tester')}${retest}`,
       schema: TESTER_REPORT,
     },
   ];
@@ -498,8 +529,8 @@ ${known || '(none yet)'}`;
     }
   });
   // The tester's evidence: no list of what it ran, anything it could not run, or a failure it saw
-  // is a hole too, whatever the verifiers make of its findings: only a later tester that sees it
-  // pass clears it.
+  // is a hole too, whatever the verifiers make of its findings: only a later tester that reports
+  // the same check as passing clears it (see pendingTests).
   const report = reviews[reviewers.findIndex((r) => r.key === 'tester')];
   if (Array.isArray(report?.findings)) {
     const ran = Array.isArray(report.tested) ? report.tested : [];
@@ -507,11 +538,16 @@ ${known || '(none yet)'}`;
       gaps.push('tester (reported nothing it ran)');
       owesFullReview.add('tester');
     }
+    // a check reported both ways counts as not passing
+    for (const t of ran) if (t?.result === 'pass') pendingTests.delete(norm(t.claimOrArea));
     for (const t of ran)
-      if (t?.result === 'fail') gaps.push(`${TESTER_FAILED} ${t?.claimOrArea ?? '?'}`);
-      else if (t?.result !== 'pass') gaps.push(`${TESTER_COULD_NOT_RUN} ${t?.claimOrArea ?? '?'}`);
+      if (t?.result !== 'pass') pendingTests.set(norm(t?.claimOrArea), { round, entry: t });
     testing = { round, sha: head.sha, tested: ran };
   }
+  for (const { round: r, entry: t } of pendingTests.values())
+    gaps.push(
+      `${t?.result === 'fail' ? TESTER_FAILED : TESTER_COULD_NOT_RUN} ${t?.claimOrArea ?? '?'}${r === round ? '' : ` (round ${r})`}`,
+    );
   const raw = reviews.flatMap((r, i) =>
     Array.isArray(r?.findings) ? r.findings.map((f) => ({ ...f, source: reviewers[i].key })) : [],
   );
@@ -611,7 +647,8 @@ ${JSON.stringify(
         reopen({
           ...f,
           path,
-          line: line ?? f.line,
+          // the new report's line only belongs to the prior finding's path if it names that file
+          line: f.path === path ? (line ?? f.line) : line,
           title,
           severity: v.severity ?? f.severity,
           reason: v.reason,
@@ -685,7 +722,7 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
   });
   reviewedHead = head.sha;
   log(
-    `round ${round}: posted ${confirmedNew.length}, reopened ${reopened.length}, open ${open.length}${gaps.length ? `, no answer from ${gaps.join('; ')}` : ''}`,
+    `round ${round}: posted ${confirmedNew.length}, reopened ${reopened.length}, open ${open.length}${gaps.length ? `, gaps: ${gaps.join('; ')}` : ''}`,
   );
   if (!gaps.length && !open.length) {
     converged = true;
@@ -708,7 +745,7 @@ ${JSON.stringify(confirmedNew, null, 2)}${reopenNote}`,
   if (round === MAX_ROUNDS) {
     const why = [
       open.length ? `${open.length} finding(s) open` : '',
-      gaps.length ? `no answer from ${gaps.join('; ')}` : '',
+      gaps.length ? `gaps: ${gaps.join('; ')}` : '',
     ].filter(Boolean);
     log(`stopping after ${MAX_ROUNDS} rounds: ${why.join(', ')}`);
     history.push({ round, stoppedBy: `${MAX_ROUNDS} rounds reached (${why.join(', ')})` });
@@ -741,8 +778,8 @@ ${JSON.stringify(open, null, 2)}
 4. ONLY if the push succeeded, resolve the threads: pipe [{"id","status":"fixed"|"wontfix","note"}] for the findings
    WITH an "id" to \`node tools/pr-review.mjs resolve --pr ${PR} --commit <sha>\` (it fails on an id that matches no
    review-loop thread). Findings without an id need no GitHub call.
-Return the full sha of the commit you pushed as {commit} (${head.sha} if you changed nothing) and one resolution per
-finding (path + title exactly as given).`,
+Return the full sha of the commit you pushed as {commit} (${head.sha} if you changed nothing: then nothing is "fixed") and
+one resolution per finding (path + title exactly as given).`,
     {
       label: `fix:r${round}`,
       phase: 'Fix',
@@ -790,8 +827,13 @@ finding (path + title exactly as given).`,
     });
     break;
   }
-  for (const r of fix.resolutions ?? []) {
-    if (r.status === 'not-done') continue;
+  const unchanged = after.sha === reviewedHead;
+  // What the fix pass did, from the fixer's own report (a finding it did not report is not done).
+  // "fixed" needs a fix commit: without one, nothing changed and the finding stays open.
+  const settled = (fix.resolutions ?? []).filter(
+    (r) => r.status === 'wontfix' || (r.status === 'fixed' && !unchanged),
+  );
+  for (const r of settled) {
     const k = keyOf(r);
     seen.set(k, {
       status: r.status === 'wontfix' ? 'wontfix' : 'resolved',
@@ -799,27 +841,30 @@ finding (path + title exactly as given).`,
     });
   }
   head = after;
-  // What the fix pass did, from the fixer's own report (a finding it did not report is not done).
-  const done = (status) => (fix.resolutions ?? []).filter((r) => r.status === status).length;
+  const done = (status) => settled.filter((r) => r.status === status).length;
   const pass = `${done('fixed')} fixed, ${done('wontfix')} won't fix, ${Math.max(0, open.length - done('fixed') - done('wontfix'))} left open`;
-  const unchanged = after.sha === reviewedHead;
-  // Only suggestions (minor/nit) were open: don't re-review for them. And a fix pass that changed
-  // nothing leaves nothing new to review: another round would review the same head again.
-  if (!gaps.length && (openBlocking.length === 0 || unchanged)) {
-    converged = true;
+  const settledKeys = new Set(settled.map(keyOf));
+  const blockingLeft = openBlocking.filter((f) => !settledKeys.has(keyOf(f))).length;
+  // Only suggestions (minor/nit) were open: don't re-review for them. What the tester saw fail or
+  // could not run adds no round either (its report would only repeat): the run stops, with ⚠️.
+  if (openBlocking.length === 0 && !gaps.some(retryable)) {
+    converged = !gaps.length;
     history.push({
       round: `${round}+`,
-      stoppedBy: unchanged
-        ? `the fix pass changed nothing (${pass})`
-        : `fix pass for suggestions (${pass}); fixes not re-reviewed`,
-      benign: true,
+      stoppedBy: `fix pass for suggestions (${pass}); fixes not re-reviewed${gaps.length ? `; gaps: ${gaps.join('; ')}` : ''}`,
+      benign: converged,
     });
     break;
   }
+  // A fix pass that changed nothing leaves nothing new to review: another round would review the
+  // same head again (unless part of the review never answered). ✅ only if no blocking finding is
+  // left open (every one won't fix) and the tester's report is clean.
   if (unchanged && !gaps.some(retryable)) {
+    converged = !gaps.length && blockingLeft === 0;
     history.push({
       round: `${round}+`,
-      stoppedBy: `the fix pass changed nothing (${pass}), and the tester's report would repeat at the same head`,
+      stoppedBy: `the fix pass changed nothing (${pass})${gaps.length ? ", and the tester's report would repeat at the same head" : ''}`,
+      benign: converged,
     });
     break;
   }
@@ -862,24 +907,29 @@ const oneLine = (text, max) => {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
 const RESULT_LABEL = { pass: 'pass', fail: '**FAIL**', 'could-not-run': '**could not run**' };
-const testedList = testing
-  ? `\n\n**Hands-on testing** (round ${testing.round}, at ${short(testing.sha)}):\n${
-      testing.tested.length
-        ? testing.tested
-            .map(
-              (t) =>
-                `- ${RESULT_LABEL[t?.result] ?? '**could not run**'} · ${oneLine(t?.claimOrArea, 120)} · \`${oneLine(t?.stepsOrCommand, 120).replaceAll('`', "'")}\` · ${oneLine(t?.evidence, 200)}`,
-            )
-            .join('\n')
-        : '- (the tester reported nothing it ran)'
-    }`
-  : '\n\n**Hands-on testing:** the tester never answered.';
+const testLine = (t) =>
+  `- ${RESULT_LABEL[t?.result] ?? '**could not run**'} · ${oneLine(t?.claimOrArea, 120)} · \`${oneLine(t?.stepsOrCommand, 120).replaceAll('`', "'")}\` · ${oneLine(t?.evidence, 200)}`;
+// Checks that failed or could not run in an earlier round, and no later tester saw pass.
+const notSeenPassing = [...pendingTests.values()].filter((p) => p.round !== testing?.round);
+const testedList = `${
+  testing
+    ? `\n\n**Hands-on testing** (round ${testing.round}, at ${short(testing.sha)}):\n${
+        testing.tested.length
+          ? testing.tested.map(testLine).join('\n')
+          : '- (the tester reported nothing it ran)'
+      }`
+    : '\n\n**Hands-on testing:** the tester never answered.'
+}${
+  notSeenPassing.length
+    ? `\n\n**Earlier hands-on checks not seen passing since:**\n${notSeenPassing.map((p) => `${testLine(p.entry)} (round ${p.round})`).join('\n')}`
+    : ''
+}`;
 await agent(
   `Post this markdown as a comment on pull request #${PR} by piping it to \`node tools/pr-review.mjs comment --pr ${PR}\` (heredoc). Post it verbatim.
 
 ${verdict}${list('Open', stillOpen)}${list("Won't fix", wontfix)}${testedList}
 
-| Round | Raw findings | Posted | Reopened | Open after round | No answer from |
+| Round | Raw findings | Posted | Reopened | Open after round | Gaps |
 | --- | --- | --- | --- | --- | --- |
 ${table}
 

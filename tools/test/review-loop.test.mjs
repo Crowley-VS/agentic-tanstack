@@ -1,7 +1,7 @@
 // Runs .claude/workflows/review-loop-run.js against scripted agents: the script's control flow
 // (what is posted, fixed, re-reported and summarized) is plain JavaScript and testable here.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { installHooks } from '../agents.mjs';
@@ -310,7 +310,8 @@ describe('review-loop: an agent that returns nothing is never a clean answer', (
     expect(of('fix')).toHaveLength(0);
     expect(summary).not.toContain('✅');
     expect(summary).toContain('⚠️');
-    expect(summary).toContain('no answer from reviewer correctness');
+    expect(summary).toContain('gaps: reviewer correctness');
+    expect(summary).toContain('| Open after round | Gaps |');
     expect(result.complete).toBe(false);
   });
 
@@ -596,13 +597,17 @@ describe('review-loop: worktree setup', () => {
     // ... and the root `prepare` script (tools/agents.mjs install-hooks)
     const lefthook = nodeBin(REPO, 'lefthook');
     expect(installHooks(wt, { env: { ...base, ...assigned }, lefthook })).toMatch(/^skipped/);
-    // pnpm re-runs `prepare` before a later `pnpm <script>` / `pnpm exec` in the worktree,
-    // without CI (verifyDepsBeforeRun): a linked worktree never installs the shared hooks
-    expect(installHooks(wt, { env: base, lefthook })).toMatch(/^skipped \(linked worktree/);
     expect(hooks()).toEqual([]);
     // Control: without that environment the same postinstall writes the shared hooks.
     const res = postinstall(base);
     expect(hooks(), `${res.stdout}${res.stderr}`).toContain('pre-commit');
+    // The main checkout's hooks: pnpm re-runs `prepare` before a later `pnpm <script>` /
+    // `pnpm exec` in the worktree without CI (verifyDepsBeforeRun), and it leaves them alone.
+    expect(installHooks(root, { env: {}, lefthook })).toBe('installed');
+    const hook = join(root, '.git', 'hooks', 'pre-commit');
+    writeFileSync(hook, `${readFileSync(hook, 'utf8')}# main checkout\n`);
+    expect(installHooks(wt, { env: base, lefthook })).toMatch(/^skipped \(linked worktree/);
+    expect(readFileSync(hook, 'utf8')).toMatch(/# main checkout\n$/);
   }, 30_000);
 });
 
@@ -925,5 +930,211 @@ describe('review-loop round-1 fixes', () => {
     expect(summary).toContain("the fix pass changed nothing (0 fixed, 1 won't fix, 0 left open)");
     expect(summary).toContain('✅');
     expect(result.complete).toBe(true);
+  });
+});
+
+describe('review-loop round-2 fixes', () => {
+  const minor = { ...finding, severity: 'minor', title: 'Wording could be clearer' };
+  const dryRun = {
+    claimOrArea: 'bootstrap --dry-run lists the files',
+    stepsOrCommand: 'scripts/bootstrap --dry-run',
+    result: 'fail',
+    evidence: 'it listed nothing',
+  };
+
+  it('keeps a hands-on failure a gap until a later tester reports that check passing', async () => {
+    for (const { result1, round2, complete } of [
+      { result1: 'fail', round2: TESTED, complete: false }, // round 2's tester leaves it out
+      { result1: 'could-not-run', round2: TESTED, complete: false },
+      {
+        result1: 'fail',
+        round2: [...TESTED, { ...dryRun, result: 'pass', evidence: '12 files' }],
+        complete: true,
+      },
+    ]) {
+      const { result, summary, of } = await runLoop({
+        review: reviewerFinds([1]),
+        tester: ({ label }) =>
+          label.endsWith(':r1')
+            ? {
+                findings: [
+                  { ...finding, path: 'scripts/bootstrap', title: 'Dry run lists nothing' },
+                ],
+                tested: [...TESTED, { ...dryRun, result: result1 }],
+              }
+            : { findings: [], tested: round2 },
+        verify: ({ label }) =>
+          label.includes('Dry run')
+            ? { valid: false, reason: 'could not reproduce' }
+            : { valid: true, reason: 'confirmed' },
+        fix: fixOpen,
+      });
+      const label = `${result1} → ${round2.length}`;
+      // the follow-up tester is asked to run it again
+      expect(of('review').find((c) => c.label === 'review:tester:r2')?.prompt, label).toContain(
+        `- bootstrap --dry-run lists the files (round 1: ${result1}; ran: scripts/bootstrap --dry-run)`,
+      );
+      expect(result.complete, label).toBe(complete);
+      expect(summary.includes('✅'), label).toBe(complete);
+      if (complete) continue;
+      expect(result.rounds[1]?.gaps, label).toEqual([
+        `tester ${result1 === 'fail' ? 'saw a failure' : 'could not run'}: bootstrap --dry-run lists the files (round 1)`,
+      ]);
+      expect(summary, label).toContain('**Earlier hands-on checks not seen passing since:**');
+      expect(summary, label).toContain(
+        '· bootstrap --dry-run lists the files · `scripts/bootstrap --dry-run` · it listed nothing (round 1)',
+      );
+    }
+  });
+
+  it('adds no review round for a hands-on failure when only minor/nit findings are open', async () => {
+    const claim = {
+      claimOrArea: 'PR says 134 tools tests',
+      stepsOrCommand: 'pnpm check --all',
+      result: 'fail',
+      evidence: '186 tools tests ran',
+    };
+    const { result, summary, of } = await runLoop(
+      {
+        review: ({ label }) =>
+          label.startsWith('review:correctness') ? { findings: [minor] } : { findings: [] },
+        tester: () => ({
+          findings: [
+            { ...finding, severity: 'nit', path: 'README.md', title: 'Stale test counts' },
+          ],
+          tested: [...TESTED, claim],
+        }),
+        fix: (call) => ({
+          checkPassed: true,
+          commit: push(call),
+          resolutions: [{ path: minor.path, title: minor.title, status: 'fixed' }],
+        }),
+      },
+      { pr: 7, maxRounds: 5 },
+    );
+    expect(of('review')).toHaveLength(4);
+    expect(of('fix')).toHaveLength(1);
+    expect(summary).toContain(
+      "fix pass for suggestions (1 fixed, 0 won't fix, 1 left open); fixes not re-reviewed; gaps: tester saw a failure: PR says 134 tools tests",
+    );
+    // the failure was never seen passing
+    expect(summary).toContain('⚠️');
+    expect(result.complete).toBe(false);
+  });
+
+  it('keeps a blocking finding open when the fixer calls it fixed without a fix commit', async () => {
+    const { result, summary, of } = await runLoop({
+      review: reviewerFinds([1]),
+      fix: ({ state }) => ({
+        checkPassed: true,
+        commit: state.sha,
+        resolutions: [{ path: finding.path, title: finding.title, status: 'fixed' }],
+      }),
+    });
+    expect(of('fix')[0]?.prompt).toContain('if you changed nothing: then nothing is "fixed"');
+    expect(of('review').filter(inRound(2))).toHaveLength(0);
+    expect(summary).toContain("the fix pass changed nothing (0 fixed, 0 won't fix, 1 left open)");
+    expect(summary).not.toContain('✅');
+    expect(result).toMatchObject({
+      complete: false,
+      open: ['tools/check.mjs: Gate order hides drift'],
+    });
+  });
+
+  it("stops when the fix pass changed nothing and the tester's report would repeat", async () => {
+    const tested = [
+      ...TESTED,
+      {
+        claimOrArea: 'the notes page',
+        stepsOrCommand: 'open /notes',
+        result: 'could-not-run',
+        evidence: 'no browser tools',
+      },
+    ];
+    const { result, summary, of } = await runLoop({
+      review: reviewerFinds([1]),
+      tester: () => ({ findings: [], tested }),
+      fix: ({ state }) => ({
+        checkPassed: true,
+        commit: state.sha,
+        resolutions: [{ path: finding.path, title: finding.title, status: 'not-done' }],
+      }),
+    });
+    expect(of('review')).toHaveLength(4); // not every reviewer again on the same head
+    expect(summary).toContain(
+      "the fix pass changed nothing (0 fixed, 0 won't fix, 1 left open), and the tester's report would repeat at the same head",
+    );
+    expect(result.complete).toBe(false);
+  });
+
+  it('has a tester that reported nothing it ran test the WHOLE PR in the next round', async () => {
+    const { result, of } = await runLoop({
+      review: reviewerFinds([1]),
+      tester: ({ label }) => ({ findings: [], tested: label.endsWith(':r1') ? [] : TESTED }),
+      fix: fixOpen,
+    });
+    const r2 = (key) => of('review').find((c) => c.label === `review:${key}:r2`)?.prompt;
+    expect(r2('correctness')).toContain('FOLLOW-UP round');
+    expect(r2('tester')).not.toContain('FOLLOW-UP round');
+    expect(r2('tester')).toContain('Review ONLY what this PR changes');
+    expect(result.rounds[0]?.gaps).toEqual(['tester (reported nothing it ran)']);
+    expect(result.complete).toBe(true);
+  });
+
+  const resolvedThread = {
+    id: 'rl-1',
+    title: finding.title,
+    severity: 'major',
+    path: finding.path,
+    line: null,
+    resolved: true,
+    wontfix: false,
+  };
+  const repeat = { ...finding, severity: 'blocker', title: 'Drift still hidden after the fix' };
+
+  it('reopens a resolved finding however the verifier quotes it, and drops nothing it cannot name', async () => {
+    for (const [ref, title] of [
+      [`known: "${finding.path}: ${finding.title}"`, finding.title],
+      [`known: \`${finding.path}\`: ${finding.title}`, finding.title],
+      [`known: ${finding.title}.`, finding.title],
+      [`Known: ${finding.path}: ${finding.title} (resolved)`, finding.title],
+      [`known: - [resolved] ${finding.path}: ${finding.title}`, finding.title],
+      // names no known finding (truncated): the finding stands, as a new one
+      [`known: ${finding.path}: Gate order hides`, repeat.title],
+    ]) {
+      const { result, of } = await runLoop({
+        threads: () => ({ count: 1, threads: [resolvedThread] }),
+        review: ({ label }) =>
+          label === 'review:correctness:r1' ? { findings: [repeat] } : { findings: [] },
+        verify: () => ({ valid: true, severity: 'blocker', reason: 'still', duplicateOf: ref }),
+        fix: () => ({ checkPassed: false, resolutions: [] }),
+      });
+      expect(of('post'), ref).toHaveLength(1);
+      expect(of('post')[0]?.prompt, ref).toContain(`"title": "${title}"`);
+      expect(result.complete, ref).toBe(false);
+    }
+  });
+
+  it("reopens a resolved finding at its own path, without the new report's line", async () => {
+    const { of } = await runLoop({
+      threads: () => ({
+        count: 1,
+        threads: [{ ...resolvedThread, path: '.github/workflows/ci.yml', title: 'CI is stale' }],
+      }),
+      review: ({ label }) =>
+        label === 'review:correctness:r1'
+          ? { findings: [{ ...finding, line: 40, title: 'CI still stale' }] }
+          : { findings: [] },
+      verify: () => ({
+        valid: true,
+        reason: 'still stale',
+        duplicateOf: 'known: .github/workflows/ci.yml: CI is stale',
+      }),
+      fix: () => ({ checkPassed: false, resolutions: [] }),
+    });
+    const post = of('post')[0]?.prompt ?? '';
+    expect(post).toContain('"path": ".github/workflows/ci.yml"');
+    expect(post).toContain('"title": "CI is stale"');
+    expect(post).not.toContain('"line": 40');
   });
 });

@@ -8,7 +8,7 @@
 //        → fails for fork PRs, PRs that are not open, and branch names that are not plain ref names
 //   node tools/pr-review.mjs diff    --pr <n>                      the PR's diff, from its per-file
 //        patches: works where `gh pr diff` fails (HTTP 406, too large to render); files without a
-//        patch (removed, binary, huge) are left out
+//        patch (removed, binary, huge) are listed at the end, without their changes
 //   node tools/pr-review.mjs post    --pr <n> --round <r>   < findings.json
 //        findings: [{ id?, path, line?, severity, title, body, suggestion? }]
 //        → one PR review (event COMMENT) with inline comments on diff lines; findings that
@@ -64,6 +64,25 @@ export function diffFromFiles(files) {
     .filter((f) => f.status !== 'removed' && typeof f.patch === 'string')
     .map((f) => `diff --git a/${f.filename} b/${f.filename}\n+++ b/${f.filename}\n${f.patch}`)
     .join('\n');
+}
+
+/**
+ * Pure: the changed files `diffFromFiles` leaves out (removed ones, and those GitHub sends no patch
+ * for), as a note for the end of `diff`, so a reader of the diff still learns they changed.
+ */
+export function omittedFiles(files) {
+  const omitted = files.filter((f) => f.status === 'removed' || typeof f.patch !== 'string');
+  return omitted.length
+    ? [
+        '',
+        `# ${omitted.length} changed file(s) not shown above:`,
+        ...omitted.map((f) =>
+          f.status === 'removed'
+            ? `#   ${f.filename} (removed)`
+            : `#   ${f.filename} (${f.status}; GitHub sent no patch: too large or binary)`,
+        ),
+      ].join('\n')
+    : '';
 }
 
 /**
@@ -569,8 +588,8 @@ function threads(pr, all = false) {
   return parseThreads(readThreadData(ghGraphql, { owner, name, pr }), { all });
 }
 
-/** The PR's diff, from its per-file patches (see diffFromFiles). */
-function prDiff(pr) {
+/** The PR's changed files with their patches ({ filename, status, patch }; see diffFromFiles). */
+function prFiles(pr) {
   const out = gh([
     'api',
     `repos/${repoSlug()}/pulls/${pr}/files`,
@@ -578,12 +597,10 @@ function prDiff(pr) {
     '--jq',
     '.[] | {filename, status, patch}',
   ]);
-  return diffFromFiles(
-    out
-      .split('\n')
-      .filter((l) => l.trim())
-      .map((l) => JSON.parse(l)),
-  );
+  return out
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l));
 }
 
 function readStdinJson() {
@@ -602,9 +619,11 @@ function main(argv) {
   const known = ['info', 'head', 'diff', 'post', 'threads', 'resolve', 'comment'];
   const pr = known.includes(cmd) ? prNumber(arg(argv, 'pr')) : undefined;
   switch (cmd) {
-    case 'diff':
-      console.log(prDiff(pr));
+    case 'diff': {
+      const files = prFiles(pr);
+      console.log(`${diffFromFiles(files)}${omittedFiles(files)}`);
       return;
+    }
     case 'info':
       console.log(
         JSON.stringify(trustedInfo(prInfo(pr, ',body,comments,reviews'), viewerLogin()), null, 2),
@@ -621,7 +640,8 @@ function main(argv) {
       const round = Number(arg(argv, 'round') ?? 1);
       const findings = readStdinJson();
       const info = prInfo(pr);
-      const review = buildReview({ findings, diff: prDiff(pr), round, commitId: info.headRefOid });
+      const diff = diffFromFiles(prFiles(pr));
+      const review = buildReview({ findings, diff, round, commitId: info.headRefOid });
       gh(
         ['api', `repos/${repoSlug()}/pulls/${pr}/reviews`, '-X', 'POST', '--input', '-'],
         JSON.stringify(review),

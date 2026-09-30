@@ -13,6 +13,7 @@ import {
   isSafeBranch,
   MARKER,
   markerId,
+  omittedFiles,
   parseThreads,
   PR_CONNECTIONS,
   planResolutions,
@@ -125,6 +126,16 @@ describe('diffFromFiles', () => {
     expect(Object.fromEntries([...map].map(([p, l]) => [p, [...l]]))).toEqual(
       Object.fromEntries([...commentableLines(DIFF)].map(([p, l]) => [p, [...l]])),
     );
+    // `diff` still names what it could not show, so the fallback hides no change
+    expect(omittedFiles(files)).toBe(
+      [
+        '',
+        '# 2 changed file(s) not shown above:',
+        '#   gone.txt (removed)',
+        '#   pnpm-lock.yaml (modified; GitHub sent no patch: too large or binary)',
+      ].join('\n'),
+    );
+    expect(omittedFiles(files.slice(0, 2))).toBe('');
   });
 });
 
