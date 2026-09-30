@@ -11,6 +11,11 @@ afterAll(() => close());
 
 const SECRET = 'x'.repeat(40);
 const dev = createApp({ db, env: loadEnv({ DATABASE_URL: 'postgres://127.0.0.1/app' }) });
+// how `api:dev` really runs: Nx loads the root .env, which sets the secret, into every task
+const devWithSecret = createApp({
+  db,
+  env: loadEnv({ DATABASE_URL: 'postgres://127.0.0.1/app', INTERNAL_API_SECRET: SECRET }),
+});
 const prod = createApp({
   db,
   env: loadEnv({
@@ -23,8 +28,13 @@ const trusted = { [SECRET_HEADER]: SECRET };
 
 type App = typeof dev;
 type Result = { data?: Record<string, unknown>; errors?: { message: string }[] };
-async function query(app: App, source: string, headers: Record<string, string> = {}) {
-  const res = await app.fetch('http://api/graphql', {
+async function query(
+  app: App,
+  source: string,
+  headers: Record<string, string> = {},
+  url = 'http://api/graphql',
+) {
+  const res = await app.fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify({ query: source }),
@@ -49,14 +59,25 @@ describe('api app', () => {
     }
   });
 
-  it('requires the internal secret whenever it is set', async () => {
+  it('requires the internal secret in production, on every GraphQL request', async () => {
     expect((await query(prod, '{ apiVersion }')).status).toBe(401);
     expect((await query(prod, '{ apiVersion }', { [SECRET_HEADER]: 'y'.repeat(40) })).status).toBe(
       401,
     );
     expect((await query(prod, '{ apiVersion }', trusted)).status).toBe(200);
-    // not set (development): open
-    expect((await query(dev, '{ apiVersion }')).status).toBe(200);
+    // Yoga runs any URL ending in /graphql as GraphQL: a /health path must not skip the check
+    for (const url of [
+      'http://api/health?/graphql',
+      'http://api/health?x=/graphql',
+      'http://api/health?/graphql/',
+      'http://api/health#/graphql',
+    ])
+      expect((await query(prod, '{ apiVersion }', {}, url)).status, url).toBe(401);
+  });
+
+  it('ignores the internal secret in development, even when .env sets it', async () => {
+    for (const app of [dev, devWithSecret])
+      expect((await query(app, '{ apiVersion }')).status).toBe(200);
   });
 
   it('blocks requests a browser could send cross-site without a preflight (CSRF)', async () => {

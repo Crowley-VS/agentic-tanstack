@@ -128,8 +128,8 @@ Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and U
   enforces it. The environment is validated once, at startup (`apps/api/src/env.ts`).
 - **The API is private and locked down by default:** CSRF prevention, graphql-armor limits, and introspection,
   GraphiQL and field suggestions in development only. In production it listens for the web server alone and requires
-  `INTERNAL_API_SECRET` on every request but `/health`; in development it listens on 127.0.0.1 without it. Tests pin
-  each default: change one only on purpose.
+  `INTERNAL_API_SECRET` on every request but `/health`; in development it listens on 127.0.0.1 and ignores it (even
+  when `.env` sets it). Tests pin each default: change one only on purpose.
 - **Tests that touch the database** use `testDb()` from `@acme/db/testing` and assume nothing about other tests'
   rows (tests in one file share its database; files never share).
 

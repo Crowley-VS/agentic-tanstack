@@ -28,7 +28,9 @@ export function createApp({ db, env }: { db: Db; env: Env }) {
     // unexpected errors reach the client as "Unexpected error." (details stay in the server log)
     maskedErrors: true,
     plugins: [
-      useInternalSecret(env.INTERNAL_API_SECRET, HEALTH_PATH),
+      // production only: in development Nx loads the root .env (which sets the secret) into every
+      // task, and GraphiQL, curl and agents must work on 127.0.0.1 without it
+      useInternalSecret(production ? env.INTERNAL_API_SECRET : undefined),
       // a request a browser could send cross-site without a preflight (GET, form posts) needs
       // this header; the BFF's JSON POSTs never do
       useCSRFPrevention({ requestHeaders: ['x-graphql-yoga-csrf'] }),

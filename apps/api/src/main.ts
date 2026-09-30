@@ -13,8 +13,8 @@ const server = createServer((req, res) => void yoga(req, res));
 const port = listenPort(env);
 
 // Production: `::` (IPv6 and IPv4), since Railway's private network is IPv6-only. Development:
-// this machine only, as it serves GraphiQL and introspection without the secret (set
-// INTERNAL_API_SECRET in your shell to try the production behavior).
+// this machine only, as it serves GraphiQL and introspection and ignores the secret (app.ts
+// enforces it with NODE_ENV=production only).
 const host = env.NODE_ENV === 'production' ? '::' : '127.0.0.1';
 server.listen(port, host, () =>
   console.log(`[api] listening on http://localhost:${port}${GRAPHQL_PATH} (${env.NODE_ENV})`),
