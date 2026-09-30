@@ -61,7 +61,16 @@
       "Bash(pnpm nx run api:test)",
       "Bash(pnpm nx run api:build)",
       "Bash(pnpm nx run api:print-schema)",
-      "Bash(pnpm nx run api:dev)"
+      "Bash(pnpm nx run api:dev)",
+      "Bash(pnpm nx run web:lint)",
+      "Bash(pnpm nx run web:eslint)",
+      "Bash(pnpm nx run web:typecheck)",
+      "Bash(pnpm nx run web:test)",
+      "Bash(pnpm nx run web:build)",
+      "Bash(pnpm nx run web:generate-routes)",
+      "Bash(pnpm nx run web:dev)",
+      "Bash(pnpm nx run web:serve)",
+      "Bash(pnpm dev)"
     ],
     "ask": [
       "Bash(pnpm nx *--command*)",
