@@ -10,7 +10,13 @@
   "exclude": ["src/**/*.test.ts"],
   "references": [
     {
+      "path": "../../packages/validators/tsconfig.lib.json"
+    },
+    {
       "path": "../../packages/db/tsconfig.lib.json"
+    },
+    {
+      "path": "../../packages/core/tsconfig.lib.json"
     }
   ]
 }

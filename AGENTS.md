@@ -98,15 +98,15 @@ NODE_ENV=production INTERNAL_API_SECRET=<32+ random characters> node ../../tools
 
 ## Repo map
 
-| Path                  | What                                                                                                 | Tags                            |
-| --------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `apps/api`            | GraphQL API: Yoga + Pothos on Node; env schema, security defaults, tsdown bundle                     | `scope:api`, `type:app`         |
-| `packages/core`       | business logic: writes and domain errors (`createNote`, `addComment`); takes a `Db`, never a request | `scope:server`, `type:feature`  |
-| `packages/db`         | Drizzle schema, relations, migrations, deterministic seed, per-test-file databases (`testDb()`)      | `scope:server`, `type:data`     |
-| `packages/graphql`    | `schema.graphql`: the API contract clients generate their types from (generated)                     | `scope:shared`, `type:util`     |
-| `packages/validators` | Zod schemas + limits shared by api and web                                                           | `scope:shared`, `type:util`     |
-| `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync                                        | `scope:tooling`, `type:tooling` |
-| `docker-compose.yml`  | the local Postgres (dev, e2e, tests only)                                                            |                                 |
+| Path                  | What                                                                                                 | Tags                                |
+| --------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `apps/api`            | GraphQL API (Yoga + Pothos): the Notes board queries and mutations, env schema, security defaults    | `scope:api`, `type:app`, `needs-db` |
+| `packages/core`       | business logic: writes and domain errors (`createNote`, `addComment`); takes a `Db`, never a request | `scope:server`, `type:feature`      |
+| `packages/db`         | Drizzle schema, relations, migrations, deterministic seed, per-test-file databases (`testDb()`)      | `scope:server`, `type:data`         |
+| `packages/graphql`    | `schema.graphql`: the API contract clients generate their types from (generated)                     | `scope:shared`, `type:util`         |
+| `packages/validators` | Zod schemas + limits shared by api and web                                                           | `scope:shared`, `type:util`         |
+| `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync                                        | `scope:tooling`, `type:tooling`     |
+| `docker-compose.yml`  | the local Postgres (dev, e2e, tests only)                                                            |                                     |
 
 `tools` is plain `.mjs` with no `typecheck` target: its gates are lint, boundaries and tests. Projects tagged
 `needs-db` need Docker for their tests (`pnpm nx affected -t test --exclude=tag:needs-db` skips them).
@@ -138,6 +138,11 @@ NODE_ENV=production INTERNAL_API_SECRET=<32+ random characters> node ../../tools
   GraphiQL and field suggestions in development only. In production it listens for the web server alone and requires
   `INTERNAL_API_SECRET` on every request but `/health`; in development it listens on 127.0.0.1 and ignores it (even
   when `.env` sets it). Tests pin each default: change one only on purpose.
+- **Expected failures are data:** a mutation returns them as union members (`ValidationError` with `fieldErrors`,
+  `NotFoundError`) that clients select by `__typename`; invalid query arguments are GraphQL errors with code
+  `BAD_USER_INPUT`. Anything else is an unexpected error, masked. `READ_ONLY=true` makes the API reject every mutation.
+- **One `graphql` copy in tests:** graphql 16 has no `exports` map, so Vite and Node would load different builds and
+  `instanceof GraphQLError` breaks; Vitest configs alias `graphql` to Node's (see `apps/api/vitest.config.ts`).
 - **Tests that touch the database** use `testDb()` from `@acme/db/testing` and assume nothing about other tests'
   rows (tests in one file share its database; files never share).
 

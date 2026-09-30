@@ -34,6 +34,15 @@ describe('CommentInput', () => {
     expect(parsed.authorName).toBeUndefined();
   });
 
+  it('treats a null author name as anonymous', () => {
+    const parsed = CommentInput.parse({
+      noteId: '0198f3c0-0000-7000-8000-000000000000',
+      authorName: null,
+      body: 'Nice',
+    });
+    expect(parsed.authorName).toBeUndefined();
+  });
+
   it('rejects an invalid note id', () => {
     expect(CommentInput.safeParse({ noteId: 'nope', body: 'x' }).success).toBe(false);
   });

@@ -1,7 +1,102 @@
+input AddCommentInput {
+  """Shown as "Anonymous" when left out or blank"""
+  authorName: String
+  body: String!
+  noteId: ID!
+}
+
+type Comment {
+  authorName: String
+  body: String!
+  createdAt: DateTime!
+  id: ID!
+  note: Note!
+}
+
+input CreateNoteInput {
+  body: String!
+  title: String!
+}
+
 """An ISO 8601 timestamp in UTC, with milliseconds"""
 scalar DateTime
+
+"""An expected failure a mutation returns instead of its result"""
+interface Error {
+  message: String!
+}
+
+"""
+One invalid field: its path in the arguments (e.g. ["input", "title"]) and what is wrong
+"""
+type FieldError {
+  message: String!
+  path: [String!]!
+}
+
+type Mutation {
+  addComment(input: AddCommentInput!): MutationAddCommentResult!
+  createNote(input: CreateNoteInput!): MutationCreateNoteResult!
+}
+
+union MutationAddCommentResult = MutationAddCommentSuccess | NotFoundError | ValidationError
+
+type MutationAddCommentSuccess {
+  data: Comment!
+}
+
+union MutationCreateNoteResult = MutationCreateNoteSuccess | ValidationError
+
+type MutationCreateNoteSuccess {
+  data: Note!
+}
+
+"""A record the input refers to does not exist"""
+type NotFoundError implements Error {
+  entity: String!
+  id: ID!
+  message: String!
+}
+
+type Note {
+  body: String!
+  commentCount: Int!
+
+  """The newest 50 comments, newest first"""
+  comments: [Comment!]!
+  createdAt: DateTime!
+  id: ID!
+  title: String!
+}
+
+type PageInfo {
+  endCursor: String
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+}
 
 type Query {
   """The version of the running API (APP_VERSION, set at deploy time)"""
   apiVersion: String!
+  note(id: ID!): Note
+
+  """Every note, newest first"""
+  notes(after: String, before: String, first: Int, last: Int): QueryNotesConnection!
+}
+
+type QueryNotesConnection {
+  edges: [QueryNotesConnectionEdge!]!
+  pageInfo: PageInfo!
+}
+
+type QueryNotesConnectionEdge {
+  cursor: String!
+  node: Note!
+}
+
+"""The input was invalid; fieldErrors says where and why"""
+type ValidationError implements Error {
+  fieldErrors: [FieldError!]!
+  message: String!
 }

@@ -30,8 +30,9 @@ export const CommentInput = z.object({
     .max(NOTE_LIMITS.authorNameMax, {
       error: `Must be at most ${NOTE_LIMITS.authorNameMax} characters`,
     })
-    .optional()
-    .transform((v) => (v === '' ? undefined : v)),
+    // nullish: GraphQL clients send null for a nullable field left empty
+    .nullish()
+    .transform((v) => v || undefined),
   body: trimmed(1, NOTE_LIMITS.commentBodyMax, 'Comment is required'),
 });
 export type CommentInput = z.infer<typeof CommentInput>;

@@ -5,7 +5,9 @@
   "description": "The GraphQL API (Yoga + Pothos) on Node. Reads through the Drizzle plugin; writes go through @acme/core.",
   "type": "module",
   "dependencies": {
+    "@acme/core": "workspace:*",
     "@acme/db": "workspace:*",
+    "@acme/validators": "workspace:*",
     "@escape.tech/graphql-armor": "catalog:",
     "@graphql-yoga/plugin-csrf-prevention": "catalog:",
     "@graphql-yoga/plugin-disable-introspection": "catalog:",
@@ -30,7 +32,8 @@
     "name": "api",
     "tags": [
       "scope:api",
-      "type:app"
+      "type:app",
+      "needs-db"
     ],
     "targets": {
       "dev": {
@@ -80,6 +83,13 @@
         ],
         "outputs": [
           "{workspaceRoot}/packages/graphql/schema.graphql"
+        ]
+      },
+      "test": {
+        "inputs": [
+          "default",
+          "^production",
+          "dbServer"
         ]
       }
     }
