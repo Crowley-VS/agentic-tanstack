@@ -1,0 +1,120 @@
+{
+  "name": "@acme/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The web app: TanStack Start (SSR) on Nitro, with a same-origin BFF proxy to the private GraphQL API.",
+  "type": "module",
+  "dependencies": {
+    "@acme/validators": "workspace:*",
+    "@tanstack/react-router": "catalog:",
+    "@tanstack/react-start": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "nitro": "catalog:",
+    "vite": "catalog:"
+  },
+  "nx": {
+    "name": "web",
+    "tags": [
+      "scope:web",
+      "type:app"
+    ],
+    "targets": {
+      "typecheck": {
+        "dependsOn": [
+          "generate-routes",
+          "..."
+        ],
+        "inputs": [
+          "...",
+          {
+            "dependentTasksOutputFiles": "**/*.ts"
+          }
+        ]
+      },
+      "lint": {
+        "dependsOn": [
+          "generate-routes",
+          "..."
+        ],
+        "inputs": [
+          "...",
+          {
+            "dependentTasksOutputFiles": "**/*.ts"
+          }
+        ]
+      },
+      "dev": {
+        "command": "node ../../tools/dev-ports.mjs --exec -- sh -c 'PORT=$WEB_PORT exec vite dev'",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "continuous": true
+      },
+      "generate-routes": {
+        "command": "node scripts/generate-routes.mjs",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "cache": true,
+        "inputs": [
+          "{projectRoot}/src/routes/**/*",
+          "{projectRoot}/vite.config.ts",
+          "{projectRoot}/scripts/generate-routes.mjs",
+          {
+            "externalDependencies": [
+              "@tanstack/react-start",
+              "@tanstack/router-generator"
+            ]
+          }
+        ],
+        "outputs": [
+          "{projectRoot}/src/routeTree.gen.ts"
+        ]
+      },
+      "build": {
+        "command": "vite build && node scripts/check-client-bundle.mjs",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "cache": true,
+        "dependsOn": [
+          "generate-routes"
+        ],
+        "inputs": [
+          "production",
+          "^production",
+          {
+            "dependentTasksOutputFiles": "**/*.ts"
+          },
+          {
+            "externalDependencies": [
+              "vite",
+              "nitro",
+              "@tanstack/react-start"
+            ]
+          }
+        ],
+        "outputs": [
+          "{projectRoot}/.output"
+        ]
+      },
+      "serve": {
+        "command": "node ../../tools/dev-ports.mjs --exec -- sh -c 'PORT=$WEB_PORT exec node .output/server/index.mjs'",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "continuous": true,
+        "dependsOn": [
+          "build"
+        ]
+      }
+    }
+  }
+}

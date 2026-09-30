@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "check": "node tools/check.mjs",
+    "dev": "nx run-many -t dev -p api web",
     "format": "oxfmt",
     "ports": "node tools/dev-ports.mjs --print",
     "regen": "node tools/agents.mjs regen",

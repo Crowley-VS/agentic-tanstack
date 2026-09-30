@@ -93,6 +93,7 @@
       "Bash(pnpm exec nx configure-ai-agents *)",
       "Bash(nx configure-ai-agents *)",
       "Edit(/.claude/skills/**)",
+      "Edit(/apps/web/src/routeTree.gen.ts)",
       "Edit(/packages/graphql/schema.graphql)"
     ]
   },
