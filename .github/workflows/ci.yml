@@ -48,8 +48,26 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Chromium for the browser tests (test-browser targets). They run headless, which needs only
+      # the headless shell and its system libraries. Not cached: the libraries are installed anyway.
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps --only-shell chromium
+
       # Sets NX_BASE/NX_HEAD so `pnpm check` only runs affected projects.
       - uses: nrwl/nx-set-shas@v5
 
       # Same definition of done as local development and agents.
       - run: pnpm check
+
+      # Cache correctness: `pnpm check` just ran (or replayed) these generators and builds, so a
+      # second run must replay every task from the cache ("Cache: N/N hit"). A miss means a task
+      # changes its own inputs (it writes a file it hashes), so its cache never serves the next run.
+      - name: Generators and builds replay from the cache
+        run: |
+          set -o pipefail
+          pnpm nx affected -t print-schema generate-routes codegen build --outputStyle=static \
+            | tee "$RUNNER_TEMP/replay.log"
+          awk '{ gsub(/\033\[[0-9;]*m/, "") } /No tasks were run/ { ok = 1 }
+            /Cache: +[0-9]+\/[0-9]+ hit/ { split($2, n, "/"); ok = n[1] == n[2] }
+            END { exit !ok }' "$RUNNER_TEMP/replay.log" \
+            || { echo "::error::a task above missed the Nx cache on its second run"; exit 1; }

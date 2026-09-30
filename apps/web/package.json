@@ -23,9 +23,12 @@
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
+    "@vitest/browser-playwright": "catalog:",
     "graphql": "catalog:",
     "nitro": "catalog:",
-    "vite": "catalog:"
+    "playwright": "catalog:",
+    "vite": "catalog:",
+    "vitest-browser-react": "catalog:"
   },
   "nx": {
     "name": "web",
@@ -74,6 +77,27 @@
             "dependentTasksOutputFiles": "**/*.ts"
           }
         ]
+      },
+      "test-browser": {
+        "command": "vitest run --config vitest.browser.config.ts",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "cache": true,
+        "dependsOn": [
+          "codegen"
+        ],
+        "inputs": [
+          "default",
+          "^production",
+          {
+            "env": "HEADED"
+          },
+          {
+            "dependentTasksOutputFiles": "**/*.ts"
+          }
+        ],
+        "outputs": []
       },
       "eslint": {
         "dependsOn": [
