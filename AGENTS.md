@@ -60,11 +60,19 @@ Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and U
 
 **API** (`apps/api`, GraphQL at `/graphql`, health at `/health`):
 
-| Task                                                   | Command                                                                                    |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| Run it (migrates first; this checkout's port; reloads) | `pnpm nx run api:dev` (GraphiQL at the printed URL)                                        |
-| Change the schema                                      | edit `apps/api/src/graphql/*`, then `pnpm nx run api:print-schema` (or `pnpm regen`)       |
-| Production bundle (what the image runs)                | `pnpm nx run api:build`, then in `apps/api`: `node dist/migrate.mjs`, `node dist/main.mjs` |
+| Task                                                   | Command                                                                              |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| Run it (migrates first; this checkout's port; reloads) | `pnpm nx run api:dev` (GraphiQL at the printed URL)                                  |
+| Change the schema                                      | edit `apps/api/src/graphql/*`, then `pnpm nx run api:print-schema` (or `pnpm regen`) |
+| Production bundle (what the image runs)                | `pnpm nx run api:build`, then run it as below                                        |
+
+Run the bundle from `apps/api`: `dev-ports --exec` supplies this checkout's `DATABASE_URL` and port, and production
+mode needs `NODE_ENV` and a secret (without them it runs as development):
+
+```bash
+node ../../tools/dev-ports.mjs --exec -- node dist/migrate.mjs
+NODE_ENV=production INTERNAL_API_SECRET=<32+ random characters> node ../../tools/dev-ports.mjs --exec -- node dist/main.mjs
+```
 
 <!-- stack:end -->
 
