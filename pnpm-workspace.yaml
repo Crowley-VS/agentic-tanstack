@@ -23,6 +23,11 @@ overrides:
 # compatibility is known to be tight (Nx plugins, TypeScript, Vitest, graphql, pre-1.0 tools).
 catalog:
   '@escape.tech/graphql-armor': ^3.2.0
+  # exact: a new codegen version can change the committed output (apps/web/src/gql)
+  '@graphql-codegen/cli': 7.4.3
+  '@graphql-codegen/client-preset': 6.2.0
+  '@graphql-eslint/eslint-plugin': ^4.4.1
+  '@graphql-typed-document-node/core': ^3.2.0
   '@graphql-yoga/plugin-csrf-prevention': ^3.24.1
   '@graphql-yoga/plugin-disable-introspection': ^2.25.1
   '@nx/eslint': 23.2.1
@@ -37,8 +42,11 @@ catalog:
   '@pothos/plugin-errors': ^4.9.3
   '@pothos/plugin-relay': ^4.8.1
   '@pothos/plugin-validation': ^4.3.4
+  '@tanstack/react-query': ^5.104.0
   # react-start pins react-router exactly: bump both together, or two routers get installed
+  # (react-router-ssr-query is from the same release train)
   '@tanstack/react-router': 1.170.40
+  '@tanstack/react-router-ssr-query': 1.167.3
   '@tanstack/react-start': 1.168.59
   '@types/node': ^24.19.0
   '@types/pg': ^8.23.1

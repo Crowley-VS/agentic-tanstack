@@ -73,6 +73,7 @@ Postgres database). The web app (M5+) adds `pnpm nx e2e web-e2e` for route and U
 | Run web + API (reloads)               | `pnpm dev` in the background, then curl its `/api/health` |
 | Production build / run it             | `pnpm nx run web:build` / `pnpm nx run web:serve`         |
 | After adding or renaming a route file | `pnpm nx run web:generate-routes` (or `pnpm regen`)       |
+| After editing a `graphql()` operation | `pnpm nx run web:codegen` (`pnpm dev` does it on save)    |
 
 <!-- stack:end -->
 
@@ -91,6 +92,7 @@ Postgres database). The web app (M5+) adds `pnpm nx e2e web-e2e` for route and U
 
 - **API shape** → `packages/graphql/schema.graphql` (printed from `apps/api/src/graphql`; never edit it by hand).
 - **Pages and params** → `apps/web/src/routeTree.gen.ts` (generated from `apps/web/src/routes`).
+- **Operation types** → `apps/web/src/gql` (generated from the `graphql()` calls in `apps/web/src`).
 
 <!-- stack:end -->
 
@@ -137,6 +139,8 @@ Postgres database). The web app (M5+) adds `pnpm nx e2e web-e2e` for route and U
   its Vitest config aliases `graphql` to one copy.
 - **Server-only code lives in `*.server.ts`** (env, API client, BFF): a client import of one fails the build, and so
   does server code in the client bundle. The browser reaches the API only through the same-origin `/api/graphql`.
+- **Web data** (`docs/web.md`): only via `execute()` with a `graphql()` document; loaders `await ensure…()` and
+  return nothing; components `useSuspense…` the same query options.
 - **Tests that touch the database** use `testDb()` from `@acme/db/testing` and assume nothing about other tests'
   rows (tests in one file share its database; files never share).
 

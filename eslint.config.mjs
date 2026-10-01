@@ -1,8 +1,11 @@
-// ESLint runs ONLY what oxlint can't: Nx module boundaries (and, once the
-// GraphQL schema exists, @graphql-eslint on operations). Everything else is
-// oxlint (`lint` target). Always run through Nx (`pnpm nx run <p>:eslint`):
-// the boundaries rule silently skips without Nx's cached project graph.
+// ESLint runs ONLY what oxlint can't: Nx module boundaries, and @graphql-eslint on the web app's
+// GraphQL operations (checked against the API's printed schema). Everything else is oxlint
+// (`lint` target). Always run through Nx (`pnpm nx run <p>:eslint`): the boundaries rule silently
+// skips without Nx's cached project graph.
 import { readFileSync } from 'node:fs';
+import { sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import graphql from '@graphql-eslint/eslint-plugin';
 import nx from '@nx/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
 
@@ -10,6 +13,9 @@ const generated = JSON.parse(
   readFileSync(new URL('./.agents/generated.json', import.meta.url), 'utf8'),
 );
 const generatedIgnores = generated.artifacts.flatMap((a) => a.paths);
+
+/** apps/web/src as an absolute glob base (globs take `/`, on Windows too). */
+const webSrc = `${import.meta.dirname.split(sep).join('/')}/apps/web/src`;
 
 const FRAMEWORKS = ['react', 'react-dom', '@tanstack/*', 'graphql-yoga', '@pothos/*', 'vite'];
 
@@ -73,5 +79,35 @@ export default [
         },
       ],
     },
+  },
+  // GraphQL operations in apps/web: the processor pulls every graphql(`...`) call out of a file as
+  // a virtual `<file>/<n>_document.graphql`, which the next block checks against the schema.
+  {
+    files: ['apps/web/src/**/*.{ts,tsx}'],
+    processor: graphql.processor,
+  },
+  {
+    files: ['apps/web/src/**/*.graphql'],
+    languageOptions: {
+      parser: graphql.parser,
+      parserOptions: {
+        graphQLConfig: {
+          // absolute: Nx runs ESLint in the project's directory, and graphql-config resolves
+          // relative paths against the cwd
+          schema: fileURLToPath(new URL('./packages/graphql/schema.graphql', import.meta.url)),
+          // the operations codegen types (apps/web/codegen.ts), for the cross-file rules such as
+          // unique-operation-name
+          documents: [
+            `${webSrc}/**/*.{ts,tsx}`,
+            `!${webSrc}/gql/**`,
+            `!${webSrc}/routeTree.gen.ts`,
+            `!${webSrc}/**/*.test.{ts,tsx}`,
+            `!${webSrc}/**/*.browser.test.{ts,tsx}`,
+          ],
+        },
+      },
+    },
+    plugins: { '@graphql-eslint': graphql },
+    rules: graphql.configs['flat/operations-recommended'].rules,
   },
 ];

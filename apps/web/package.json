@@ -6,16 +6,22 @@
   "type": "module",
   "dependencies": {
     "@acme/validators": "workspace:*",
+    "@tanstack/react-query": "catalog:",
     "@tanstack/react-router": "catalog:",
+    "@tanstack/react-router-ssr-query": "catalog:",
     "@tanstack/react-start": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@graphql-codegen/cli": "catalog:",
+    "@graphql-codegen/client-preset": "catalog:",
+    "@graphql-typed-document-node/core": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
+    "graphql": "catalog:",
     "nitro": "catalog:",
     "vite": "catalog:"
   },
@@ -25,10 +31,14 @@
       "scope:web",
       "type:app"
     ],
+    "implicitDependencies": [
+      "graphql"
+    ],
     "targets": {
       "typecheck": {
         "dependsOn": [
           "generate-routes",
+          "codegen",
           "..."
         ],
         "inputs": [
@@ -41,6 +51,7 @@
       "lint": {
         "dependsOn": [
           "generate-routes",
+          "codegen",
           "..."
         ],
         "inputs": [
@@ -50,12 +61,45 @@
           }
         ]
       },
+      "test": {
+        "dependsOn": [
+          "codegen",
+          "..."
+        ],
+        "inputs": [
+          "...",
+          {
+            "dependentTasksOutputFiles": "**/*.ts"
+          }
+        ]
+      },
+      "eslint": {
+        "dependsOn": [
+          {
+            "projects": [
+              "api"
+            ],
+            "target": "print-schema"
+          },
+          "..."
+        ],
+        "inputs": [
+          "...",
+          {
+            "dependentTasksOutputFiles": "**/*.graphql"
+          }
+        ]
+      },
       "dev": {
         "command": "node ../../tools/dev-ports.mjs --exec -- sh -c 'PORT=$WEB_PORT exec vite dev'",
         "options": {
           "cwd": "{projectRoot}"
         },
-        "continuous": true
+        "continuous": true,
+        "dependsOn": [
+          "codegen",
+          "codegen-watch"
+        ]
       },
       "generate-routes": {
         "command": "node scripts/generate-routes.mjs",
@@ -80,6 +124,45 @@
           "{projectRoot}/src/routeTree.gen.ts"
         ]
       },
+      "codegen": {
+        "command": "graphql-codegen --config codegen.ts",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "cache": true,
+        "dependsOn": [
+          {
+            "projects": [
+              "api"
+            ],
+            "target": "print-schema"
+          }
+        ],
+        "inputs": [
+          "{projectRoot}/codegen.ts",
+          "{projectRoot}/src/**/*.{ts,tsx}",
+          "!{projectRoot}/src/gql/**",
+          "!{projectRoot}/src/routeTree.gen.ts",
+          "!{projectRoot}/src/**/*.test.{ts,tsx}",
+          "{workspaceRoot}/packages/graphql/schema.graphql",
+          {
+            "dependentTasksOutputFiles": "**/*.graphql"
+          },
+          {
+            "externalDependencies": [
+              "@graphql-codegen/cli",
+              "@graphql-codegen/client-preset"
+            ]
+          }
+        ],
+        "outputs": [
+          "{projectRoot}/src/gql"
+        ]
+      },
+      "codegen-watch": {
+        "command": "nx watch --projects=api,web --includeDependencies -- nx run web:codegen",
+        "continuous": true
+      },
       "build": {
         "command": "vite build && node scripts/check-client-bundle.mjs",
         "options": {
@@ -87,7 +170,8 @@
         },
         "cache": true,
         "dependsOn": [
-          "generate-routes"
+          "generate-routes",
+          "codegen"
         ],
         "inputs": [
           "production",

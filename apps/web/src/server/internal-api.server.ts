@@ -1,5 +1,5 @@
-// Server-only: how the web server reaches the private GraphQL API (the BFF proxy now; SSR loaders
-// later). The `.server.ts` suffix makes TanStack Start's import protection fail the build if
+// Server-only: how the web server reaches the private GraphQL API (the BFF proxy, and execute()
+// during SSR). The `.server.ts` suffix makes TanStack Start's import protection fail the build if
 // client code imports this file.
 import { internalApiUrl, type ServerEnv } from '../env.server';
 

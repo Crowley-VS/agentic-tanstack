@@ -8,7 +8,7 @@
     "lib": ["es2023", "dom"],
     "types": ["node", "vite/client"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts", "codegen.ts"],
   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"],
   "references": [
     {
