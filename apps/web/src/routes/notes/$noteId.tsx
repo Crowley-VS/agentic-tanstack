@@ -1,9 +1,10 @@
-// One note: its title and body, and its newest comments with the total. An id that is not a UUID,
-// or no note with it, is a 404 (notFound(): SSR answers HTTP 404).
+// One note: its title and body, its newest comments with the total, and the "Add a comment" form.
+// An id that is not a UUID, or no note with it, is a 404 (notFound(): SSR answers HTTP 404).
 import { Skeleton } from '@acme/ui/components/skeleton';
 import { NoteId } from '@acme/validators/notes';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute, Link, notFound } from '@tanstack/react-router';
+import { CommentForm } from '../../components/comment-form';
 import { NotFound } from '../../components/not-found';
 import { authorName, commentCountLabel, formatTimestamp } from '../../lib/notes/format';
 import { noteOptions } from '../../lib/notes/queries';
@@ -46,6 +47,7 @@ function NotePage() {
         <h2 id="comments" className="text-lg font-semibold">
           {commentCountLabel(note.commentCount)}
         </h2>
+        <CommentForm noteId={note.id} />
         {note.commentCount > shown && (
           <p className="text-sm text-muted-foreground">
             Showing the newest {shown} of {note.commentCount}.

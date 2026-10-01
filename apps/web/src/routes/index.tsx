@@ -1,11 +1,12 @@
-// The board: every note, newest first, a page at a time ("Load more"). The loader fills the first
-// page during SSR (it is in the HTML); the component reads the same infinite query, and "Load
-// more" fetches the next page through the BFF.
+// The board: the "New note" form, then every note, newest first, a page at a time ("Load more").
+// The loader fills the first page during SSR (it is in the HTML); the component reads the same
+// infinite query, and "Load more" fetches the next page through the BFF.
 import { Button } from '@acme/ui/components/button';
 import { Skeleton } from '@acme/ui/components/skeleton';
 import { useSuspenseInfiniteQuery } from '@tanstack/react-query';
 import { createFileRoute, useHydrated } from '@tanstack/react-router';
 import { NoteCard } from '../components/note-card';
+import { NoteForm } from '../components/note-form';
 import { notesOptions } from '../lib/notes/queries';
 
 export const Route = createFileRoute('/')({
@@ -34,6 +35,7 @@ function Board() {
   return (
     <>
       <h1 className="text-2xl font-semibold tracking-tight">Notes</h1>
+      <NoteForm />
       <section aria-label="All notes" className="flex flex-col gap-3">
         {notes.length === 0 ? (
           <p className="text-muted-foreground">No notes yet.</p>

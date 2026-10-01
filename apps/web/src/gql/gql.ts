@@ -18,11 +18,15 @@ type Documents = {
     "\n  query AppStatus {\n    readOnly\n  }\n": typeof types.AppStatusDocument,
     "\n  query Notes($first: Int, $after: String) {\n    notes(first: $first, after: $after) {\n      edges {\n        node {\n          id\n          title\n          body\n          createdAt\n          commentCount\n        }\n      }\n      pageInfo {\n        hasNextPage\n        endCursor\n      }\n    }\n  }\n": typeof types.NotesDocument,
     "\n  query Note($id: ID!) {\n    note(id: $id) {\n      id\n      title\n      body\n      createdAt\n      commentCount\n      comments {\n        id\n        authorName\n        body\n        createdAt\n      }\n    }\n  }\n": typeof types.NoteDocument,
+    "\n  mutation CreateNote($input: CreateNoteInput!) {\n    createNote(input: $input) {\n      __typename\n      ... on MutationCreateNoteSuccess {\n        data {\n          id\n        }\n      }\n      ... on ValidationError {\n        fieldErrors {\n          path\n          message\n        }\n      }\n    }\n  }\n": typeof types.CreateNoteDocument,
+    "\n  mutation AddComment($input: AddCommentInput!) {\n    addComment(input: $input) {\n      __typename\n      ... on MutationAddCommentSuccess {\n        data {\n          id\n        }\n      }\n      ... on ValidationError {\n        fieldErrors {\n          path\n          message\n        }\n      }\n      ... on NotFoundError {\n        id\n        message\n      }\n    }\n  }\n": typeof types.AddCommentDocument,
 };
 const documents: Documents = {
     "\n  query AppStatus {\n    readOnly\n  }\n": types.AppStatusDocument,
     "\n  query Notes($first: Int, $after: String) {\n    notes(first: $first, after: $after) {\n      edges {\n        node {\n          id\n          title\n          body\n          createdAt\n          commentCount\n        }\n      }\n      pageInfo {\n        hasNextPage\n        endCursor\n      }\n    }\n  }\n": types.NotesDocument,
     "\n  query Note($id: ID!) {\n    note(id: $id) {\n      id\n      title\n      body\n      createdAt\n      commentCount\n      comments {\n        id\n        authorName\n        body\n        createdAt\n      }\n    }\n  }\n": types.NoteDocument,
+    "\n  mutation CreateNote($input: CreateNoteInput!) {\n    createNote(input: $input) {\n      __typename\n      ... on MutationCreateNoteSuccess {\n        data {\n          id\n        }\n      }\n      ... on ValidationError {\n        fieldErrors {\n          path\n          message\n        }\n      }\n    }\n  }\n": types.CreateNoteDocument,
+    "\n  mutation AddComment($input: AddCommentInput!) {\n    addComment(input: $input) {\n      __typename\n      ... on MutationAddCommentSuccess {\n        data {\n          id\n        }\n      }\n      ... on ValidationError {\n        fieldErrors {\n          path\n          message\n        }\n      }\n      ... on NotFoundError {\n        id\n        message\n      }\n    }\n  }\n": types.AddCommentDocument,
 };
 
 /**
@@ -37,6 +41,14 @@ export function graphql(source: "\n  query Notes($first: Int, $after: String) {\
  * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
  */
 export function graphql(source: "\n  query Note($id: ID!) {\n    note(id: $id) {\n      id\n      title\n      body\n      createdAt\n      commentCount\n      comments {\n        id\n        authorName\n        body\n        createdAt\n      }\n    }\n  }\n"): typeof import('./graphql').NoteDocument;
+/**
+ * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
+ */
+export function graphql(source: "\n  mutation CreateNote($input: CreateNoteInput!) {\n    createNote(input: $input) {\n      __typename\n      ... on MutationCreateNoteSuccess {\n        data {\n          id\n        }\n      }\n      ... on ValidationError {\n        fieldErrors {\n          path\n          message\n        }\n      }\n    }\n  }\n"): typeof import('./graphql').CreateNoteDocument;
+/**
+ * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
+ */
+export function graphql(source: "\n  mutation AddComment($input: AddCommentInput!) {\n    addComment(input: $input) {\n      __typename\n      ... on MutationAddCommentSuccess {\n        data {\n          id\n        }\n      }\n      ... on ValidationError {\n        fieldErrors {\n          path\n          message\n        }\n      }\n      ... on NotFoundError {\n        id\n        message\n      }\n    }\n  }\n"): typeof import('./graphql').AddCommentDocument;
 
 
 export function graphql(source: string) {
