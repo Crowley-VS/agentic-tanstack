@@ -67,7 +67,7 @@ Browser tests (`*.browser.test.{ts,tsx}`) need Chromium once per machine and aft
 | Change the schema                       | edit `apps/api/src/graphql/*`, then `pnpm nx run api:print-schema` (or `pnpm regen`) |
 | Production bundle (what the image runs) | `pnpm nx run api:build`, then run it as `docs/api.md` shows                          |
 
-**Web** (`apps/web`, health at `/api/health`; a production build needs `INTERNAL_API_SECRET`):
+**Web** (`apps/web`, health at `/api/health`; a production server needs `INTERNAL_API_SECRET`, `API_HOST`, `API_PORT`):
 
 | Task                                  | Command                                                      |
 | ------------------------------------- | ------------------------------------------------------------ |
