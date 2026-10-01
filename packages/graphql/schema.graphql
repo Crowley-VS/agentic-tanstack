@@ -83,6 +83,11 @@ type Query {
 
   """Every note, newest first"""
   notes(after: String, before: String, first: Int, last: Int): QueryNotesConnection!
+
+  """
+  True while the API rejects every mutation (READ_ONLY=true): clients can disable writes
+  """
+  readOnly: Boolean!
 }
 
 type QueryNotesConnection {

@@ -1,10 +1,10 @@
 // The Yoga app's security defaults, through `yoga.fetch` (no server, no database: these queries
 // never touch it, and the pool connects lazily).
 import { createDb } from '@acme/db';
+import { CLIENT_IP_HEADER, REQUEST_ID_HEADER, SECRET_HEADER } from '@acme/validators/internal-api';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createApp } from './app';
 import { loadEnv } from './env';
-import { SECRET_HEADER } from './plugins/internal-secret';
 
 const { db, close } = createDb({ url: 'postgres://nobody@127.0.0.1:1/none' });
 afterAll(() => close());
@@ -125,5 +125,59 @@ describe('api app', () => {
     expect(messages((await query(dev, `{ apiVersion ${directives} }`)).body)).toMatch(
       /directives/i,
     );
+  });
+});
+
+/** An app whose request log goes to `lines`. */
+function logged(env: Record<string, string>) {
+  const lines: string[] = [];
+  const app = createApp({
+    db,
+    env: loadEnv({ DATABASE_URL: 'postgres://127.0.0.1/app', ...env }),
+    log: (line) => lines.push(line),
+  });
+  return { app, lines };
+}
+
+describe('request log', () => {
+  const forwarded = { [CLIENT_IP_HEADER]: '203.0.113.7', [REQUEST_ID_HEADER]: 'req-1' };
+
+  it("logs one line per request, with the web server's client IP and request id", async () => {
+    const { app, lines } = logged({ NODE_ENV: 'production', INTERNAL_API_SECRET: SECRET });
+    await query(app, '{ apiVersion }', { ...trusted, ...forwarded });
+    expect(lines).toEqual([
+      expect.stringMatching(/^\[api\] 200 POST \/graphql \d+ms ip=203\.0\.113\.7 id=req-1$/),
+    ]);
+  });
+
+  it('ignores the forwarded values without the secret, and still logs the 401', async () => {
+    const { app, lines } = logged({ NODE_ENV: 'production', INTERNAL_API_SECRET: SECRET });
+    await query(app, '{ apiVersion }', forwarded);
+    await query(app, '{ apiVersion }', { ...forwarded, [SECRET_HEADER]: 'y'.repeat(40) });
+    expect(lines).toEqual([
+      expect.stringMatching(/^\[api\] 401 POST \/graphql \d+ms ip=- id=-$/),
+      expect.stringMatching(/^\[api\] 401 POST \/graphql \d+ms ip=- id=-$/),
+    ]);
+  });
+
+  it('trusts them in development only when the configured secret matches', async () => {
+    const withSecret = logged({ INTERNAL_API_SECRET: SECRET });
+    await query(withSecret.app, '{ apiVersion }', { ...trusted, ...forwarded });
+    await query(withSecret.app, '{ apiVersion }', forwarded);
+    expect(withSecret.lines).toEqual([
+      expect.stringContaining('200 POST /graphql'),
+      expect.stringContaining('200 POST /graphql'),
+    ]);
+    expect(withSecret.lines[0]).toMatch(/ ip=203\.0\.113\.7 id=req-1$/);
+    expect(withSecret.lines[1]).toMatch(/ ip=- id=-$/);
+    const without = logged({});
+    await query(without.app, '{ apiVersion }', { ...trusted, ...forwarded });
+    expect(without.lines).toEqual([expect.stringMatching(/ ip=- id=-$/)]);
+  });
+
+  it('leaves the health check out', async () => {
+    const { app, lines } = logged({});
+    expect((await app.fetch('http://api/health')).status).toBe(200);
+    expect(lines).toEqual([]);
   });
 });

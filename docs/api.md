@@ -14,6 +14,9 @@ node ../../tools/dev-ports.mjs --exec -- node dist/migrate.mjs
 NODE_ENV=production INTERNAL_API_SECRET=<32+ random characters> node ../../tools/dev-ports.mjs --exec -- node dist/main.mjs
 ```
 
+Production mode listens on `::` (every interface); add `LISTEN_HOST=127.0.0.1` to keep it on this
+machine.
+
 ## The schema has no side effects at import
 
 Nothing under `apps/api/src/graphql` reads the environment or opens a connection (the database
@@ -29,9 +32,10 @@ graphql 16 has no `exports` map, so Vite and Node would load different builds an
 ## Private and locked down by default
 
 CSRF prevention, graphql-armor limits, and introspection, GraphiQL and field suggestions in
-development only. In production it listens for the web server alone and requires
+development only. In production it listens on `::` for the web server alone and requires
 `INTERNAL_API_SECRET` on every request but `/health`; in development it listens on 127.0.0.1 and
-ignores it (even when `.env` sets it). Tests pin each default: change one only on purpose.
+ignores it (even when `.env` sets it). `LISTEN_HOST` overrides the address in either mode. Tests
+pin each default: change one only on purpose.
 
 The web server (`apps/web`) is the only client: its BFF (`POST /api/graphql`) and its server code
 send the secret, so the browser never sees it.
@@ -41,4 +45,13 @@ send the secret, so the browser never sees it.
 A mutation returns them as union members (`ValidationError` with `fieldErrors`, `NotFoundError`)
 that clients select by `__typename`; invalid query arguments are GraphQL errors with code
 `BAD_USER_INPUT`. Anything else is an unexpected error, masked. `READ_ONLY=true` makes the API
-reject every mutation.
+reject every mutation with code `READ_ONLY`; `Query.readOnly` tells clients beforehand. The codes
+clients act on are shared constants (`@acme/validators/error-codes`).
+
+## One log line per request
+
+`[api] <status> <method> <path> <ms>ms ip=<client> id=<request id>` (`plugins/request-log.ts`;
+health checks are not logged). A request may carry the browser's IP (`x-client-ip`) and a request
+id (`x-request-id`) from the web server; the API believes them only when its secret matches (in
+development too, when a secret is set), else it logs the socket's address and `id=-`. The header
+names and the secret's rules are shared with the web server (`@acme/validators/internal-api`).

@@ -2,6 +2,8 @@
 // Rows other tests in this file create are expected: assertions look only at their own.
 import { notes } from '@acme/db';
 import { testDb } from '@acme/db/testing';
+import { READ_ONLY } from '@acme/validators/error-codes';
+import { NOTE_LIMITS } from '@acme/validators/notes';
 import { count, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../app';
@@ -154,12 +156,18 @@ describe('mutations', () => {
     const [before] = await db.select({ n: count() }).from(notes);
     const created = await gql(CREATE_NOTE, { input: { title: 'Nope', body: 'x' } }, readOnly);
     expect(created.data).toBeUndefined();
-    expect(created.errors?.[0]?.extensions?.code).toBe('READ_ONLY');
+    expect(created.errors?.[0]?.extensions?.code).toBe(READ_ONLY);
     const [after] = await db.select({ n: count() }).from(notes);
     expect(after?.n).toBe(before?.n);
     expect((await gql('{ notes(first: 1) { edges { cursor } } }', {}, readOnly)).errors).toBe(
       undefined,
     );
+  });
+
+  it('tells clients whether it accepts writes (Query.readOnly), so forms can be disabled', async () => {
+    expect(await gql('{ readOnly }')).toEqual({ data: { readOnly: false } });
+    const readOnly = createApp({ db, env: env({ READ_ONLY: 'true' }) });
+    expect(await gql('{ readOnly }', {}, readOnly)).toEqual({ data: { readOnly: true } });
   });
 });
 
@@ -186,13 +194,15 @@ describe('queries', () => {
     expect(seen).toEqual(expected.map((n) => n.id));
   });
 
-  it('caps a page at the shared limit', async () => {
+  it('caps a page at the shared limit, and serves the shared page size by default', async () => {
     await db
       .insert(notes)
       .values(Array.from({ length: 55 }, (_, n) => ({ title: `Bulk ${n}`, body: 'x' })));
     const { data, errors } = await gql('{ notes(first: 51) { edges { cursor } } }');
     expect(errors).toBeUndefined();
-    expect(data?.notes.edges).toHaveLength(50);
+    expect(data?.notes.edges).toHaveLength(NOTE_LIMITS.pageSizeMax);
+    const unsized = await gql('{ notes { edges { cursor } } }');
+    expect(unsized.data?.notes.edges).toHaveLength(NOTE_LIMITS.pageSize);
   });
 
   it('reads one note with its newest comments and their total', async () => {

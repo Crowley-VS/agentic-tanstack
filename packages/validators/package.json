@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./error-codes": {
+      "@acme/source": "./src/error-codes.ts",
+      "types": "./src/error-codes.ts",
+      "default": "./src/error-codes.ts"
+    },
+    "./internal-api": {
+      "@acme/source": "./src/internal-api.ts",
+      "types": "./src/internal-api.ts",
+      "default": "./src/internal-api.ts"
+    },
     "./notes": {
       "@acme/source": "./src/notes.ts",
       "types": "./src/notes.ts",

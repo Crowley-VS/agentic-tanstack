@@ -4,20 +4,31 @@
 // runs; nothing else is exempt, since Yoga runs any URL ending in /graphql (`/health?/graphql`
 // too) as GraphQL.
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { SECRET_HEADER } from '@acme/validators/internal-api';
 import type { Plugin } from 'graphql-yoga';
-
-export const SECRET_HEADER = 'x-internal-secret';
 
 /** Hashed first, so timingSafeEqual compares equal lengths and the secret's length never leaks. */
 const digest = (value: string) => createHash('sha256').update(value).digest();
 
+/**
+ * Whether a request carries `secret`, i.e. comes from the web server. Always false without a
+ * secret: then nothing the request claims about itself (x-client-ip, x-request-id) is trusted.
+ */
+export function fromWebServer(secret: string | undefined): (request: Request) => boolean {
+  if (!secret) return () => false;
+  const expected = digest(secret);
+  return (request) => {
+    const given = request.headers.get(SECRET_HEADER);
+    return given !== null && timingSafeEqual(digest(given), expected);
+  };
+}
+
 export function useInternalSecret(secret: string | undefined): Plugin {
   if (!secret) return {};
-  const expected = digest(secret);
+  const trusted = fromWebServer(secret);
   return {
     onRequest(payload) {
-      const given = payload.request.headers.get(SECRET_HEADER);
-      if (given !== null && timingSafeEqual(digest(given), expected)) return;
+      if (trusted(payload.request)) return;
       payload.endResponse(
         new payload.fetchAPI.Response(JSON.stringify({ errors: [{ message: 'Unauthorized' }] }), {
           status: 401,

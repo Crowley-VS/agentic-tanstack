@@ -14,7 +14,8 @@ import ValidationPlugin from '@pothos/plugin-validation';
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { ValidationError } from './errors';
 
-export type Context = { db: Db };
+/** Per request (app.ts). `readOnly`: READ_ONLY=true, the API rejects every mutation. */
+export type Context = { db: Db; readOnly: boolean };
 
 export const builder = new SchemaBuilder<{
   Context: Context;
@@ -56,7 +57,7 @@ export const builder = new SchemaBuilder<{
     client: (ctx) => ctx.db,
     getTableConfig,
     relations,
-    defaultConnectionSize: 20,
+    defaultConnectionSize: NOTE_LIMITS.pageSize,
     maxConnectionSize: NOTE_LIMITS.pageSizeMax,
   },
 });
