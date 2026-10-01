@@ -1,23 +1,7 @@
-// The harness itself: the production web server renders pages with data from the API (SSR, then
-// hydration), its health check answers, and the BFF carries a write and a read to the API, which
-// runs in production mode (it refuses a caller without the internal secret).
+// The harness itself: the production web server's health check answers, and the BFF carries a
+// write and a read to the API, which runs in production mode (it refuses a caller without the
+// internal secret). The pages: board.spec.ts.
 import { expect, gql, test, uniqueTitle } from './fixtures';
-
-test('the home page renders the API version on the server, and Refresh refetches it', async ({
-  page,
-}) => {
-  const response = await page.goto('/');
-  expect(response?.status()).toBe(200);
-  // in the server's HTML: the loader awaited the query during SSR
-  expect(await response?.text()).toMatch(/API version/);
-  await expect(page.getByRole('heading', { name: 'acme-app' })).toBeVisible();
-  await expect(page.getByText(/^API version \S+/)).toBeVisible();
-  // a click that lands before hydration does nothing: retry until the toast shows
-  await expect(async () => {
-    await page.getByRole('button', { name: 'Refresh' }).click();
-    await expect(page.getByText('API version refreshed')).toBeVisible({ timeout: 1000 });
-  }).toPass();
-});
 
 test('the web health check answers ok', async ({ request }) => {
   const response = await request.get('/api/health');
