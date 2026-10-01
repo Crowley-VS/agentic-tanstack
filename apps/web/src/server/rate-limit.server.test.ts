@@ -3,26 +3,50 @@ import { describe, expect, it } from 'vitest';
 import {
   clientKey,
   createWriteLimiter,
-  isWrite,
   rateLimited,
   writeLimiter,
+  writesIn,
 } from './rate-limit.server';
 
 const body = (params: unknown) => JSON.stringify(params);
+const writes = (query: string) => writesIn(body({ query }));
 
-describe('isWrite', () => {
+describe('writesIn', () => {
   it('counts mutations, and lets queries through', () => {
-    expect(isWrite(body({ query: 'mutation { createNote { __typename } }' }))).toBe(true);
-    expect(isWrite(body({ query: 'query Notes { notes { totalCount } }' }))).toBe(false);
-    expect(isWrite(body({ query: '{ apiVersion }', variables: null, operationName: null }))).toBe(
-      false,
+    expect(writes('mutation { createNote { __typename } }')).toBe(1);
+    expect(writes('query Notes { notes { totalCount } }')).toBe(0);
+    expect(writesIn(body({ query: '{ apiVersion }', variables: null, operationName: null }))).toBe(
+      0,
     );
   });
 
   it('honours operationName in a document with several operations', () => {
     const query = 'query Read { apiVersion } mutation Write { createNote { __typename } }';
-    expect(isWrite(body({ query, operationName: 'Read' }))).toBe(false);
-    expect(isWrite(body({ query, operationName: 'Write' }))).toBe(true);
+    expect(writesIn(body({ query, operationName: 'Read' }))).toBe(0);
+    expect(writesIn(body({ query, operationName: 'Write' }))).toBe(1);
+  });
+
+  it('counts every root field of a mutation: aliases make one request write many times', () => {
+    expect(writes('mutation { a: createNote { id } b: createNote { id } addComment { id } }')).toBe(
+      3,
+    );
+    // through fragment spreads and inline fragments
+    expect(
+      writes(
+        'mutation { ...F ... on Mutation { c: createNote { id } } } ' +
+          'fragment F on Mutation { a: createNote { id } b: createNote { id } }',
+      ),
+    ).toBe(3);
+  });
+
+  it('counts fields the API merges (one response key) once, and ends on a fragment cycle', () => {
+    expect(writes('mutation { createNote { id } createNote { __typename } }')).toBe(1);
+    expect(writes('mutation { ...F ...F } fragment F on Mutation { a: createNote { id } }')).toBe(
+      1,
+    );
+    expect(writes('mutation { ...F } fragment F on Mutation { a: createNote { id } ...F }')).toBe(
+      1,
+    );
   });
 
   it.each([
@@ -39,7 +63,7 @@ describe('isWrite', () => {
     ['an operation name that is not a string', body({ query: '{ a }', operationName: 1 })],
     ['a subscription', body({ query: 'subscription { a }' })],
   ])('counts a body it cannot be sure about as a write: %s', (_, text) => {
-    expect(isWrite(text)).toBe(true);
+    expect(writesIn(text)).toBe(1);
   });
 });
 
@@ -78,6 +102,15 @@ describe('createWriteLimiter', () => {
     expect(limiter.hit('a')).toEqual({ ok: false, retryAfterSeconds: 1 });
     advance(500); // the window opened by the first write closes
     expect(limiter.hit('a')).toEqual({ ok: true });
+  });
+
+  it('counts a request with several writes as that many, and refuses it whole', () => {
+    const limiter = createWriteLimiter({ limit: 3, windowMs: 60_000 }, { now: clock().now });
+    expect(limiter.hit('a', 2)).toEqual({ ok: true });
+    expect(limiter.hit('a', 2)).toMatchObject({ ok: false }); // 4 > 3, and nothing counted
+    expect(limiter.hit('a')).toEqual({ ok: true });
+    expect(limiter.hit('a')).toMatchObject({ ok: false });
+    expect(limiter.hit('b', 4)).toMatchObject({ ok: false }); // more than the limit: never
   });
 
   it('forgets closed windows, and never holds more than maxClients', () => {

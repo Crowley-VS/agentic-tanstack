@@ -222,6 +222,21 @@ describe('the write rate limit', () => {
     );
   });
 
+  it('counts each root field of a mutation: two aliases use up the window', async () => {
+    /** One mutation request that creates `n` notes through aliases. */
+    const aliased = (n: number) => {
+      const fields = Array.from({ length: n }, (_, i) => `a${i}: createNote { __typename }`);
+      return post(JSON.stringify({ query: `mutation { ${fields.join(' ')} }` }));
+    };
+    const socketIp = freshIp();
+    expect((await proxyGraphql(aliased(2), limited(), { socketIp })).status).toBe(200);
+    received = undefined;
+    expect((await proxyGraphql(post(MUTATION), limited(), { socketIp })).status).toBe(429);
+    // more writes than the limit: refused even in a fresh window
+    expect((await proxyGraphql(aliased(3), limited(), { socketIp: freshIp() })).status).toBe(429);
+    expect(received).toBeUndefined(); // the API never saw either
+  });
+
   it('never limits queries', async () => {
     const socketIp = freshIp();
     for (let i = 0; i < 5; i++)

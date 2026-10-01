@@ -73,8 +73,10 @@ without one, Start answers it with the page renderer's 200 HTML. In production t
   client IP (IPv6: per /64) in a window opened by the client's first write: `<writes>/<n>[smh]`,
   default `10/60s`, on everywhere including `pnpm dev` (set `WRITE_RATE_LIMIT=off` for scripted
   writes); `off` or `E2E=1` (the e2e servers) turns it off. Only a body that surely runs a query
-  is free: a mutation, or anything the BFF cannot classify (bad JSON, a batch, a persisted query,
-  a syntax error, an unclear `operationName`), counts; a body refused with 413 or 415 does not.
+  is free: a mutation counts one write per root field (aliases included, through fragments, so
+  `mutation { a: createNote(…) b: createNote(…) }` is 2), and anything the BFF cannot classify
+  (bad JSON, a batch, a persisted query, a syntax error, an unclear `operationName`) counts 1; a
+  body refused with 413 or 415 does not. A request that would go past the limit is refused whole.
   Over the limit: 429 with `Retry-After` and the error `Too many writes: try again in N s.` with
   `extensions.code: RATE_LIMITED` (from `@acme/validators/error-codes`); `execute()` rejects with
   a `GraphQLRequestError` whose `code` and `retryAfter` say so. Counts live in memory, per

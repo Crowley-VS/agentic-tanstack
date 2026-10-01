@@ -5,7 +5,7 @@ import { REQUEST_ID_HEADER } from '@acme/validators/internal-api';
 import type { ServerEnv } from '../env.server';
 import { clientIp } from './client-ip.server';
 import { callInternalApi, requestIdOf, transportFailure } from './internal-api.server';
-import { clientKey, isWrite, rateLimited, writeLimiter } from './rate-limit.server';
+import { clientKey, rateLimited, writeLimiter, writesIn } from './rate-limit.server';
 import { errorResponse } from './responses.server';
 
 /** GraphQL documents plus variables for this app stay far below this. */
@@ -30,9 +30,10 @@ export async function proxyGraphql(
   if (body === null)
     return errorResponse(413, `Request body is larger than ${MAX_BODY_BYTES} bytes`);
   const ip = clientIp(request.headers, socketIp, env.REAL_IP_HEADER);
-  // only a body that got this far uses up a write; a refused write never reaches the API
-  if (env.writeRateLimit && isWrite(body)) {
-    const verdict = writeLimiter(env.writeRateLimit).hit(clientKey(ip));
+  // only a body that got this far uses up writes; a refused write never reaches the API
+  const writes = env.writeRateLimit ? writesIn(body) : 0;
+  if (env.writeRateLimit && writes > 0) {
+    const verdict = writeLimiter(env.writeRateLimit).hit(clientKey(ip), writes);
     if (!verdict.ok) return rateLimited(verdict.retryAfterSeconds);
   }
   const requestId = requestIdOf(request.headers);
