@@ -4,6 +4,18 @@ type Exact<T extends { [key: string]: unknown }> = { [K in keyof T]: T[K] };
 /** Internal type. DO NOT USE DIRECTLY. */
 export type Incremental<T> = T | { [P in keyof T]?: P extends ' $fragmentName' | '__typename' ? T[P] : never };
 import type { DocumentTypeDecoration } from '@graphql-typed-document-node/core';
+export type AddCommentInput = {
+  /** Shown as "Anonymous" when left out or blank */
+  authorName?: string | null | undefined;
+  body: string;
+  noteId: string | number;
+};
+
+export type CreateNoteInput = {
+  body: string;
+  title: string;
+};
+
 export type AppStatusQueryVariables = Exact<{ [key: string]: never; }>;
 
 
@@ -23,6 +35,27 @@ export type NoteQueryVariables = Exact<{
 
 
 export type NoteQuery = { note: { id: string, title: string, body: string, createdAt: string, commentCount: number, comments: Array<{ id: string, authorName: string | null, body: string, createdAt: string }> } | null };
+
+export type CreateNoteMutationVariables = Exact<{
+  input: CreateNoteInput;
+}>;
+
+
+export type CreateNoteMutation = { createNote:
+    | { __typename: 'MutationCreateNoteSuccess', data: { id: string } }
+    | { __typename: 'ValidationError', fieldErrors: Array<{ path: Array<string>, message: string }> }
+   };
+
+export type AddCommentMutationVariables = Exact<{
+  input: AddCommentInput;
+}>;
+
+
+export type AddCommentMutation = { addComment:
+    | { __typename: 'MutationAddCommentSuccess', data: { id: string } }
+    | { __typename: 'NotFoundError', id: string, message: string }
+    | { __typename: 'ValidationError', fieldErrors: Array<{ path: Array<string>, message: string }> }
+   };
 
 export class TypedDocumentString<TResult, TVariables>
   extends String
@@ -84,3 +117,43 @@ export const NoteDocument = new TypedDocumentString(`
   }
 }
     `) as unknown as TypedDocumentString<NoteQuery, NoteQueryVariables>;
+export const CreateNoteDocument = new TypedDocumentString(`
+    mutation CreateNote($input: CreateNoteInput!) {
+  createNote(input: $input) {
+    __typename
+    ... on MutationCreateNoteSuccess {
+      data {
+        id
+      }
+    }
+    ... on ValidationError {
+      fieldErrors {
+        path
+        message
+      }
+    }
+  }
+}
+    `) as unknown as TypedDocumentString<CreateNoteMutation, CreateNoteMutationVariables>;
+export const AddCommentDocument = new TypedDocumentString(`
+    mutation AddComment($input: AddCommentInput!) {
+  addComment(input: $input) {
+    __typename
+    ... on MutationAddCommentSuccess {
+      data {
+        id
+      }
+    }
+    ... on ValidationError {
+      fieldErrors {
+        path
+        message
+      }
+    }
+    ... on NotFoundError {
+      id
+      message
+    }
+  }
+}
+    `) as unknown as TypedDocumentString<AddCommentMutation, AddCommentMutationVariables>;

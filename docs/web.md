@@ -1,7 +1,7 @@
 # The web app (`apps/web`)
 
-Details behind the web lines of `AGENTS.md`: how pages get their data, how the BFF and the error
-page fail, and how UI components are added.
+Details behind the web lines of `AGENTS.md`: how pages get their data, how forms write it, how the
+BFF and the error page fail, how components are tested, and how UI components are added.
 
 ## Operations are typed by codegen
 
@@ -81,17 +81,64 @@ error page renders without the layout.
 
 Hydration-safe rendering:
 
-- Buttons that need JavaScript ("Load more") render disabled until `useHydrated()`: a click
-  before hydration would be lost. Playwright waits for them to be enabled, so e2e specs need no
+- Buttons that need JavaScript ("Load more", a form's submit) render disabled until
+  `useHydrated()`: a click before hydration would be lost (a submit would be a native GET, with
+  the form's fields in the URL). Playwright waits for them to be enabled, so e2e specs need no
   hydration retries. "Load more" also stays disabled while any fetch runs or is paused (offline).
 - User text renders as React text only (never `dangerouslySetInnerHTML`); long words wrap
   (`wrap-anywhere`) and bodies keep their line breaks (`whitespace-pre-wrap`).
 - Timestamps are UTC text (`formatTimestamp()` in `src/lib/notes/format.ts`): the server and
   every browser render the same string, whatever their time zone or locale.
 
-Browser tests (`*.browser.test.tsx`) that render a page mock `execute()`'s module
-(`vi.mock('./lib/graphql/execute', …)`): without Start's compiler it would take its server branch.
-`src/notes.browser.test.tsx` shows the pattern, with a small in-memory router for links.
+## Writes: forms
+
+The board's "New note" form (`src/components/note-form.tsx`) is the reference; copy it for a new
+write (`comment-form.tsx` is the same with a `NotFoundError` case). Its mutation lives with the
+board's operations (`src/lib/notes/queries.ts`); the helpers are in `src/lib/forms.ts`:
+
+1. **Validate in the browser** with the API's own Zod schema (`NoteInput` from
+   `@acme/validators/notes`): the same rules and messages, and nothing is sent while a field is
+   invalid. `fieldErrors()` maps the issues to the fields (the first message per field wins).
+   Inputs are uncontrolled (`name` attributes, `maxLength` from `NOTE_LIMITS`), read with
+   `FormData` before the mutation starts: the disabled fieldset leaves its fields out of it.
+2. **Send** with `execute()` inside `useMutation` (the pending state disables the fieldset and
+   marks the button `aria-busy`).
+3. **Handle the result** with an exhaustive `switch` on `__typename` that ends in
+   `unreachable(result)`: a union member the API adds later fails `web:typecheck` there. A
+   `ValidationError` maps to the fields with `fieldErrors(…, { argument: 'input' })`; the input
+   stays, so it can be fixed.
+4. **On success**, the options-level `onSuccess` returns the `invalidateQueries` promise for every
+   query that shows the new data (by `noteKeys`), so the form stays pending until they have
+   refetched (a per-call `onSuccess` is not awaited); then the form resets and a toast says so.
+
+A write that throws shows one message under the form (`useWriteError()`): read-only (`READ_ONLY`
+from the API; it also sets the cached `appStatus` to read-only, so the banner shows and every form
+disables), `Too many writes: try again in N s.` (the BFF's 429 `RATE_LIMITED`, N from
+`Retry-After`), or a generic one (network, masked errors). Both codes come from
+`@acme/validators/error-codes`. Forms render disabled while `useReadOnly()` is true, and their
+submit button until hydration.
+
+The forms use plain React state: two short forms, with every step visible to copy.
+`@tanstack/react-form` is the upgrade for bigger forms; it is not added while its 2.0 is in alpha
+(1.33.5 is current).
+
+## Browser tests
+
+Component tests run in real Chromium (`*.browser.test.tsx`, `pnpm nx run web:test-browser`):
+
+- Mock `execute()`'s module with a plain `vi.mock` factory that returns `{ execute: vi.fn() }`:
+  without Start's compiler it would take its server branch, and a factory that calls
+  `importOriginal` loads its server imports (`node:async_hooks`). `GraphQLRequestError` stays
+  real (`src/lib/graphql/errors.ts` has no framework imports), so tests throw the real thing.
+- A form reads the app status: seed `appStatusOptions()` in the `QueryClient` before rendering
+  (`queryClient.setQueryData(appStatusOptions().queryKey, { readOnly: false })`).
+- A new `Toaster` shows the toasts still active (sonner keeps them in module state): call
+  `toast.dismiss()` after each test.
+- The app's stylesheet is loaded (`vitest.browser.config.ts`), so `toBeVisible()` and disabled
+  styles are real. Tailwind scans `src` without the tests, so a class used only in a test is not
+  generated.
+- `src/components/note-form.browser.test.tsx` shows a form; `src/notes.browser.test.tsx` a page,
+  with a small in-memory router for links.
 
 ## The BFF: `POST /api/graphql`
 

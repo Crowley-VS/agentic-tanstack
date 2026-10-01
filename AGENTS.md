@@ -146,7 +146,7 @@ and `git diff packages/ui` (`docs/web.md`).
 - **Server-only code lives in `*.server.ts`** (env, API client, BFF): a client import of one fails the build, and so
   does server code in the client bundle. The browser reaches the API only through the same-origin `/api/graphql`.
 - **Web data** (`docs/web.md`): only via `execute()` with a `graphql()` document; loaders `await ensure…()` and
-  return nothing; components `useSuspense…` the same query options.
+  return nothing; components `useSuspense…` the same query options. Forms copy `components/note-form.tsx`.
 - **Tests that touch the database** use `testDb()` from `@acme/db/testing` and assume nothing about other tests'
   rows (tests in one file share its database; files never share).
 
