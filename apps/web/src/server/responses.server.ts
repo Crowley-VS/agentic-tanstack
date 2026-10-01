@@ -1,0 +1,15 @@
+// The web server's own error answers on /api/*, in GraphQL's response shape ({ errors: [...] }), so
+// execute() and the UI read a BFF refusal (405, 413, 415, 502, 504) like an error from the API.
+
+export const errorResponse = (
+  status: number,
+  message: string,
+  { headers }: { headers?: Record<string, string> } = {},
+) => Response.json({ errors: [{ message }] }, { status, headers });
+
+/**
+ * 405 for a method a server route does not serve. A route needs an `ANY` handler that answers
+ * this: without one, Start sends the method to the page renderer, which answers 200 HTML.
+ */
+export const methodNotAllowed = (allow: string) =>
+  errorResponse(405, `Method not allowed: use ${allow}`, { headers: { allow } });

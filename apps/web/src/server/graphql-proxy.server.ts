@@ -1,33 +1,60 @@
 // The BFF proxy behind POST /api/graphql: the browser's only way to the API. Same-origin POST +
-// JSON only, at most 64 KB; the server adds the shared secret, so it never reaches the browser.
+// JSON only, at most 64 KB; the server adds the shared secret (so it never reaches the browser),
+// the client's IP and a request id.
+import { REQUEST_ID_HEADER } from '@acme/validators/internal-api';
 import type { ServerEnv } from '../env.server';
-import { callInternalApi } from './internal-api.server';
+import { clientIp } from './client-ip.server';
+import { callInternalApi, requestIdOf, transportFailure } from './internal-api.server';
+import { errorResponse } from './responses.server';
 
 /** GraphQL documents plus variables for this app stay far below this. */
 export const MAX_BODY_BYTES = 64 * 1024;
 
-const error = (status: number, message: string, headers?: Record<string, string>) =>
-  Response.json({ errors: [{ message }] }, { status, headers });
+type ProxyOptions = {
+  /** The socket's address (Start's getRequestIP()): the client's IP when no proxy names it. */
+  socketIp?: string;
+  /** How long to wait for the API (tests shorten it). */
+  timeoutMs?: number;
+};
 
-export const methodNotAllowed = () => error(405, 'Method not allowed: use POST', { allow: 'POST' });
-
-export async function proxyGraphql(request: Request, env: ServerEnv): Promise<Response> {
+export async function proxyGraphql(
+  request: Request,
+  env: ServerEnv,
+  { socketIp, timeoutMs }: ProxyOptions = {},
+): Promise<Response> {
   const type = request.headers.get('content-type') ?? '';
   if (!/^application\/json\s*(;|$)/i.test(type))
-    return error(415, 'Content-Type must be application/json');
+    return errorResponse(415, 'Content-Type must be application/json');
   const body = await readBodyText(request, MAX_BODY_BYTES);
-  if (body === null) return error(413, `Request body is larger than ${MAX_BODY_BYTES} bytes`);
+  if (body === null)
+    return errorResponse(413, `Request body is larger than ${MAX_BODY_BYTES} bytes`);
+  const requestId = requestIdOf(request.headers);
   let upstream: Response;
   try {
-    // no browser headers (cookies, auth) are forwarded; the API sees only the body and the secret
-    upstream = await callInternalApi(env, body, { signal: request.signal });
+    // no browser headers (cookies, auth) are forwarded: the API sees the body, the secret, the
+    // client's IP and the request id
+    upstream = await callInternalApi(env, body, {
+      signal: request.signal,
+      clientIp: clientIp(request.headers, socketIp, env.REAL_IP_HEADER),
+      requestId,
+      timeoutMs,
+    });
   } catch (err) {
-    console.error('[web] /api/graphql: API unreachable', err);
-    return error(502, 'API unavailable');
+    // The browser went away: nobody reads this answer and the API is fine, so no error log
+    // (Start still logs the request's AbortError once, after this returns).
+    if (request.signal.aborted) return new Response(null, { status: 499 });
+    const { status, message } = transportFailure(err);
+    console.error(`[web] /api/graphql: ${message} (request ${requestId})`, err);
+    return errorResponse(status, message);
   }
+  // of the API's headers only the content type is relayed: no API cookies, CORS or server
+  // headers reach the browser; the request id lets a visitor's report be found in the logs
   return new Response(upstream.body, {
     status: upstream.status,
-    headers: { 'content-type': upstream.headers.get('content-type') ?? 'application/json' },
+    headers: {
+      'content-type': upstream.headers.get('content-type') ?? 'application/json',
+      [REQUEST_ID_HEADER]: requestId,
+    },
   });
 }
 

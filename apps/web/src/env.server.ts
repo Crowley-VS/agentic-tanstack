@@ -1,33 +1,59 @@
-// The web server's environment, mirroring apps/api/src/env.ts. Server-only: Start's import
-// protection fails a client build that imports a `*.server.*` file. Parsed on each call inside
-// request handlers, never at import time, so neither the build nor the client bundle depends on
-// (or embeds) it.
+// The web server's environment, mirroring apps/api/src/env.ts; the secret's rules come from
+// @acme/validators/internal-api, which the API uses too. Server-only: Start's import protection
+// fails a client build that imports a `*.server.*` file. Parsed on each call inside request
+// handlers, never at import time, so neither the build nor the client bundle depends on (or
+// embeds) it.
+import { isIP } from 'node:net';
+import { InternalApiSecret, SECRET_REQUIRED_IN_PRODUCTION } from '@acme/validators/internal-api';
 import { z } from 'zod';
 
 /**
  * A production build (`vite build` inlines `import.meta.env.PROD`) or a production runtime: either
- * one requires the secret, so a deploy that forgets NODE_ENV cannot run without it.
+ * one requires the secret and the API's address, so a deploy that forgets NODE_ENV cannot run
+ * without them.
  */
 const isProduction = (env: { NODE_ENV: string }) =>
   import.meta.env.PROD || env.NODE_ENV === 'production';
+
+/** A host name (`api.railway.internal`, `api`) or a bare IP address: no scheme, port or brackets. */
+const isHost = (host: string) => isIP(host) !== 0 || /^[\w-]+(\.[\w-]+)*$/.test(host);
 
 const ServerEnv = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     /** The private API: Railway's internal host in production; this machine in development. */
-    API_HOST: z.string().min(1).default('localhost'),
-    /** Locally this checkout's API_PORT (tools/dev-ports.mjs); in production the API's port. */
-    API_PORT: z.coerce.number().int().positive().default(4000),
-    /** Sent on every call to the API, which enforces it in production. */
-    INTERNAL_API_SECRET: z
+    API_HOST: z
       .string()
-      .min(32, 'INTERNAL_API_SECRET must be at least 32 characters')
+      .refine(
+        isHost,
+        'API_HOST must be a host name or IP address, without scheme, port or brackets',
+      )
       .optional(),
+    /** Locally this checkout's API_PORT (tools/dev-ports.mjs); in production the API's port. */
+    API_PORT: z.coerce.number().int().positive().max(65_535).optional(),
+    /** Sent on every call to the API, which enforces it in production. */
+    INTERNAL_API_SECRET: InternalApiSecret,
+    /**
+     * The request header in which the proxy in front of this server names the browser's IP
+     * (server/client-ip.server.ts). Empty: no proxy in front, the socket's address is the client's.
+     */
+    REAL_IP_HEADER: z.string().trim().toLowerCase().default('x-real-ip'),
   })
-  .refine((env) => !isProduction(env) || env.INTERNAL_API_SECRET, {
-    path: ['INTERNAL_API_SECRET'],
-    message: 'INTERNAL_API_SECRET is required in production',
-  });
+  .refine((env) => !isProduction(env) || env.INTERNAL_API_SECRET, SECRET_REQUIRED_IN_PRODUCTION)
+  // no fallback to this machine in production: a forgotten address fails the healthcheck
+  .refine((env) => !isProduction(env) || env.API_HOST, {
+    path: ['API_HOST'],
+    message: 'API_HOST is required in production',
+  })
+  .refine((env) => !isProduction(env) || env.API_PORT, {
+    path: ['API_PORT'],
+    message: 'API_PORT is required in production',
+  })
+  .transform(({ API_HOST = 'localhost', API_PORT = 4000, ...env }) => ({
+    ...env,
+    API_HOST,
+    API_PORT,
+  }));
 
 export type ServerEnv = z.infer<typeof ServerEnv>;
 
@@ -43,6 +69,6 @@ export function serverEnv(source: Record<string, string | undefined> = process.e
 
 /** The API's GraphQL endpoint. An IPv6 literal (Railway's private network) gets brackets. */
 export function internalApiUrl(env: ServerEnv): string {
-  const host = env.API_HOST.includes(':') ? `[${env.API_HOST}]` : env.API_HOST;
+  const host = isIP(env.API_HOST) === 6 ? `[${env.API_HOST}]` : env.API_HOST;
   return `http://${host}:${env.API_PORT}/graphql`;
 }

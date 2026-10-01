@@ -2,10 +2,10 @@
 // for every server request (SSR and /api/* alike) and once in the browser: keep it free of I/O.
 // Each call gets its own QueryClient, so no request (user) sees another's data.
 // Route types need no `declare module` here: routeTree.gen.ts registers the router with Start.
-import { QueryClient, useQueryErrorResetBoundary } from '@tanstack/react-query';
-import { createRouter, type ErrorComponentProps, useRouter } from '@tanstack/react-router';
+import { QueryClient } from '@tanstack/react-query';
+import { createRouter } from '@tanstack/react-router';
 import { setupRouterSsrQueryIntegration } from '@tanstack/react-router-ssr-query';
-import { useEffect } from 'react';
+import { ErrorPage } from './components/error-page';
 import { shouldRetry } from './lib/graphql/execute';
 import { routeTree } from './routeTree.gen';
 
@@ -31,20 +31,4 @@ export function getRouter() {
   // QueryClientProvider (so none of our own)
   setupRouterSsrQueryIntegration({ router, queryClient });
   return router;
-}
-
-/** A route whose loader or query failed: the message, and a way to load it again. */
-function ErrorPage({ error }: ErrorComponentProps) {
-  const router = useRouter();
-  const queryErrorResetBoundary = useQueryErrorResetBoundary();
-  // a query that failed while rendering may fetch again on the next render
-  useEffect(() => queryErrorResetBoundary.reset(), [queryErrorResetBoundary]);
-  return (
-    <div role="alert">
-      <p>Something went wrong: {error instanceof Error ? error.message : String(error)}</p>
-      <button type="button" onClick={() => void router.invalidate()}>
-        Try again
-      </button>
-    </div>
-  );
 }

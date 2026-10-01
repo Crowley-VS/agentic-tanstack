@@ -4,8 +4,10 @@
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { environmentManager } from '@tanstack/react-query';
 import { afterAll, beforeAll, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { RATE_LIMITED } from '@acme/validators/error-codes';
 import { ApiVersionDocument, TypedDocumentString } from '../../gql/graphql';
-import { BFF_PATH, execute, GraphQLRequestError, postToBff, shouldRetry } from './execute';
+import { GraphQLRequestError } from './errors';
+import { BFF_PATH, execute, postToBff, shouldRetry } from './execute';
 
 const SECRET = 's'.repeat(32);
 /** An operation whose variables are all optional (how codegen types `$first: Int`). */
@@ -21,7 +23,7 @@ const NoteDocument = new TypedDocumentString<{ note: { id: string } | null }, { 
 let api: Server;
 let port: number;
 /** What the stub API answers next; `null`: it never answers. */
-let reply: { status: number; body: string; type?: string } | null;
+let reply: { status: number; body: string; type?: string; headers?: Record<string, string> } | null;
 let received: { url?: string; headers: IncomingHttpHeaders; body: string } | undefined;
 
 beforeAll(async () => {
@@ -33,6 +35,7 @@ beforeAll(async () => {
       if (!reply) return;
       res.writeHead(reply.status, {
         'content-type': reply.type ?? 'application/graphql-response+json',
+        ...reply.headers,
       });
       res.end(reply.body);
     });
@@ -116,6 +119,43 @@ describe('execute on the server', () => {
       errors: [],
       message: 'GraphQL request failed (HTTP 502)',
     });
+  });
+
+  it("rejects like the BFF when the API can't be reached: 502, the cause kept for the log", async () => {
+    vi.stubEnv('API_PORT', '1'); // nothing listens there
+    const error: unknown = await execute(ApiVersionDocument).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(GraphQLRequestError);
+    expect(error).toMatchObject({ status: 502, message: 'API unavailable' });
+    expect(error).toHaveProperty('cause', expect.objectContaining({ message: 'fetch failed' }));
+  });
+
+  it('keeps server detail, such as an invalid environment, out of the message', async () => {
+    vi.stubEnv('API_HOST', 'http://api.internal:4000');
+    const error: unknown = await execute(ApiVersionDocument).catch((err: unknown) => err);
+    expect(error).toMatchObject({ status: 502, message: 'API unavailable' });
+    expect(error).toHaveProperty(
+      'cause.message',
+      expect.stringContaining('invalid web environment'),
+    );
+    expect(received).toBeUndefined();
+  });
+
+  it('keeps the error code and the Retry-After seconds of a refusal, and never retries it', async () => {
+    const message = 'Too many writes: try again in 7 s.';
+    reply = {
+      status: 429,
+      headers: { 'retry-after': '7' },
+      body: JSON.stringify({ errors: [{ message, extensions: { code: RATE_LIMITED } }] }),
+    };
+    const error: unknown = await execute(ApiVersionDocument).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(GraphQLRequestError);
+    expect(error).toMatchObject({ status: 429, code: RATE_LIMITED, retryAfter: 7, message });
+    environmentManager.setIsServer(() => false);
+    try {
+      expect(shouldRetry(0, error)).toBe(false);
+    } finally {
+      environmentManager.setIsServer(() => true);
+    }
   });
 
   it("aborts the API call with the caller's signal", async () => {

@@ -7,40 +7,13 @@ import { environmentManager } from '@tanstack/react-query';
 import { createIsomorphicFn } from '@tanstack/react-start';
 import { serverEnv } from '../../env.server';
 import { TypedDocumentString } from '../../gql/graphql';
-import { callInternalApi } from '../../server/internal-api.server';
+import { callInternalApi, transportFailure } from '../../server/internal-api.server';
+import { type GraphQLErrorEntry, GraphQLRequestError, parseRetryAfter } from './errors';
 
 /** The BFF route (routes/api/graphql.ts). */
 export const BFF_PATH = '/api/graphql';
 
-/** One entry of a GraphQL response's top-level `errors`. */
-export type GraphQLErrorEntry = {
-  message: string;
-  path?: readonly (string | number)[];
-  extensions?: Record<string, unknown>;
-};
-
 type GraphQLResponse<TData> = { data?: TData | null; errors?: readonly GraphQLErrorEntry[] };
-
-/**
- * A request that failed: top-level GraphQL `errors` (a document the schema rejects, a masked
- * server error, a BFF refusal) or a transport failure (a non-2xx answer without them). Expected
- * failures are not errors: mutations return them as union members, selected by `__typename`.
- */
-export class GraphQLRequestError extends Error {
-  override name = 'GraphQLRequestError';
-  readonly status: number;
-  readonly errors: readonly GraphQLErrorEntry[];
-
-  constructor(status: number, errors: readonly GraphQLErrorEntry[] = []) {
-    super(
-      errors.length
-        ? errors.map((e) => e.message).join('; ')
-        : `GraphQL request failed (HTTP ${status})`,
-    );
-    this.status = status;
-    this.errors = errors;
-  }
-}
 
 /**
  * The browser's transport: the same-origin BFF. Exported for its test: without the Start compiler
@@ -60,7 +33,18 @@ export const postToBff = (body: string, signal?: AbortSignal) =>
 // Untyped transport: createIsomorphicFn fixes its argument types (no generics), so the typed
 // execute() below wraps it.
 const post = createIsomorphicFn()
-  .server((body: string, signal?: AbortSignal) => callInternalApi(serverEnv(), body, { signal }))
+  // A call that gets no answer fails like the BFF's: 502 'API unavailable' or 504 'API timed
+  // out'. The cause (a host name, an invalid environment) stays on the server, out of the SSR
+  // payload; the error page logs it. The caller's abort passes through as it is.
+  .server(async (body: string, signal?: AbortSignal) => {
+    try {
+      return await callInternalApi(serverEnv(), body, { signal });
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      const { status, message } = transportFailure(err);
+      throw new GraphQLRequestError(status, [{ message }], { cause: err });
+    }
+  })
   .client(postToBff);
 
 type ExecuteInit = { signal?: AbortSignal };
@@ -73,7 +57,11 @@ type ExecuteArgs<TVariables> = {} extends TVariables
   ? [variables?: TVariables, init?: ExecuteInit]
   : [variables: TVariables, init?: ExecuteInit];
 
-/** Run a graphql() document; resolves to its typed `data`, rejects with a GraphQLRequestError. */
+/**
+ * Run a graphql() document; resolves to its typed `data`. Rejects with a GraphQLRequestError for
+ * GraphQL errors, failed answers and, on the server, an API that never answered (502/504). In
+ * the browser, network failures and aborts reject as fetch does.
+ */
 export async function execute<TResult, TVariables>(
   document: TypedDocumentString<TResult, TVariables>,
   ...[variables, init]: ExecuteArgs<TVariables>
@@ -86,8 +74,11 @@ export async function execute<TResult, TVariables>(
   const body = JSON.stringify({ query: document.toString(), variables });
   const response = await post(body, init?.signal);
   const json: GraphQLResponse<TResult> | null = await response.json().catch(() => null);
-  if (json?.errors?.length) throw new GraphQLRequestError(response.status, json.errors);
-  if (!response.ok || json?.data == null) throw new GraphQLRequestError(response.status);
+  const retryAfter = parseRetryAfter(response.headers.get('retry-after'));
+  if (json?.errors?.length)
+    throw new GraphQLRequestError(response.status, json.errors, { retryAfter });
+  if (!response.ok || json?.data == null)
+    throw new GraphQLRequestError(response.status, [], { retryAfter });
   return json.data;
 }
 
