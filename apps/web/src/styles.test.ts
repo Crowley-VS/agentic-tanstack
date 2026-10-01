@@ -54,7 +54,7 @@ describe('src/styles.css', () => {
   it('has the theme, the @acme/ui component classes and the classes of this app', () => {
     expect(css).toContain('.dark{'); // the dark theme's variables
     expect(css).toContain('.bg-primary{'); // Button (packages/ui)
-    expect(css).toContain('.max-w-md{'); // the home page (apps/web only)
+    expect(css).toContain('.max-w-2xl{'); // the root layout (apps/web only)
   });
 
   it('reads only files web:build hashes: the src of this app and of @acme/ui, no tests', () => {

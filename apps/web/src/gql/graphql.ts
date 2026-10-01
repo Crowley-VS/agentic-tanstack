@@ -4,10 +4,25 @@ type Exact<T extends { [key: string]: unknown }> = { [K in keyof T]: T[K] };
 /** Internal type. DO NOT USE DIRECTLY. */
 export type Incremental<T> = T | { [P in keyof T]?: P extends ' $fragmentName' | '__typename' ? T[P] : never };
 import type { DocumentTypeDecoration } from '@graphql-typed-document-node/core';
-export type ApiVersionQueryVariables = Exact<{ [key: string]: never; }>;
+export type AppStatusQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type ApiVersionQuery = { apiVersion: string };
+export type AppStatusQuery = { readOnly: boolean };
+
+export type NotesQueryVariables = Exact<{
+  first?: number | null | undefined;
+  after?: string | null | undefined;
+}>;
+
+
+export type NotesQuery = { notes: { edges: Array<{ node: { id: string, title: string, body: string, createdAt: string, commentCount: number } }>, pageInfo: { hasNextPage: boolean, endCursor: string | null } } };
+
+export type NoteQueryVariables = Exact<{
+  id: string | number;
+}>;
+
+
+export type NoteQuery = { note: { id: string, title: string, body: string, createdAt: string, commentCount: number, comments: Array<{ id: string, authorName: string | null, body: string, createdAt: string }> } | null };
 
 export class TypedDocumentString<TResult, TVariables>
   extends String
@@ -28,8 +43,44 @@ export class TypedDocumentString<TResult, TVariables>
   }
 }
 
-export const ApiVersionDocument = new TypedDocumentString(`
-    query ApiVersion {
-  apiVersion
+export const AppStatusDocument = new TypedDocumentString(`
+    query AppStatus {
+  readOnly
 }
-    `) as unknown as TypedDocumentString<ApiVersionQuery, ApiVersionQueryVariables>;
+    `) as unknown as TypedDocumentString<AppStatusQuery, AppStatusQueryVariables>;
+export const NotesDocument = new TypedDocumentString(`
+    query Notes($first: Int, $after: String) {
+  notes(first: $first, after: $after) {
+    edges {
+      node {
+        id
+        title
+        body
+        createdAt
+        commentCount
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+    `) as unknown as TypedDocumentString<NotesQuery, NotesQueryVariables>;
+export const NoteDocument = new TypedDocumentString(`
+    query Note($id: ID!) {
+  note(id: $id) {
+    id
+    title
+    body
+    createdAt
+    commentCount
+    comments {
+      id
+      authorName
+      body
+      createdAt
+    }
+  }
+}
+    `) as unknown as TypedDocumentString<NoteQuery, NoteQueryVariables>;

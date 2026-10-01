@@ -29,24 +29,37 @@ failures and aborts reject as `fetch` does. Expected failures are union members.
 
 ## Loaders fill the cache, components read it
 
+The Notes board is the reference: its operations, query keys (`noteKeys`, broad to narrow, for
+invalidation) and query options live in `src/lib/notes/queries.ts`; the routes are
+`src/routes/index.tsx` (an infinite query with "Load more") and `src/routes/notes/$noteId.tsx`:
+
 ```tsx
-const noteOptions = (id: string) =>
+// src/lib/notes/queries.ts
+export const noteOptions = (id: string) =>
   queryOptions({
-    queryKey: ['note', id],
+    queryKey: noteKeys.detail(id),
     queryFn: ({ signal }) => execute(NoteQuery, { id }, { signal }),
   });
 
-export const Route = createFileRoute('/notes/$id')({
+// src/routes/notes/$noteId.tsx
+export const Route = createFileRoute('/notes/$noteId')({
   // awaited: the data is in the SSR HTML; returned data would be serialized a second time
-  loader: async ({ context, params }) => {
-    await context.queryClient.ensureQueryData(noteOptions(params.id));
+  loader: async ({ context, params: { noteId } }) => {
+    if (!NoteId.safeParse(noteId).success) throw notFound(); // no API call for a malformed id
+    const { note } = await context.queryClient.ensureQueryData(noteOptions(noteId));
+    if (!note) throw notFound();
+  },
+  // head() reads the cache the loader filled
+  head: ({ match, params }) => {
+    const note = match.context.queryClient.getQueryData(noteOptions(params.noteId).queryKey)?.note;
+    return { meta: [{ title: `${note?.title ?? 'Note not found'} · acme-app` }] };
   },
   component: NotePage,
 });
 
 function NotePage() {
-  const { data } = useSuspenseQuery(noteOptions(Route.useParams().id));
-  return <h1>{data.note?.title}</h1>;
+  const { note } = useSuspenseQuery(noteOptions(Route.useParams().noteId)).data;
+  // …
 }
 ```
 
@@ -58,6 +71,27 @@ BFF's 502) retry up to 3 times. A failed loader or query shows the error page
 SSR answers 500 with that page). It logs what failed a server render, with its cause, and shows a
 fixed message chosen from the error's message alone (an SSR error reaches the browser as a plain
 `Error`, so a class check would break hydration): the raw message in development only.
+`notFound()` (an unknown URL, a malformed or missing id) renders `src/components/not-found.tsx`
+with HTTP 404; a route may pass it its own message.
+
+The root loader fills `appStatusOptions()` (`src/lib/app-status.ts`) for every page:
+`Query.readOnly`, true while the API runs with `READ_ONLY=true`. `useReadOnly()` reads it, and the
+root layout shows a banner while it is true. With the API down, the root loader fails, so the
+error page renders without the layout.
+
+Hydration-safe rendering:
+
+- Buttons that need JavaScript ("Load more") render disabled until `useHydrated()`: a click
+  before hydration would be lost. Playwright waits for them to be enabled, so e2e specs need no
+  hydration retries. "Load more" also stays disabled while any fetch runs or is paused (offline).
+- User text renders as React text only (never `dangerouslySetInnerHTML`); long words wrap
+  (`wrap-anywhere`) and bodies keep their line breaks (`whitespace-pre-wrap`).
+- Timestamps are UTC text (`formatTimestamp()` in `src/lib/notes/format.ts`): the server and
+  every browser render the same string, whatever their time zone or locale.
+
+Browser tests (`*.browser.test.tsx`) that render a page mock `execute()`'s module
+(`vi.mock('./lib/graphql/execute', …)`): without Start's compiler it would take its server branch.
+`src/notes.browser.test.tsx` shows the pattern, with a small in-memory router for links.
 
 ## The BFF: `POST /api/graphql`
 
