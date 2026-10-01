@@ -5,7 +5,7 @@
     "default": ["{projectRoot}/**/*", "sharedGlobals"],
     "production": [
       "default",
-      "!{projectRoot}/**/*.test.{ts,tsx,mts}",
+      "!{projectRoot}/**/*.test.{ts,tsx,mts,mjs}",
       "!{projectRoot}/**/*.browser.test.{ts,tsx}",
       "!{projectRoot}/vitest.config.{ts,mts}",
       "!{projectRoot}/test/**/*"
@@ -26,6 +26,7 @@
     },
     {
       "plugin": "@nx/vitest",
+      "exclude": ["apps/web/vite.config.ts"],
       "options": { "testTargetName": "test" }
     },
     {

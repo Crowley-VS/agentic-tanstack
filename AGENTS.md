@@ -20,7 +20,7 @@ Never claim "done" without running these. If a check fails, fix the cause; never
 <!-- stack:start:done -->
 
 Stack checks: `pnpm check` also runs the database tests, which need **Docker** (each test file gets its own
-Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and UI changes.
+Postgres database). The web app (M5+) adds `pnpm nx e2e web-e2e` for route and UI changes.
 
 <!-- stack:end -->
 
@@ -50,29 +50,29 @@ Postgres database). The web app (M4+) adds `pnpm nx e2e web-e2e` for route and U
 
 **Database** (Postgres 18 in Docker, one per checkout/worktree; Docker must be running):
 
-| Task                                         | Command                                                                                   |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Start it (fast no-op when running)           | `pnpm db:up`                                                                              |
-| Apply migrations / reseed deterministic data | `pnpm db:migrate` / `pnpm db:seed`                                                        |
-| Change the schema                            | edit `packages/db/src/schema/*`, then `pnpm nx run db:db-generate --args="--name=<what>"` |
-| Wipe and start fresh                         | `pnpm db:reset`                                                                           |
-| Browse data                                  | `pnpm db:studio` · `pnpm nx run db:db-psql`                                               |
+| Task                                  | Command                                                                                   |
+| ------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Start it (fast no-op when running)    | `pnpm db:up`                                                                              |
+| Migrate / reseed (deterministic data) | `pnpm db:migrate` / `pnpm db:seed`                                                        |
+| Change the schema                     | edit `packages/db/src/schema/*`, then `pnpm nx run db:db-generate --args="--name=<what>"` |
+| Wipe and start fresh                  | `pnpm db:reset`                                                                           |
+| Browse data                           | `pnpm db:studio` · `pnpm nx run db:db-psql`                                               |
 
 **API** (`apps/api`, GraphQL at `/graphql`, health at `/health`):
 
-| Task                                                   | Command                                                                              |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| Run it (migrates first; this checkout's port; reloads) | `pnpm nx run api:dev` (GraphiQL at the printed URL)                                  |
-| Change the schema                                      | edit `apps/api/src/graphql/*`, then `pnpm nx run api:print-schema` (or `pnpm regen`) |
-| Production bundle (what the image runs)                | `pnpm nx run api:build`, then run it as below                                        |
+| Task                                    | Command                                                                              |
+| --------------------------------------- | ------------------------------------------------------------------------------------ |
+| Run it (migrates first; reloads)        | `pnpm nx run api:dev` (GraphiQL at the printed URL)                                  |
+| Change the schema                       | edit `apps/api/src/graphql/*`, then `pnpm nx run api:print-schema` (or `pnpm regen`) |
+| Production bundle (what the image runs) | `pnpm nx run api:build`, then run it as `docs/api.md` shows                          |
 
-Run the bundle from `apps/api`: `dev-ports --exec` supplies this checkout's `DATABASE_URL` and port, and production
-mode needs `NODE_ENV` and a secret (without them it runs as development):
+**Web** (`apps/web`, health at `/api/health`; a production build needs `INTERNAL_API_SECRET`):
 
-```bash
-node ../../tools/dev-ports.mjs --exec -- node dist/migrate.mjs
-NODE_ENV=production INTERNAL_API_SECRET=<32+ random characters> node ../../tools/dev-ports.mjs --exec -- node dist/main.mjs
-```
+| Task                                  | Command                                                   |
+| ------------------------------------- | --------------------------------------------------------- |
+| Run web + API (reloads)               | `pnpm dev` in the background, then curl its `/api/health` |
+| Production build / run it             | `pnpm nx run web:build` / `pnpm nx run web:serve`         |
+| After adding or renaming a route file | `pnpm nx run web:generate-routes` (or `pnpm regen`)       |
 
 <!-- stack:end -->
 
@@ -90,7 +90,7 @@ NODE_ENV=production INTERNAL_API_SECRET=<32+ random characters> node ../../tools
 <!-- stack:start:navigation -->
 
 - **API shape** → `packages/graphql/schema.graphql` (printed from `apps/api/src/graphql`; never edit it by hand).
-- **Pages and params** → `apps/web/src/routeTree.gen.ts` (arrives with the web app).
+- **Pages and params** → `apps/web/src/routeTree.gen.ts` (generated from `apps/web/src/routes`).
 
 <!-- stack:end -->
 
@@ -98,15 +98,16 @@ NODE_ENV=production INTERNAL_API_SECRET=<32+ random characters> node ../../tools
 
 ## Repo map
 
-| Path                  | What                                                                                                 | Tags                                |
-| --------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `apps/api`            | GraphQL API (Yoga + Pothos): the Notes board queries and mutations, env schema, security defaults    | `scope:api`, `type:app`, `needs-db` |
-| `packages/core`       | business logic: writes and domain errors (`createNote`, `addComment`); takes a `Db`, never a request | `scope:server`, `type:feature`      |
-| `packages/db`         | Drizzle schema, relations, migrations, deterministic seed, per-test-file databases (`testDb()`)      | `scope:server`, `type:data`         |
-| `packages/graphql`    | `schema.graphql`: the API contract clients generate their types from (generated)                     | `scope:shared`, `type:util`         |
-| `packages/validators` | Zod schemas + limits shared by api and web                                                           | `scope:shared`, `type:util`         |
-| `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync                                        | `scope:tooling`, `type:tooling`     |
-| `docker-compose.yml`  | the local Postgres (dev, e2e, tests only)                                                            |                                     |
+| Path                  | What                                                                        | Tags                                |
+| --------------------- | --------------------------------------------------------------------------- | ----------------------------------- |
+| `apps/api`            | GraphQL API (Yoga + Pothos): Notes queries, mutations, security defaults    | `scope:api`, `type:app`, `needs-db` |
+| `apps/web`            | TanStack Start (SSR on Nitro): pages, `/api/health`, the `/api/graphql` BFF | `scope:web`, `type:app`             |
+| `packages/core`       | business logic: writes and domain errors; takes a `Db`, never a request     | `scope:server`, `type:feature`      |
+| `packages/db`         | Drizzle schema, migrations, seed, per-test-file databases (`testDb()`)      | `scope:server`, `type:data`         |
+| `packages/graphql`    | `schema.graphql`: the API contract clients generate types from (generated)  | `scope:shared`, `type:util`         |
+| `packages/validators` | Zod schemas + limits shared by api and web                                  | `scope:shared`, `type:util`         |
+| `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync               | `scope:tooling`, `type:tooling`     |
+| `docker-compose.yml`  | the local Postgres (dev, e2e, tests only)                                   |                                     |
 
 `tools` is plain `.mjs` with no `typecheck` target: its gates are lint, boundaries and tests. Projects tagged
 `needs-db` need Docker for their tests (`pnpm nx affected -t test --exclude=tag:needs-db` skips them).
@@ -131,18 +132,11 @@ NODE_ENV=production INTERNAL_API_SECRET=<32+ random characters> node ../../tools
   Drizzle's relational queries (in the API: the Pothos Drizzle plugin), which plan nested data as one statement.
 - **Migrations:** generate them from the schema and commit them. Once git tracks a migration (staged or
   committed) the guard hook blocks edits to it; only a new, untracked one may still be edited.
-- **The schema has no side effects at import:** nothing under `apps/api/src/graphql` reads the environment or opens a
-  connection (the database comes from the request context), so `print-schema` runs with an empty environment; a test
-  enforces it. The environment is validated once, at startup (`apps/api/src/env.ts`).
-- **The API is private and locked down by default:** CSRF prevention, graphql-armor limits, and introspection,
-  GraphiQL and field suggestions in development only. In production it listens for the web server alone and requires
-  `INTERNAL_API_SECRET` on every request but `/health`; in development it listens on 127.0.0.1 and ignores it (even
-  when `.env` sets it). Tests pin each default: change one only on purpose.
-- **Expected failures are data:** a mutation returns them as union members (`ValidationError` with `fieldErrors`,
-  `NotFoundError`) that clients select by `__typename`; invalid query arguments are GraphQL errors with code
-  `BAD_USER_INPUT`. Anything else is an unexpected error, masked. `READ_ONLY=true` makes the API reject every mutation.
-- **One `graphql` copy in tests:** graphql 16 has no `exports` map, so Vite and Node would load different builds and
-  `instanceof GraphQLError` breaks; Vitest configs alias `graphql` to Node's (see `apps/api/vitest.config.ts`).
+- **API rules** (details in `docs/api.md`): the schema has no side effects at import; the API is private and locked
+  down by default (tests pin each default); expected failures are data (union members, selected by `__typename`);
+  its Vitest config aliases `graphql` to one copy.
+- **Server-only code lives in `*.server.ts`** (env, API client, BFF): a client import of one fails the build, and so
+  does server code in the client bundle. The browser reaches the API only through the same-origin `/api/graphql`.
 - **Tests that touch the database** use `testDb()` from `@acme/db/testing` and assume nothing about other tests'
   rows (tests in one file share its database; files never share).
 

@@ -40,3 +40,6 @@ Thumbs.db
 
 # Built API: dist/ above, plus the migrations its build copies next to it
 apps/api/migrations/
+
+# TanStack Router generator temp files (written under the cwd, then renamed into src/)
+.tanstack/
