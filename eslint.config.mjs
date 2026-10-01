@@ -40,7 +40,9 @@ export default [
         'error',
         {
           enforceBuildableLibDependency: false,
-          allow: [],
+          // `#/…` are Node subpath imports (package.json `imports`), which resolve only inside the
+          // importing package: the shadcn CLI writes them (packages/ui/components.json aliases).
+          allow: ['#/**'],
           depConstraints: [
             // Where code may live (scope)
             { sourceTag: 'scope:web', onlyDependOnLibsWithTags: ['scope:web', 'scope:shared'] },

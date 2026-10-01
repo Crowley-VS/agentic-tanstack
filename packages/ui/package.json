@@ -1,0 +1,58 @@
+{
+  "name": "@acme/ui",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared React UI: shadcn/ui components (radix-nova) and the Tailwind 4 theme (src/styles/globals.css). Add components with the pinned CLI (`pnpm --filter @acme/ui exec shadcn add <name>`, then `pnpm format`), not by hand.",
+  "type": "module",
+  "imports": {
+    "#/components/*": "./src/components/*.tsx",
+    "#/hooks/*": "./src/hooks/*.ts",
+    "#/lib/*": "./src/lib/*.ts"
+  },
+  "exports": {
+    "./globals.css": "./src/styles/globals.css",
+    "./components/*": {
+      "@acme/source": "./src/components/*.tsx",
+      "types": "./src/components/*.tsx",
+      "default": "./src/components/*.tsx"
+    },
+    "./hooks/*": {
+      "@acme/source": "./src/hooks/*.ts",
+      "types": "./src/hooks/*.ts",
+      "default": "./src/hooks/*.ts"
+    },
+    "./lib/*": {
+      "@acme/source": "./src/lib/*.ts",
+      "types": "./src/lib/*.ts",
+      "default": "./src/lib/*.ts"
+    }
+  },
+  "dependencies": {
+    "class-variance-authority": "catalog:",
+    "cn": "catalog:",
+    "lucide-react": "catalog:",
+    "next-themes": "catalog:",
+    "radix-ui": "catalog:",
+    "sonner": "catalog:",
+    "tw-animate-css": "catalog:"
+  },
+  "devDependencies": {
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "shadcn": "catalog:",
+    "tailwindcss": "catalog:"
+  },
+  "peerDependencies": {
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "nx": {
+    "name": "ui",
+    "tags": [
+      "scope:web",
+      "type:ui"
+    ]
+  }
+}

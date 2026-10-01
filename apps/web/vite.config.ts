@@ -1,7 +1,8 @@
-// The app's Vite config: TanStack Start (SSR, routes, server routes) on Nitro, plus React.
+// The app's Vite config: Tailwind, TanStack Start (SSR, routes, server routes) on Nitro, React.
 // Tests do NOT use it (vitest.config.ts): nx.json keeps @nx/vitest from loading this file, since
 // resolving it runs Start's route generator (and fails from the workspace root). Never add a
 // `test:` key here.
+import tailwindcss from '@tailwindcss/vite';
 import { tanstackStart } from '@tanstack/react-start/plugin/vite';
 import viteReact from '@vitejs/plugin-react';
 import { nitro } from 'nitro/vite';
@@ -19,6 +20,7 @@ export default defineConfig({
   // checkout's WEB_PORT). Fail instead of silently moving to another port.
   server: { strictPort: true },
   plugins: [
+    tailwindcss(),
     tanstackStart(),
     nitro({
       rolldownConfig: {
