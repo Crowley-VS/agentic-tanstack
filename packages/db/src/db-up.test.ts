@@ -16,7 +16,7 @@ import { devNull, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // @ts-expect-error plain .mjs script
-import { dbUp, isLocalUrl, isOurCluster, resolveDb } from '../scripts/db-up.mjs';
+import { dbUp, isLocalUrl, isOurCluster, psqlArgs, resolveDb } from '../scripts/db-up.mjs';
 
 const DB = join(import.meta.dirname, '..');
 const tmp = mkdtempSync(join(tmpdir(), 'db-up-test-'));
@@ -232,6 +232,36 @@ describe('studio', () => {
       process.kill(-studio.pid!, 'SIGTERM');
     }
   }, 30_000);
+});
+
+describe('psql', () => {
+  it('allocates a terminal only when stdin is one, and passes its arguments on to psql', () => {
+    const psql = ['postgres', 'psql', '-U', 'postgres', '-d', 'app', '-c', 'select 1'];
+    expect(psqlArgs('app', ['-c', 'select 1'], { tty: true })).toEqual(['exec', ...psql]);
+    expect(psqlArgs('app', ['-c', 'select 1'], { tty: false })).toEqual(['exec', '-T', ...psql]);
+  });
+
+  // what `pnpm nx run db:db-psql -- -c "select …"` runs, in a shell with no terminal (an agent's)
+  const url = process.env.TEST_FILE_DATABASE_URL ?? '';
+  const onComposeServer = isLocalUrl(url) && Number(new URL(url).port) === resolveDb().port;
+  it.runIf(onComposeServer)(
+    'runs a query without a terminal and prints its result',
+    () => {
+      const res = spawnSync(
+        process.execPath,
+        ['scripts/db-up.mjs', 'psql', '-tA', '-c', 'select current_database()'],
+        {
+          cwd: DB,
+          encoding: 'utf8',
+          env: { ...process.env, DATABASE_URL: url }, // this test file's own database
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+      expect(res.stdout, res.stderr).toBe(`${new URL(url).pathname.slice(1)}\n`);
+      expect(res.status).toBe(0);
+    },
+    30_000,
+  );
 });
 
 describe('resolveDb', () => {

@@ -32,8 +32,8 @@ async function renderForm() {
   return {
     screen,
     queryClient,
-    author: screen.getByRole('textbox', { name: 'Your name (optional)' }),
-    body: screen.getByRole('textbox', { name: 'Comment' }),
+    author: screen.getByRole('textbox', { name: 'Your name (optional)', exact: true }),
+    body: screen.getByRole('textbox', { name: 'Comment', exact: true }),
     submit: screen.getByRole('button', { name: 'Add comment' }),
   };
 }

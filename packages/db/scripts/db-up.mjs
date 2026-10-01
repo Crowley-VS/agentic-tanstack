@@ -5,7 +5,8 @@
 //   node scripts/db-up.mjs          start it (~1 s cold; ~10 ms when it is already running: no Docker call)
 //   node scripts/db-up.mjs down     stop it (data kept)
 //   node scripts/db-up.mjs reset    delete it and its data, then start fresh
-//   node scripts/db-up.mjs psql     open psql on the dev database
+//   node scripts/db-up.mjs psql     open psql on the dev database; arguments after `psql` go to
+//                                   psql (`-c "select …"` runs one query, also without a terminal)
 //   node scripts/db-up.mjs studio   Drizzle Studio on this checkout's studio port
 //
 // Also imported by the Vitest global setup (`dbUp()`) and the migrate/seed scripts (`resolveDb()`,
@@ -122,7 +123,15 @@ export async function dbUp(cfg = resolveDb(), { env = process.env } = {}) {
   return cfg;
 }
 
-async function main([mode = 'up']) {
+/**
+ * `compose exec` arguments for psql on `db`, followed by the caller's own psql arguments. Without
+ * a terminal on stdin (an agent's shell, a pipe) compose must not allocate one: `-T`.
+ */
+export function psqlArgs(db, args = [], { tty = Boolean(process.stdin.isTTY) } = {}) {
+  return ['exec', ...(tty ? [] : ['-T']), 'postgres', 'psql', '-U', 'postgres', '-d', db, ...args];
+}
+
+async function main([mode = 'up', ...args]) {
   const cfg = resolveDb();
   if (mode === 'up') {
     const t0 = performance.now();
@@ -139,9 +148,7 @@ async function main([mode = 'up']) {
   } else if (mode === 'psql') {
     await dbUp(cfg);
     const db = new URL(cfg.url).pathname.slice(1);
-    process.exitCode =
-      compose(cfg, ['exec', 'postgres', 'psql', '-U', 'postgres', '-d', db], { stdio: 'inherit' })
-        .status ?? 1;
+    process.exitCode = compose(cfg, psqlArgs(db, args), { stdio: 'inherit' }).status ?? 1;
   } else if (mode === 'studio') {
     // drizzle-kit's default port (4983) would collide across worktrees: use this checkout's own
     const bin = join(dirname(createRequire(import.meta.url).resolve('drizzle-kit')), 'bin.cjs');
@@ -149,7 +156,7 @@ async function main([mode = 'up']) {
     process.exitCode =
       spawnSync(process.execPath, args, { cwd: join(HERE, '..'), stdio: 'inherit' }).status ?? 1;
   } else {
-    console.error('usage: node scripts/db-up.mjs [up|down|reset|psql|studio]');
+    console.error('usage: node scripts/db-up.mjs [up|down|reset|psql [psql args]|studio]');
     process.exitCode = 1;
   }
 }
