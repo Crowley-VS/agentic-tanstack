@@ -60,6 +60,11 @@ jobs:
         working-directory: ${{ runner.temp }}/copy
         run: node scripts/bootstrap.mjs --yes --scope @smoke --name smoke-app
 
+      # bootstrap installs Chromium without its system libraries (that needs sudo)
+      - name: Install Playwright Chromium
+        working-directory: ${{ runner.temp }}/copy
+        run: pnpm exec playwright install --with-deps --only-shell chromium
+
       - name: No template leftovers
         working-directory: ${{ runner.temp }}/copy
         run: |

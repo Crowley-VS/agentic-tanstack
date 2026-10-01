@@ -8,6 +8,7 @@
       "!{projectRoot}/**/*.test.{ts,tsx,mts,mjs}",
       "!{projectRoot}/**/*.browser.test.{ts,tsx}",
       "!{projectRoot}/vitest.config.{ts,mts}",
+      "!{projectRoot}/vitest.browser.config.{ts,mts}",
       "!{projectRoot}/test/**/*"
     ],
     "dbServer": ["{workspaceRoot}/docker-compose.yml", "{workspaceRoot}/tools/dev-ports.mjs"],

@@ -5,8 +5,9 @@
 //   pnpm check --all    every project (what CI's template smoke test runs)
 //
 // Gates, in order: agent-config hygiene · Nx's agent config · generated-file drift · lint (oxlint) ·
-// eslint (module boundaries) · typecheck · test · build · Nx sync (tsconfig project references) ·
-// lint of the files no project owns · formatting (oxfmt --check) · pinned version consistency.
+// eslint (module boundaries) · typecheck · test · test-browser (tests in a real browser; a no-op for
+// projects without the target) · build · Nx sync (tsconfig project references) · lint of the files
+// no project owns · formatting (oxfmt --check) · pinned version consistency.
 //
 // Generated-file drift runs BEFORE the nx step. It reports the files regen changes, compared with
 // the tree as regen found it. A task in the nx step may depend on a generator and rewrite a
@@ -25,7 +26,7 @@ import { SCRIPT_EXTENSIONS } from './lib/file-types.mjs';
 import { findArtifact, loadManifest } from './lib/generated.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const TARGETS = ['lint', 'eslint', 'typecheck', 'test', 'build'];
+const TARGETS = ['lint', 'eslint', 'typecheck', 'test', 'test-browser', 'build'];
 const all = process.argv.includes('--all');
 
 function hasBaseCommit() {

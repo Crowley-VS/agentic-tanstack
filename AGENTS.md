@@ -21,6 +21,7 @@ Never claim "done" without running these. If a check fails, fix the cause; never
 
 Stack checks: `pnpm check` also runs the database tests, which need **Docker** (each test file gets its own
 Postgres database). The web app (M5+) adds `pnpm nx e2e web-e2e` for route and UI changes.
+Browser tests (`*.browser.test.tsx`) need Chromium once per machine (`pnpm exec playwright install chromium`); watch them with `HEADED=1 pnpm nx run web:test-browser --skip-nx-cache`.
 
 <!-- stack:end -->
 
@@ -28,15 +29,15 @@ Postgres database). The web app (M5+) adds `pnpm nx e2e web-e2e` for route and U
 
 ## Commands
 
-| Task                                             | Command                                                          |
-| ------------------------------------------------ | ---------------------------------------------------------------- |
-| All checks (definition of done)                  | `pnpm check` (`--all` for every project)                         |
-| Regenerate generated files                       | `pnpm regen`                                                     |
-| Format everything (hooks format what you edit)   | `pnpm format`                                                    |
-| One target                                       | `pnpm nx run <project>:<target>` (e.g. `pnpm nx run tools:test`) |
-| Only what changed                                | `pnpm nx affected -t lint eslint typecheck test build`           |
-| What exists / depends on what                    | `pnpm nx show projects`, `pnpm nx show project <name> --json`    |
-| Sync agent skills after editing `.agents/skills` | `pnpm agents:sync`                                               |
+| Task                                             | Command                                                             |
+| ------------------------------------------------ | ------------------------------------------------------------------- |
+| All checks (definition of done)                  | `pnpm check` (`--all` for every project)                            |
+| Regenerate generated files                       | `pnpm regen`                                                        |
+| Format everything (hooks format what you edit)   | `pnpm format`                                                       |
+| One target                                       | `pnpm nx run <project>:<target>` (e.g. `pnpm nx run tools:test`)    |
+| Only what changed                                | `pnpm nx affected -t lint eslint typecheck test test-browser build` |
+| What exists / depends on what                    | `pnpm nx show projects`, `pnpm nx show project <name> --json`       |
+| Sync agent skills after editing `.agents/skills` | `pnpm agents:sync`                                                  |
 
 - **pnpm only**, never npm/yarn/npx. Add dependencies with `pnpm add <pkg> --filter <project>`; versions come from the catalog in `pnpm-workspace.yaml`.
 - Always run tools **through Nx** (`pnpm nx run …`), never `vitest`, `tsc`, `eslint` or `vite` directly — Nx provides the project graph, caching and the correct working directory.
