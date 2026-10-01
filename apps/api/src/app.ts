@@ -8,19 +8,22 @@ import { createYoga } from 'graphql-yoga';
 import type { Env } from './env';
 import type { Context } from './graphql/builder';
 import { schema } from './graphql/schema';
-import { useInternalSecret } from './plugins/internal-secret';
+import { fromWebServer, useInternalSecret } from './plugins/internal-secret';
 import { useReadOnly } from './plugins/read-only';
+import { useRequestLog } from './plugins/request-log';
 
 export const GRAPHQL_PATH = '/graphql';
 export const HEALTH_PATH = '/health';
 
-export function createApp({ db, env }: { db: Db; env: Env }) {
+/** `log` gets one line per request (main.ts passes console.log); tests leave it out. */
+export function createApp({ db, env, log }: { db: Db; env: Env; log?: (line: string) => void }) {
   const production = env.NODE_ENV === 'production';
   return createYoga<Record<string, unknown>, Context>({
     schema,
     graphqlEndpoint: GRAPHQL_PATH,
     healthCheckEndpoint: HEALTH_PATH,
-    context: () => ({ db }),
+    // READ_ONLY reaches the schema per request (Query.readOnly): the schema reads no environment
+    context: () => ({ db, readOnly: env.READ_ONLY }),
     // the browser never calls the API directly: web's BFF does, server to server
     cors: false,
     // development only: an explorer and introspection help agents and people, not attackers
@@ -29,6 +32,9 @@ export function createApp({ db, env }: { db: Db; env: Env }) {
     // unexpected errors reach the client as "Unexpected error." (details stay in the server log)
     maskedErrors: true,
     plugins: [
+      // first, so it times the whole request and sees the secret check's 401 too; it trusts the
+      // forwarded client IP and request id whenever the secret matches (in development too)
+      ...(log ? [useRequestLog({ trusted: fromWebServer(env.INTERNAL_API_SECRET), log })] : []),
       // production only: in development Nx loads the root .env (which sets the secret) into every
       // task, and GraphiQL, curl and agents must work on 127.0.0.1 without it
       useInternalSecret(production ? env.INTERNAL_API_SECRET : undefined),

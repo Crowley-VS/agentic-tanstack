@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { listenPort, loadEnv } from './env';
+import { listenHost, listenPort, loadEnv } from './env';
 
 const DATABASE_URL = 'postgres://postgres:postgres@127.0.0.1:5432/app';
 const SECRET = 's'.repeat(32);
@@ -14,6 +14,16 @@ describe('loadEnv', () => {
   it("listens on the platform's PORT, else this checkout's API_PORT", () => {
     expect(listenPort(loadEnv({ DATABASE_URL, API_PORT: '23901' }))).toBe(23901);
     expect(listenPort(loadEnv({ DATABASE_URL, API_PORT: '23901', PORT: '8080' }))).toBe(8080);
+  });
+
+  it('listens on this machine only in development, everywhere in production, unless LISTEN_HOST is set', () => {
+    const production = { DATABASE_URL, NODE_ENV: 'production', INTERNAL_API_SECRET: SECRET };
+    expect(listenHost(loadEnv({ DATABASE_URL }))).toBe('127.0.0.1');
+    expect(listenHost(loadEnv({ DATABASE_URL, HOST: 'my-laptop' }))).toBe('127.0.0.1'); // ignored
+    expect(listenHost(loadEnv(production))).toBe('::');
+    // a production-mode run that only this machine can reach (e2e)
+    expect(listenHost(loadEnv({ ...production, LISTEN_HOST: '127.0.0.1' }))).toBe('127.0.0.1');
+    expect(listenHost(loadEnv({ DATABASE_URL, LISTEN_HOST: '::' }))).toBe('::');
   });
 
   it('needs a Postgres DATABASE_URL', () => {

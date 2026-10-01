@@ -1,11 +1,12 @@
 // The real entry points, run as processes the way the platform runs them (from source, via tsx):
-// main.ts serves, refuses a bad environment and exits cleanly on SIGTERM; print-schema needs no
-// environment at all.
+// main.ts serves, logs each request, refuses a bad environment and exits cleanly on SIGTERM;
+// print-schema needs no environment at all.
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { CLIENT_IP_HEADER, REQUEST_ID_HEADER, SECRET_HEADER } from '@acme/validators/internal-api';
 import { describe, expect, it } from 'vitest';
 
 const API = join(import.meta.dirname, '..');
@@ -24,14 +25,17 @@ async function freePort(): Promise<number> {
 }
 
 describe('api entry points', () => {
-  it('serves, then shuts down cleanly on SIGTERM', async () => {
+  it('serves, logs each request, then shuts down cleanly on SIGTERM', async () => {
     const port = await freePort();
+    const secret = 'z'.repeat(32);
     const child = spawn(
       ...tsx('src/main.ts', [], {
         ...base,
         NODE_ENV: 'production',
         PORT: String(port),
-        INTERNAL_API_SECRET: 'z'.repeat(32),
+        // production mode on IPv4 loopback only: without it, `::` reports 127.0.0.1 as ::ffff:…
+        LISTEN_HOST: '127.0.0.1',
+        INTERNAL_API_SECRET: secret,
         DATABASE_URL: 'postgres://nobody@127.0.0.1:1/none', // never used: the pool is lazy
       }),
     );
@@ -39,9 +43,28 @@ describe('api entry points', () => {
     child.stdout.on('data', (chunk: Buffer) => (output += chunk));
     child.stderr.on('data', (chunk: Buffer) => (output += chunk));
     const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
+    const post = (headers: Record<string, string>) =>
+      fetch(`http://127.0.0.1:${port}/graphql`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [CLIENT_IP_HEADER]: '203.0.113.7',
+          [REQUEST_ID_HEADER]: 'req-1',
+          ...headers,
+        },
+        body: JSON.stringify({ query: '{ apiVersion }' }),
+      });
     try {
       await expect.poll(() => output, { timeout: 15_000 }).toContain('[api] listening');
       expect((await fetch(`http://127.0.0.1:${port}/health`)).status).toBe(200);
+      // the forwarded values only with the secret; else the socket's address
+      expect((await post({})).status).toBe(401);
+      expect((await post({ [SECRET_HEADER]: secret })).status).toBe(200);
+      await expect
+        .poll(() => output, { timeout: 5_000 })
+        .toMatch(/^\[api\] 200 POST \/graphql \d+ms ip=203\.0\.113\.7 id=req-1$/m);
+      expect(output).toMatch(/^\[api\] 401 POST \/graphql \d+ms ip=127\.0\.0\.1 id=-$/m);
+      expect(output).not.toContain('/health');
       child.kill('SIGTERM');
       expect(await exited).toBe(0);
       expect(output).toContain('[api] SIGTERM: shutting down');

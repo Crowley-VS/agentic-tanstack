@@ -11,6 +11,11 @@ builder.queryType({
       description: 'The version of the running API (APP_VERSION, set at deploy time)',
       resolve: () => process.env.APP_VERSION ?? 'dev',
     }),
+    readOnly: t.boolean({
+      description:
+        'True while the API rejects every mutation (READ_ONLY=true): clients can disable writes',
+      resolve: (_root, _args, ctx) => ctx.readOnly,
+    }),
   }),
 });
 

@@ -1,9 +1,9 @@
 // READ_ONLY=true: every mutation is rejected before it runs; queries keep working. The switch to
-// flip when the public, unauthenticated board is being abused.
+// flip when the public, unauthenticated board is being abused. Clients learn it beforehand from
+// `Query.readOnly`, and from a write's error code READ_ONLY (@acme/validators/error-codes).
+import { READ_ONLY } from '@acme/validators/error-codes';
 import { getOperationAST, GraphQLError, OperationTypeNode } from 'graphql';
 import type { Plugin } from 'graphql-yoga';
-
-export const READ_ONLY_CODE = 'READ_ONLY';
 
 export function useReadOnly(enabled: boolean): Plugin {
   if (!enabled) return {};
@@ -14,7 +14,7 @@ export function useReadOnly(enabled: boolean): Plugin {
       setResultAndStopExecution({
         errors: [
           new GraphQLError('The API is read-only right now: changes are not accepted.', {
-            extensions: { code: READ_ONLY_CODE },
+            extensions: { code: READ_ONLY },
           }),
         ],
       });
