@@ -834,7 +834,7 @@ describe('check', () => {
     // run again, and count tools as affected
     expect(show('project', 'tools').targets.test.inputs).toEqual(
       expect.arrayContaining([
-        '{workspaceRoot}/**/{vite,vitest,eslint,oxlint}.config.*',
+        '{workspaceRoot}/**/{vite,vitest,eslint,oxlint,playwright}.config.*',
         '{workspaceRoot}/**/.oxlintrc.json*',
         '{workspaceRoot}/**/tsconfig*.json',
         '{workspaceRoot}/**/project.json',

@@ -37,6 +37,10 @@
     {
       "plugin": "@nx/eslint/plugin",
       "options": { "targetName": "eslint" }
+    },
+    {
+      "plugin": "@nx/playwright/plugin",
+      "options": { "targetName": "e2e", "ciTargetName": "e2e-ci" }
     }
   ],
   "sync": {
@@ -73,6 +77,12 @@
     "test": {
       "cache": true,
       "inputs": ["default", "^production"]
+    },
+    "e2e": {
+      "inputs": ["...", "dbServer"]
+    },
+    "e2e-ci--**/*": {
+      "inputs": ["...", "dbServer"]
     }
   }
 }

@@ -14,7 +14,7 @@ import {
 import { type AddressInfo, createServer } from 'node:net';
 import { devNull, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // @ts-expect-error plain .mjs script
 import { dbUp, isLocalUrl, isOurCluster, resolveDb } from '../scripts/db-up.mjs';
 
@@ -189,6 +189,24 @@ describe('isLocalUrl', () => {
     );
     // a cold tsx start under CI load takes about 6 s (0.4 s warm): more than Vitest's 5 s default
   }, 30_000);
+
+  it('makes db-seed-e2e refuse a remote e2e database, with no opt-in, and never use DATABASE_URL', () => {
+    const res = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/seed-e2e.ts'], {
+      cwd: DB,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DATABASE_URL: 'postgres://u:p@db.example.com:5432/app',
+        E2E_DATABASE_URL: 'postgres://u:p@e2e.example.com:5432/e2e',
+        DB_ALLOW_REMOTE: '1', // db-migrate's opt-in: this script drops the database, so it has none
+      },
+    });
+    expect(res.status).toBe(1);
+    // the e2e URL's host, not DATABASE_URL's
+    expect(res.stderr).toContain(
+      '[db] refusing to recreate a non-local database (e2e.example.com)',
+    );
+  }, 30_000); // a cold tsx start, as above
 });
 
 describe('studio', () => {
@@ -217,14 +235,15 @@ describe('studio', () => {
 });
 
 describe('resolveDb', () => {
-  it('names the test template per checkout, like the dev database', () => {
-    // a throwaway repository with this repo's dev-ports.mjs, and a linked worktree of it
-    const env = {
-      PATH: process.env.PATH ?? '',
-      GIT_CONFIG_GLOBAL: devNull,
-      GIT_CONFIG_NOSYSTEM: '1',
-    };
-    const repo = join(tmp, 'repo');
+  // a throwaway repository with this repo's dev-ports.mjs, and a linked worktree of it
+  const env = {
+    PATH: process.env.PATH ?? '',
+    GIT_CONFIG_GLOBAL: devNull,
+    GIT_CONFIG_NOSYSTEM: '1',
+  };
+  const repo = join(tmp, 'repo');
+  const worktree = join(tmp, 'wt');
+  beforeAll(() => {
     mkdirSync(join(repo, 'tools'), { recursive: true });
     copyFileSync(join(DB, '../../tools/dev-ports.mjs'), join(repo, 'tools/dev-ports.mjs'));
     const git = (...args: string[]) =>
@@ -236,11 +255,23 @@ describe('resolveDb', () => {
     git('init', '-q');
     git('add', '-A');
     git('commit', '-qm', 'init');
-    git('worktree', 'add', '-q', '--detach', join(tmp, 'wt'));
+    git('worktree', 'add', '-q', '--detach', worktree);
+  });
 
+  it('names the test template per checkout, like the dev database', () => {
     expect(resolveDb(repo, env).testTemplate).toBe('test_template');
-    const wt = resolveDb(join(tmp, 'wt'), env);
+    const wt = resolveDb(worktree, env);
     expect(new URL(wt.url).pathname).toMatch(/^\/app_[0-9a-f]{8}$/);
     expect(wt.testTemplate).toBe(`test_template${new URL(wt.url).pathname.slice('/app'.length)}`);
+  });
+
+  it('names the e2e database per checkout, and never takes it from DATABASE_URL', () => {
+    const remote = { ...env, DATABASE_URL: 'postgres://u:p@db.example.com:5432/app' };
+    expect(resolveDb(repo, remote).e2eUrl).toBe('postgres://postgres:postgres@127.0.0.1:5432/e2e');
+    const hash = new URL(resolveDb(worktree, env).url).pathname.slice('/app'.length);
+    expect(new URL(resolveDb(worktree, remote).e2eUrl).pathname).toBe(`/e2e${hash}`);
+    // E2E_DATABASE_URL overrides it (api:serve-e2e then serves that one too)
+    const other = 'postgres://postgres:postgres@127.0.0.1:5432/other';
+    expect(resolveDb(repo, { ...env, E2E_DATABASE_URL: other }).e2eUrl).toBe(other);
   });
 });

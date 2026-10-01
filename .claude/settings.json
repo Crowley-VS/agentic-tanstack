@@ -76,6 +76,10 @@
       "Bash(pnpm nx run web:codegen)",
       "Bash(pnpm nx run web:dev)",
       "Bash(pnpm nx run web:serve)",
+      "Bash(pnpm nx run web-e2e:lint)",
+      "Bash(pnpm nx run web-e2e:eslint)",
+      "Bash(pnpm nx run web-e2e:typecheck)",
+      "Bash(pnpm nx e2e web-e2e)",
       "Bash(pnpm dev)"
     ],
     "ask": [

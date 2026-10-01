@@ -46,6 +46,8 @@ export function resolveDb(cwd = HERE, env = process.env) {
     studioPort: info.ports.studio,
     // explicit DATABASE_URL (CI, prod-like runs) wins over the per-checkout one
     url: env.DATABASE_URL ?? info.databaseUrls.dev,
+    // the e2e servers' database (db-seed-e2e recreates it on every e2e run): never DATABASE_URL
+    e2eUrl: env.E2E_DATABASE_URL ?? info.databaseUrls.e2e,
     adminUrl: env.TEST_DATABASE_URL ?? info.databaseUrls.test,
     // per checkout, like the dev database: app → test_template, app_<hash> → test_template_<hash>
     testTemplate: new URL(info.databaseUrls.dev).pathname.slice(1).replace(/^app/, 'test_template'),

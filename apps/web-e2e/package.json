@@ -1,0 +1,23 @@
+{
+  "name": "@acme/web-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Playwright end-to-end tests: the production web and API builds on this checkout's e2e ports, against a freshly seeded e2e database.",
+  "type": "module",
+  "devDependencies": {
+    "@nx/playwright": "catalog:",
+    "@playwright/test": "catalog:",
+    "@types/node": "catalog:"
+  },
+  "nx": {
+    "name": "web-e2e",
+    "tags": [
+      "scope:web",
+      "type:e2e"
+    ],
+    "implicitDependencies": [
+      "web",
+      "api"
+    ]
+  }
+}

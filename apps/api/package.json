@@ -71,6 +71,28 @@
           "{projectRoot}/migrations"
         ]
       },
+      "serve-e2e": {
+        "command": "node ../../tools/dev-ports.mjs --exec -- sh -c 'DATABASE_URL=$E2E_DATABASE_URL PORT=$API_E2E_PORT exec node dist/main.mjs'",
+        "options": {
+          "cwd": "{projectRoot}",
+          "env": {
+            "NODE_ENV": "production",
+            "LISTEN_HOST": "127.0.0.1",
+            "READ_ONLY": "false",
+            "INTERNAL_API_SECRET": "e2e-only-fixed-value-not-a-secret-000000"
+          }
+        },
+        "continuous": true,
+        "dependsOn": [
+          "build",
+          {
+            "projects": [
+              "db"
+            ],
+            "target": "db-seed-e2e"
+          }
+        ]
+      },
       "print-schema": {
         "command": "tsx src/print-schema.ts ../../packages/graphql/schema.graphql",
         "options": {

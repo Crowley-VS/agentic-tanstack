@@ -27,6 +27,7 @@
     "@nx/eslint-plugin": "catalog:",
     "@nx/js": "catalog:",
     "@nx/oxlint": "catalog:",
+    "@nx/playwright": "catalog:",
     "@nx/vitest": "catalog:",
     "@playwright/test": "catalog:",
     "@types/node": "catalog:",

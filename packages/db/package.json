@@ -91,6 +91,15 @@
           "db-migrate"
         ]
       },
+      "db-seed-e2e": {
+        "command": "tsx scripts/seed-e2e.ts",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "dependsOn": [
+          "db-up"
+        ]
+      },
       "db-studio": {
         "command": "node scripts/db-up.mjs studio",
         "options": {

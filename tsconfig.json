@@ -23,6 +23,9 @@
     },
     {
       "path": "./packages/ui"
+    },
+    {
+      "path": "./apps/web-e2e"
     }
   ]
 }

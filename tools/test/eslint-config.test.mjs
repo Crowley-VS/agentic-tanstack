@@ -46,6 +46,19 @@ describe('eslint.config.mjs', () => {
     ]);
   });
 
+  it('lets the e2e specs import shared utilities only, as a browser sees the apps', async () => {
+    const lintE2e = async (code) => {
+      const filePath = join(REPO, 'apps/web-e2e/src/probe.ts');
+      const [result] = await eslint.lintText(code, { filePath });
+      return result?.messages.map((m) => `${m.line}: ${m.ruleId}`);
+    };
+    expect(await lintE2e("import { NOTE_LIMITS } from '@acme/validators/notes';\n")).toEqual([]);
+    // scope:web allows packages/ui; type:e2e does not
+    expect(await lintE2e("import { Button } from '@acme/ui/components/button';\n")).toEqual([
+      '1: @nx/enforce-module-boundaries',
+    ]);
+  });
+
   it('extracts GraphQL operations from apps/web and still enforces boundaries there', async () => {
     const config = await eslint.calculateConfigForFile('apps/web/src/x.tsx');
     expect(config.rules['@nx/enforce-module-boundaries']?.[0]).toBe(2);
