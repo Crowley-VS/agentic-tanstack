@@ -43,9 +43,10 @@ it required in a later change.
 - `pnpm nx run db:db-generate --args="--name=<what>"` writes
   `packages/db/migrations/<timestamp>_<what>/migration.sql`. Read the SQL: it must be additive
   (a dropped or renamed column breaks the running app).
-- Never edit a migration git tracks (the guard hook blocks it). To redo a new, untracked one,
-  delete its folder, fix the schema and generate again (if it was applied:
-  `pnpm db:reset && pnpm db:seed`, which wipes this checkout's dev data).
+- Never edit a migration git tracks (the guard hook blocks it). To redo a new, untracked one that
+  was applied: first `pnpm db:reset && pnpm db:seed` (wipes this checkout's dev data; the seed
+  migrates first, so the old migration must still be there), then delete its folder, fix the
+  schema and generate again, so the new one meets the seeded rows.
 - `pnpm db:migrate` applies it to the seeded dev database. Check the existing rows:
   `pnpm nx run db:db-psql -- -c "select …"`.
 - Change `packages/db/src/seed.ts` only if the feature needs seeded data, and then `SEED` in

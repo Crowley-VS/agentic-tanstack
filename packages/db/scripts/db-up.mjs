@@ -127,7 +127,7 @@ export async function dbUp(cfg = resolveDb(), { env = process.env } = {}) {
  * `compose exec` arguments for psql on `db`, followed by the caller's own psql arguments. Without
  * a terminal on stdin (an agent's shell, a pipe) compose must not allocate one: `-T`.
  */
-export function psqlArgs(db, args = [], { tty = Boolean(process.stdin.isTTY) } = {}) {
+export function psqlArgs(db, args = [], { tty = process.stdin.isTTY } = {}) {
   return ['exec', ...(tty ? [] : ['-T']), 'postgres', 'psql', '-U', 'postgres', '-d', db, ...args];
 }
 
@@ -152,9 +152,10 @@ async function main([mode = 'up', ...args]) {
   } else if (mode === 'studio') {
     // drizzle-kit's default port (4983) would collide across worktrees: use this checkout's own
     const bin = join(dirname(createRequire(import.meta.url).resolve('drizzle-kit')), 'bin.cjs');
-    const args = [bin, 'studio', '--host', '127.0.0.1', '--port', String(cfg.studioPort)];
+    const studioArgs = [bin, 'studio', '--host', '127.0.0.1', '--port', String(cfg.studioPort)];
     process.exitCode =
-      spawnSync(process.execPath, args, { cwd: join(HERE, '..'), stdio: 'inherit' }).status ?? 1;
+      spawnSync(process.execPath, studioArgs, { cwd: join(HERE, '..'), stdio: 'inherit' }).status ??
+      1;
   } else {
     console.error('usage: node scripts/db-up.mjs [up|down|reset|psql [psql args]|studio]');
     process.exitCode = 1;
