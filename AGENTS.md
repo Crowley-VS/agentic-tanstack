@@ -20,7 +20,8 @@ Never claim "done" without running these. If a check fails, fix the cause; never
 <!-- stack:start:done -->
 
 Stack checks: `pnpm check` also runs the database tests, which need **Docker** (each test file gets its own
-Postgres database). The web app (M5+) adds `pnpm nx e2e web-e2e` for route and UI changes.
+Postgres database). Route, UI or API changes also need `pnpm nx e2e web-e2e` (Playwright on the production
+builds, own ports and database: `docs/e2e.md`).
 Browser tests (`*.browser.test.{ts,tsx}`) need Chromium once per machine and after each Playwright bump (`pnpm exec playwright install chromium`); watch them with `HEADED=1 pnpm nx run web:test-browser --skip-nx-cache --watch`.
 
 <!-- stack:end -->
@@ -105,6 +106,7 @@ Browser tests (`*.browser.test.{ts,tsx}`) need Chromium once per machine and aft
 | --------------------- | --------------------------------------------------------------------------- | ----------------------------------- |
 | `apps/api`            | GraphQL API (Yoga + Pothos): Notes queries, mutations, security defaults    | `scope:api`, `type:app`, `needs-db` |
 | `apps/web`            | TanStack Start (SSR on Nitro): pages, `/api/health`, the `/api/graphql` BFF | `scope:web`, `type:app`             |
+| `apps/web-e2e`        | Playwright e2e specs: production builds, e2e ports, a freshly seeded DB     | `scope:web`, `type:e2e`             |
 | `packages/core`       | business logic: writes and domain errors; takes a `Db`, never a request     | `scope:server`, `type:feature`      |
 | `packages/db`         | Drizzle schema, migrations, seed, per-test-file databases (`testDb()`)      | `scope:server`, `type:data`         |
 | `packages/graphql`    | `schema.graphql`: the API contract clients generate types from (generated)  | `scope:shared`, `type:util`         |

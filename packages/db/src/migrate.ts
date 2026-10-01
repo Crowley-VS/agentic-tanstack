@@ -6,8 +6,12 @@ import pg from 'pg';
 /** The committed migrations (drizzle-kit v3 layout: one folder per migration). */
 export const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
-/** Create the database named in `url` if it does not exist (connects to the `postgres` database). */
-export async function ensureDatabase(url: string): Promise<void> {
+/**
+ * Create the database named in `url` if it does not exist (connects to the `postgres` database).
+ * `fresh` (db:db-seed-e2e only): drop it first, so it starts empty. WITH (FORCE) closes the
+ * connections still open on it (a leftover e2e server's pool), which a plain DROP would wait on.
+ */
+export async function ensureDatabase(url: string, { fresh = false } = {}): Promise<void> {
   const target = new URL(url);
   const name = decodeURIComponent(target.pathname.slice(1));
   if (!/^[A-Za-z0-9_]+$/.test(name)) throw new Error(`refusing to create database "${name}"`);
@@ -16,6 +20,7 @@ export async function ensureDatabase(url: string): Promise<void> {
   });
   await admin.connect();
   try {
+    if (fresh) await admin.query(`drop database if exists "${name}" with (force)`);
     const { rowCount } = await admin.query('select 1 from pg_database where datname = $1', [name]);
     if (!rowCount) await admin.query(`create database "${name}"`);
   } finally {

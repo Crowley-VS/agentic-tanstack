@@ -48,8 +48,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Chromium for the browser tests (test-browser targets). They run headless, which needs only
-      # the headless shell and its system libraries. Not cached: the libraries are installed anyway.
+      # Chromium for the browser tests (test-browser targets) and the e2e tests (web-e2e). Both run
+      # headless, which needs only the headless shell and its system libraries. Not cached: the
+      # libraries are installed anyway.
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps --only-shell chromium
 
@@ -74,9 +75,29 @@ jobs:
             END { exit !ok }' "$RUNNER_TEMP/replay.log" \
             || { echo "::error::a task above missed the Nx cache on its second run"; exit 1; }
 
+      # End-to-end tests when web, api or what they use changed: the production builds `pnpm check`
+      # just made (replayed from the cache), on the e2e ports, against a freshly seeded e2e database
+      # in the same Docker Postgres. One Nx task per spec file (e2e-ci--<spec>), three at a time,
+      # sharing one api and one web server. Nx refuses these atomized tasks without Nx Cloud unless
+      # NX_SKIP_ATOMIZER_VALIDATION is set, an internal escape hatch: if an Nx upgrade drops it, run
+      # `pnpm nx affected -t e2e` here instead (docs/e2e.md).
+      - name: End-to-end tests
+        id: e2e
+        run: pnpm nx affected -t e2e-ci --parallel=3 --outputStyle=static
+        env:
+          NX_SKIP_ATOMIZER_VALIDATION: 'true'
+
+      # On an e2e failure: one HTML report merged from the per-spec blob reports (written when CI is
+      # set), next to each failed attempt's trace.zip, screenshot and error context. The upload below
+      # keeps them; open them with `pnpm exec playwright show-report` / `show-trace`.
+      - name: Merge the Playwright reports
+        if: failure() && steps.e2e.outcome == 'failure'
+        run: pnpm nx run web-e2e:e2e-ci--merge-reports --outputStyle=static
+
       # Keep what failing tests leave in apps/*/test-output/ (the browser tests' screenshots and
-      # attachments, see apps/web/vitest.browser.config.ts): without it a CI-only failure has only
-      # the log. Keep it the last step: it covers a failure in any step before it.
+      # attachments, see apps/web/vitest.browser.config.ts; the Playwright report and traces in
+      # apps/web-e2e/test-output/playwright/): without it a CI-only failure has only the log. Keep it
+      # the last step: it covers a failure in any step before it.
       - name: Upload test output
         if: failure()
         uses: actions/upload-artifact@v7

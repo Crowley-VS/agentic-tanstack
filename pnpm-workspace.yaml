@@ -34,6 +34,7 @@ catalog:
   '@nx/eslint-plugin': 23.2.1
   '@nx/js': 23.2.1
   '@nx/oxlint': 23.2.1
+  '@nx/playwright': 23.2.1
   '@nx/vitest': 23.2.1
   # exact, with playwright: one playwright-core, so one browser revision to install
   '@playwright/test': 1.63.0
