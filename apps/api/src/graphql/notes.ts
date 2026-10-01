@@ -19,6 +19,10 @@ const Note = builder.drizzleObject('notes', {
     id: t.exposeID('id'),
     title: t.exposeString('title'),
     body: t.exposeString('body'),
+    sourceUrl: t.exposeString('sourceUrl', {
+      nullable: true,
+      description: 'The http(s) URL the note came from, if its author gave one',
+    }),
     createdAt: t.expose('createdAt', { type: 'DateTime' }),
     comments: t.relation('comments', {
       description: `The newest ${COMMENTS_SHOWN} comments, newest first`,
@@ -73,6 +77,9 @@ const CreateNoteInput = builder.inputType('CreateNoteInput', {
   fields: (t) => ({
     title: t.string({ required: true }),
     body: t.string({ required: true }),
+    sourceUrl: t.string({
+      description: `An http or https URL of at most ${NOTE_LIMITS.sourceUrlMax} characters; none when left out or blank`,
+    }),
   }),
 });
 

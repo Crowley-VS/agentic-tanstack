@@ -1,11 +1,15 @@
 // The write side in a real browser, against the production build: the "New note" form on the board
-// and the "Add a comment" form on a note's page. Each test works on a note it created (unique
-// title), never on a seed note, so workers, parallel e2e-ci tasks and retries never collide.
+// (with its optional source URL, linked from the note's page) and the "Add a comment" form on a
+// note's page. Each test works on a note it created (unique title), never on a seed note, so
+// workers, parallel e2e-ci tasks and retries never collide.
 import type { Page } from '@playwright/test';
 import { expect, test, uniqueTitle } from './fixtures';
 
 const titleField = (page: Page) => page.getByRole('textbox', { name: 'Title', exact: true });
 const bodyField = (page: Page) => page.getByRole('textbox', { name: 'Body', exact: true });
+const sourceField = (page: Page) =>
+  page.getByRole('textbox', { name: 'Source URL (optional)', exact: true });
+const sourceLink = (page: Page) => page.getByRole('link', { name: 'Source', exact: true });
 
 /**
  * The note's card on the board. Other specs add notes meanwhile (newest first), so it may have
@@ -55,9 +59,46 @@ test('a new note shows in the list, on its own page and after a reload', async (
   await expect(page).toHaveURL(/\/notes\/[0-9a-f-]{36}$/);
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
   await expect(page.getByText('Typed into the form.')).toBeVisible();
+  await expect(sourceLink(page)).toHaveCount(0); // none given
   // server-rendered too: a reload (no client cache) shows the same note
   await page.reload();
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
+});
+
+test('a source URL is a "Source" link on the note page, in a new tab, never on the board', async ({
+  page,
+  baseURL,
+}) => {
+  const title = uniqueTitle('sourced note');
+  // this server's own health URL: the new tab opens without leaving the machine
+  const sourceUrl = `${baseURL}/api/health?from=${encodeURIComponent(title)}`;
+  await page.goto('/');
+  await titleField(page).fill(title);
+  await bodyField(page).fill('Has a source.');
+  await sourceField(page).fill(` ${sourceUrl} `);
+  await page.getByRole('button', { name: 'Create note' }).click();
+  await expect(page.getByText('Note created')).toBeVisible();
+  await expect(sourceField(page)).toHaveValue('');
+
+  const card = await boardCard(page, title);
+  await expect(card.getByRole('link')).toHaveCount(1); // the title only
+  await expect(card).not.toContainText(sourceUrl);
+
+  await card.getByRole('link', { name: title, exact: true }).click();
+  await expect(page.getByRole('heading', { name: title })).toBeVisible();
+  await expect(sourceLink(page)).toHaveAttribute('href', sourceUrl); // trimmed
+  // the new tab can neither reach this page (noopener) nor learn its URL (noreferrer)
+  const opened = page.waitForEvent('popup');
+  await sourceLink(page).click();
+  const tab = await opened;
+  await expect(tab).toHaveURL(sourceUrl);
+  expect(await tab.evaluate(() => [window.opener, document.referrer])).toEqual([null, '']);
+  await tab.close();
+
+  // server-rendered too: a reload (no client cache) shows the same link
+  await page.reload();
+  await expect(sourceLink(page)).toHaveAttribute('href', sourceUrl);
+  await expect(sourceLink(page)).toHaveAttribute('target', '_blank');
 });
 
 test('a blank title is refused with a field error, and the input is kept', async ({ page }) => {

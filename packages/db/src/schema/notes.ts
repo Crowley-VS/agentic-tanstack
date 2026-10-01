@@ -15,6 +15,8 @@ export const notes = pgTable(
       .default(sql`uuidv7()`),
     title: text('title').notNull(),
     body: text('body').notNull(),
+    /** Where the note came from: an http(s) URL, or null (notes written before it had none). */
+    sourceUrl: text('source_url'),
     createdAt: createdAt(),
   },
   // Ascending on purpose: Postgres scans it backwards for `ORDER BY created_at DESC, id DESC`,

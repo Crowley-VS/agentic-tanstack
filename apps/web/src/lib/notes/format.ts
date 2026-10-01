@@ -1,5 +1,5 @@
-// Plain-text helpers for notes: what the board shows of a body, timestamps, comment authors.
-// Everything renders as React text (escaped); nothing here returns HTML.
+// Plain-text helpers for notes: what the board shows of a body, timestamps, comment authors, the
+// source link's target. Everything renders as React text (escaped); nothing here returns HTML.
 
 /** The start of a body as one line: whitespace collapsed, cut at a word, "…" when shortened. */
 export function excerpt(body: string, max = 160): string {
@@ -23,6 +23,22 @@ export function formatTimestamp(iso: string): string {
 
 /** A comment's author: the name given, or "Anonymous". */
 export const authorName = (name: string | null | undefined) => name?.trim() || 'Anonymous';
+
+/**
+ * A note's source URL as a link target: the URL when it is http(s), else undefined (no link).
+ * The API refuses any other scheme; this keeps a row written some other way from ever becoming a
+ * `javascript:` or `data:` link.
+ */
+export function sourceHref(url: string | null | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    // new URL, not URL.parse: some browsers in Vite's default build target lack it (2024)
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:' ? url : undefined;
+  } catch {
+    return undefined; // not a URL at all
+  }
+}
 
 /** "1 comment", "3 comments". */
 export const commentCountLabel = (count: number) => `${count} comment${count === 1 ? '' : 's'}`;

@@ -37,6 +37,7 @@ const CREATE_NOTE = /* GraphQL */ `
           id
           title
           body
+          sourceUrl
           commentCount
         }
       }
@@ -79,8 +80,8 @@ const ADD_COMMENT = /* GraphQL */ `
   }
 `;
 
-async function newNote(title: string, body = 'body') {
-  const { data } = await gql(CREATE_NOTE, { input: { title, body } });
+async function newNote(title: string, body = 'body', sourceUrl?: string) {
+  const { data } = await gql(CREATE_NOTE, { input: { title, body, sourceUrl } });
   return data?.createNote.data as { id: string; title: string };
 }
 
@@ -89,10 +90,43 @@ describe('mutations', () => {
     const { data } = await gql(CREATE_NOTE, { input: { title: '  Groceries ', body: 'milk' } });
     expect(data?.createNote).toMatchObject({
       __typename: 'MutationCreateNoteSuccess',
-      data: { title: 'Groceries', body: 'milk', commentCount: 0 },
+      data: { title: 'Groceries', body: 'milk', sourceUrl: null, commentCount: 0 },
     });
     const [row] = await db.select().from(notes).where(eq(notes.id, data?.createNote.data.id));
     expect(row?.title).toBe('Groceries');
+  });
+
+  it('stores a trimmed source URL, and none for a blank or null one', async () => {
+    const { data } = await gql(CREATE_NOTE, {
+      input: { title: 'Linked', body: 'b', sourceUrl: ' https://example.com/post?id=1 ' },
+    });
+    expect(data?.createNote).toMatchObject({
+      __typename: 'MutationCreateNoteSuccess',
+      data: { sourceUrl: 'https://example.com/post?id=1' },
+    });
+    const [row] = await db.select().from(notes).where(eq(notes.id, data?.createNote.data.id));
+    expect(row?.sourceUrl).toBe('https://example.com/post?id=1');
+    for (const sourceUrl of ['  ', null]) {
+      const blank = await gql(CREATE_NOTE, { input: { title: 'Unlinked', body: 'b', sourceUrl } });
+      expect(blank.data?.createNote).toMatchObject({ data: { sourceUrl: null } });
+    }
+  });
+
+  it('refuses a source URL that is not http(s) or is too long, and writes nothing', async () => {
+    const [before] = await db.select({ n: count() }).from(notes);
+    const tooLong = `https://x.co/${'x'.repeat(NOTE_LIMITS.sourceUrlMax)}`;
+    for (const [sourceUrl, message] of [
+      ['javascript:alert(1)', 'Must be a URL starting with http:// or https://'],
+      [tooLong, `Must be at most ${NOTE_LIMITS.sourceUrlMax} characters`],
+    ]) {
+      const { data } = await gql(CREATE_NOTE, { input: { title: 'T', body: 'b', sourceUrl } });
+      expect(data?.createNote).toMatchObject({
+        __typename: 'ValidationError',
+        fieldErrors: [{ path: ['input', 'sourceUrl'], message }],
+      });
+    }
+    const [after] = await db.select({ n: count() }).from(notes);
+    expect(after?.n).toBe(before?.n);
   });
 
   it('returns invalid input as a ValidationError, field by field, and writes nothing', async () => {
@@ -205,16 +239,17 @@ describe('queries', () => {
     expect(unsized.data?.notes.edges).toHaveLength(NOTE_LIMITS.pageSize);
   });
 
-  it('reads one note with its newest comments and their total', async () => {
-    const note = await newNote('With comments');
+  it('reads one note with its source URL, newest comments and their total', async () => {
+    const note = await newNote('With comments', 'body', 'https://example.com/');
     for (const body of ['one', 'two', 'three'])
       await gql(ADD_COMMENT, { input: { noteId: note.id, body } });
     const { data } = await gql(
-      'query ($id: ID!) { note(id: $id) { title commentCount comments { body } } }',
+      'query ($id: ID!) { note(id: $id) { title sourceUrl commentCount comments { body } } }',
       { id: note.id },
     );
     expect(data?.note).toEqual({
       title: 'With comments',
+      sourceUrl: 'https://example.com/',
       commentCount: 3,
       comments: [{ body: 'three' }, { body: 'two' }, { body: 'one' }],
     });
@@ -249,7 +284,7 @@ describe('queries', () => {
       id title body createdAt commentCount } } pageInfo { hasNextPage endCursor } } }`);
     expect(board.errors).toBeUndefined();
     const page = await gql(
-      `query ($id: ID!) { note(id: $id) { id title body createdAt
+      `query ($id: ID!) { note(id: $id) { id title body sourceUrl createdAt
       commentCount comments { id authorName body createdAt } } }`,
       {
         id: '0199aa00-0000-7000-8000-000000000002',

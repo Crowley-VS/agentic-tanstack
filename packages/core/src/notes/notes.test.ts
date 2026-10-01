@@ -12,6 +12,23 @@ describe('createNote', () => {
     expect(note.id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  it('stores a trimmed source URL, and none for a blank or missing one', async () => {
+    const { db } = testDb();
+    const linked = await createNote(db, { title: 'T', body: 'B', sourceUrl: ' https://x.co/a ' });
+    expect(linked.sourceUrl).toBe('https://x.co/a');
+    for (const sourceUrl of ['  ', null, undefined])
+      expect((await createNote(db, { title: 'T', body: 'B', sourceUrl })).sourceUrl).toBeNull();
+  });
+
+  it('rejects a source URL that is not http or https without writing anything', async () => {
+    const { db } = testDb();
+    const before = (await db.query.notes.findMany()).length;
+    await expect(
+      createNote(db, { title: 'T', body: 'B', sourceUrl: 'javascript:alert(1)' }),
+    ).rejects.toBeInstanceOf(ZodError);
+    expect(await db.query.notes.findMany()).toHaveLength(before);
+  });
+
   it('rejects a whitespace-only title without writing anything', async () => {
     const { db } = testDb();
     // tests in a file share its database: compare counts, never assume it is empty

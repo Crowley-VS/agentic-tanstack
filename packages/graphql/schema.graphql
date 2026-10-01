@@ -15,6 +15,11 @@ type Comment {
 
 input CreateNoteInput {
   body: String!
+
+  """
+  An http or https URL of at most 2000 characters; none when left out or blank
+  """
+  sourceUrl: String
   title: String!
 }
 
@@ -66,6 +71,9 @@ type Note {
   comments: [Comment!]!
   createdAt: DateTime!
   id: ID!
+
+  """The http(s) URL the note came from, if its author gave one"""
+  sourceUrl: String
   title: String!
 }
 

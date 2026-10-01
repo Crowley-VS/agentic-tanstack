@@ -39,7 +39,7 @@ export async function gql<T>(
   return data;
 }
 
-export type CreatedNote = { id: string; title: string; body: string };
+export type CreatedNote = { id: string; title: string; body: string; sourceUrl: string | null };
 
 const CreateNote = /* GraphQL */ `
   mutation E2ECreateNote($input: CreateNoteInput!) {
@@ -50,6 +50,7 @@ const CreateNote = /* GraphQL */ `
           id
           title
           body
+          sourceUrl
         }
       }
     }
@@ -58,16 +59,22 @@ const CreateNote = /* GraphQL */ `
 
 export const test = base.extend<{
   /** Create a note through the BFF (a unique title unless given); returns it. */
-  createNote: (input?: { title?: string; body?: string }) => Promise<CreatedNote>;
+  createNote: (input?: {
+    title?: string;
+    body?: string;
+    sourceUrl?: string;
+  }) => Promise<CreatedNote>;
 }>({
   createNote: async ({ request }, use) => {
-    await use(async ({ title = uniqueTitle('note'), body = 'Created by an e2e test.' } = {}) => {
-      const { createNote } = await gql<{
-        createNote: { __typename: string; data?: CreatedNote };
-      }>(request, CreateNote, { input: { title, body } });
-      expect(createNote).toMatchObject({ __typename: 'MutationCreateNoteSuccess' });
-      if (!createNote.data) throw new Error('createNote returned no note');
-      return createNote.data;
-    });
+    await use(
+      async ({ title = uniqueTitle('note'), body = 'Created by an e2e test.', sourceUrl } = {}) => {
+        const { createNote } = await gql<{
+          createNote: { __typename: string; data?: CreatedNote };
+        }>(request, CreateNote, { input: { title, body, sourceUrl } });
+        expect(createNote).toMatchObject({ __typename: 'MutationCreateNoteSuccess' });
+        if (!createNote.data) throw new Error('createNote returned no note');
+        return createNote.data;
+      },
+    );
   },
 });

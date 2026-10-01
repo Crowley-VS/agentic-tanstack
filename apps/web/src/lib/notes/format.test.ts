@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authorName, commentCountLabel, excerpt, formatTimestamp } from './format';
+import { authorName, commentCountLabel, excerpt, formatTimestamp, sourceHref } from './format';
 
 describe('excerpt', () => {
   it('keeps a short body, on one line', () => {
@@ -36,6 +36,29 @@ describe('authorName', () => {
   it('shows "Anonymous" for a missing or blank name', () => {
     expect(authorName('Ada')).toBe('Ada');
     for (const name of [null, undefined, '', '   ']) expect(authorName(name)).toBe('Anonymous');
+  });
+});
+
+describe('sourceHref', () => {
+  it('links an http or https URL as it is', () => {
+    for (const url of ['https://example.com/a?b=1#c', 'http://localhost:3000/', 'HTTPS://EX.COM'])
+      expect(sourceHref(url)).toBe(url);
+  });
+
+  it('never links a missing URL or another scheme', () => {
+    for (const url of [
+      null,
+      undefined,
+      '',
+      'javascript:alert(1)',
+      ' JavaScript:alert(1)',
+      'java\nscript:alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      'ftp://example.com/',
+      '/relative/path',
+      'not a url',
+    ])
+      expect(sourceHref(url), String(url)).toBeUndefined();
   });
 });
 

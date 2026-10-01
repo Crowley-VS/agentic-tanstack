@@ -87,6 +87,9 @@ Hydration-safe rendering:
   hydration retries. "Load more" also stays disabled while any fetch runs or is paused (offline).
 - User text renders as React text only (never `dangerouslySetInnerHTML`); long words wrap
   (`wrap-anywhere`) and bodies keep their line breaks (`whitespace-pre-wrap`).
+- A user's URL becomes an `href` only through `sourceHref()` (`src/lib/notes/format.ts`: http(s)
+  or no link, whatever the database holds), and opens with `target="_blank"` and
+  `rel="noopener noreferrer"`. The API accepts only http(s) URLs (`NoteInput.sourceUrl`).
 - Timestamps are UTC text (`formatTimestamp()` in `src/lib/notes/format.ts`): the server and
   every browser render the same string, whatever their time zone or locale.
 

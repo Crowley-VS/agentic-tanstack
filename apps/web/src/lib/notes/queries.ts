@@ -31,6 +31,7 @@ const NoteQuery = graphql(`
       id
       title
       body
+      sourceUrl
       createdAt
       commentCount
       comments {

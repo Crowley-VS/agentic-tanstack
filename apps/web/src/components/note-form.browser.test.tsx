@@ -34,8 +34,9 @@ async function renderForm({ readOnly = false } = {}) {
   );
   const title = screen.getByRole('textbox', { name: 'Title' });
   const body = screen.getByRole('textbox', { name: 'Body' });
+  const source = screen.getByRole('textbox', { name: 'Source URL (optional)', exact: true });
   const submit = screen.getByRole('button', { name: /^(Create note|Creating…)$/ });
-  return { screen, queryClient, title, body, submit };
+  return { screen, queryClient, title, body, source, submit };
 }
 
 const created: CreateNoteMutation = {
@@ -68,6 +69,71 @@ describe('NoteForm (browser)', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['notes', 'list'] });
     await expect.element(title).toHaveValue('');
     await expect.element(body).toHaveValue('');
+  });
+
+  it('sends a trimmed source URL, and resets it', async () => {
+    executeMock.mockResolvedValue(created);
+    const { screen, title, body, source, submit } = await renderForm();
+    await title.fill('Hello');
+    await body.fill('World');
+    await source.fill(' https://example.com/post ');
+    await submit.click();
+
+    await expect.element(screen.getByText('Note created')).toBeVisible();
+    expect(executeMock).toHaveBeenCalledExactlyOnceWith(CreateNoteDocument, {
+      input: { title: 'Hello', body: 'World', sourceUrl: 'https://example.com/post' },
+    });
+    await expect.element(source).toHaveValue('');
+  });
+
+  it('sends no source URL when it is left blank', async () => {
+    executeMock.mockResolvedValue(created);
+    const { screen, title, body, source, submit } = await renderForm();
+    await title.fill('Hello');
+    await body.fill('World');
+    await source.fill('   ');
+    await submit.click();
+
+    await expect.element(screen.getByText('Note created')).toBeVisible();
+    // undefined, not '' or null: JSON leaves it out, and the note has no source
+    expect(executeMock).toHaveBeenCalledExactlyOnceWith(CreateNoteDocument, {
+      input: { title: 'Hello', body: 'World' },
+    });
+  });
+
+  it('refuses a source URL that is not http(s) before sending anything', async () => {
+    const { screen, title, body, source, submit } = await renderForm();
+    await title.fill('Hello');
+    await body.fill('World');
+    await source.fill('javascript:alert(1)');
+    await submit.click();
+
+    const message = screen.getByText('Must be a URL starting with http:// or https://');
+    await expect.element(message).toBeVisible();
+    await expect.element(source).toHaveAttribute('aria-invalid', 'true');
+    await expect
+      .element(source)
+      .toHaveAccessibleDescription('Must be a URL starting with http:// or https://');
+    await expect.element(title).toHaveAttribute('aria-invalid', 'false');
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it("maps the API's ValidationError on the source URL to its field", async () => {
+    executeMock.mockResolvedValue({
+      createNote: {
+        __typename: 'ValidationError',
+        fieldErrors: [{ path: ['input', 'sourceUrl'], message: 'Must be at most 2000 characters' }],
+      },
+    } satisfies CreateNoteMutation);
+    const { screen, title, body, source, submit } = await renderForm();
+    await title.fill('Hello');
+    await body.fill('World');
+    await source.fill('https://example.com/');
+    await submit.click();
+
+    await expect.element(screen.getByText('Must be at most 2000 characters')).toBeVisible();
+    await expect.element(source).toHaveAttribute('aria-invalid', 'true');
+    await expect.element(source).toHaveValue('https://example.com/');
   });
 
   it("maps the API's ValidationError to the fields it names, keeping the input", async () => {
@@ -124,8 +190,9 @@ describe('NoteForm (browser)', () => {
   });
 
   it('renders disabled while the API is read-only', async () => {
-    const { title, body, submit } = await renderForm({ readOnly: true });
-    for (const control of [title, body, submit]) await expect.element(control).toBeDisabled();
+    const { title, body, source, submit } = await renderForm({ readOnly: true });
+    for (const control of [title, body, source, submit])
+      await expect.element(control).toBeDisabled();
   });
 
   it('says how long to wait when the BFF refuses with 429', async () => {

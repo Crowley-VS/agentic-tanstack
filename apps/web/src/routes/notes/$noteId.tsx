@@ -1,4 +1,5 @@
-// One note: its title and body, its newest comments with the total, and the "Add a comment" form.
+// One note: its title, its source link (if any) and body, its newest comments with the total, and
+// the "Add a comment" form.
 // An id that is not a UUID, or no note with it, is a 404 (notFound(): SSR answers HTTP 404).
 import { Skeleton } from '@acme/ui/components/skeleton';
 import { NoteId } from '@acme/validators/notes';
@@ -6,7 +7,7 @@ import { useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute, Link, notFound } from '@tanstack/react-router';
 import { CommentForm } from '../../components/comment-form';
 import { NotFound } from '../../components/not-found';
-import { authorName, commentCountLabel, formatTimestamp } from '../../lib/notes/format';
+import { authorName, commentCountLabel, formatTimestamp, sourceHref } from '../../lib/notes/format';
 import { noteOptions } from '../../lib/notes/queries';
 
 export const Route = createFileRoute('/notes/$noteId')({
@@ -31,6 +32,7 @@ function NotePage() {
   const { note } = useSuspenseQuery(noteOptions(noteId)).data;
   if (!note) throw notFound();
   const shown = note.comments.length;
+  const source = sourceHref(note.sourceUrl);
   return (
     <>
       <Link to="/" className="text-sm text-muted-foreground hover:underline">
@@ -40,6 +42,20 @@ function NotePage() {
         <h1 className="text-2xl font-semibold tracking-tight wrap-anywhere">{note.title}</h1>
         <p className="text-sm text-muted-foreground">
           <time dateTime={note.createdAt}>{formatTimestamp(note.createdAt)}</time>
+          {source && (
+            <>
+              {' · '}
+              {/* a new tab that cannot reach this page (noopener) nor learn its URL (noreferrer) */}
+              <a
+                href={source}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-4 hover:text-foreground"
+              >
+                Source
+              </a>
+            </>
+          )}
         </p>
         <p className="whitespace-pre-wrap wrap-anywhere">{note.body}</p>
       </article>

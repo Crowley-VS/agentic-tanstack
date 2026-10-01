@@ -169,11 +169,12 @@ describe('NotePage (browser)', () => {
   const ID = '0198f3c0-0000-7000-8000-000000000000';
 
   /** The note page for a note with `count` comments, `shown` of them in the answer. */
-  async function renderNote(count: number, shown: number) {
+  async function renderNote(count: number, shown: number, sourceUrl: string | null = null) {
     const note: NonNullable<NoteQuery['note']> = {
       id: ID,
       title: 'A note',
       body: 'Its body.',
+      sourceUrl,
       createdAt: '2026-01-01T09:00:00.000Z',
       commentCount: count,
       comments: Array.from({ length: shown }, (_, i) => ({
@@ -200,6 +201,22 @@ describe('NotePage (browser)', () => {
     expect(comments.getByRole('listitem').elements()).toHaveLength(3);
     await expect.element(comments.getByRole('listitem').first()).toHaveTextContent(/^Anonymous/);
     expect(screen.getByText(/^Showing the newest/).elements()).toEqual([]);
+  });
+
+  it('links its source, in a new tab that cannot reach this page', async () => {
+    const { screen } = await renderNote(0, 0, 'https://example.com/post?id=1');
+    const source = screen.getByRole('link', { name: 'Source', exact: true });
+    await expect.element(source).toHaveAttribute('href', 'https://example.com/post?id=1');
+    await expect.element(source).toHaveAttribute('target', '_blank');
+    await expect.element(source).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('shows no source link without a source, or for one that is not http(s)', async () => {
+    for (const sourceUrl of [null, 'javascript:alert(1)']) {
+      const { screen } = await renderNote(0, 0, sourceUrl);
+      expect(screen.getByRole('link', { name: 'Source' }).elements()).toEqual([]);
+      await screen.unmount();
+    }
   });
 
   it('says when it shows only the newest comments', async () => {

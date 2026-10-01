@@ -4,6 +4,7 @@ import * as z from 'zod';
 export const NOTE_LIMITS = {
   titleMax: 120,
   bodyMax: 5000,
+  sourceUrlMax: 2000,
   authorNameMax: 40,
   commentBodyMax: 1000,
   /** Notes per page when a client asks for no page size. */
@@ -24,6 +25,25 @@ const trimmed = (min: number, max: number, requiredMessage: string) =>
 export const NoteInput = z.object({
   title: trimmed(1, NOTE_LIMITS.titleMax, 'Title is required'),
   body: trimmed(1, NOTE_LIMITS.bodyMax, 'Body is required'),
+  sourceUrl: z
+    .string()
+    .trim()
+    .max(NOTE_LIMITS.sourceUrlMax, {
+      error: `Must be at most ${NOTE_LIMITS.sourceUrlMax} characters`,
+    })
+    // nullish: GraphQL clients send null for a nullable field left empty
+    .nullish()
+    .transform((v) => v || undefined)
+    // http(s) only, with "//" (httpProtocol also refuses "https:example.com"): the note page
+    // renders it as a link, so no javascript:, data: or other scheme may get through
+    .pipe(
+      z
+        .url({
+          protocol: z.regexes.httpProtocol,
+          error: 'Must be a URL starting with http:// or https://',
+        })
+        .optional(),
+    ),
 });
 export type NoteInput = z.infer<typeof NoteInput>;
 

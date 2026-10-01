@@ -13,6 +13,8 @@ export type AddCommentInput = {
 
 export type CreateNoteInput = {
   body: string;
+  /** An http or https URL of at most 2000 characters; none when left out or blank */
+  sourceUrl?: string | null | undefined;
   title: string;
 };
 
@@ -34,7 +36,7 @@ export type NoteQueryVariables = Exact<{
 }>;
 
 
-export type NoteQuery = { note: { id: string, title: string, body: string, createdAt: string, commentCount: number, comments: Array<{ id: string, authorName: string | null, body: string, createdAt: string }> } | null };
+export type NoteQuery = { note: { id: string, title: string, body: string, sourceUrl: string | null, createdAt: string, commentCount: number, comments: Array<{ id: string, authorName: string | null, body: string, createdAt: string }> } | null };
 
 export type CreateNoteMutationVariables = Exact<{
   input: CreateNoteInput;
@@ -106,6 +108,7 @@ export const NoteDocument = new TypedDocumentString(`
     id
     title
     body
+    sourceUrl
     createdAt
     commentCount
     comments {

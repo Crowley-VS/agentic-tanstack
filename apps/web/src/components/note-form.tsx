@@ -19,7 +19,7 @@ import { fieldErrors, type FieldErrors, unreachable, useWriteError } from '../li
 import { execute } from '../lib/graphql/execute';
 import { CreateNoteMutation, noteKeys } from '../lib/notes/queries';
 
-const FIELDS = ['title', 'body'] as const;
+const FIELDS = ['title', 'body', 'sourceUrl'] as const;
 
 export function NoteForm() {
   const id = useId();
@@ -91,6 +91,20 @@ export function NoteForm() {
               aria-describedby={errors.body ? `${id}-body-error` : undefined}
             />
             <FieldError id={`${id}-body-error`}>{errors.body}</FieldError>
+          </Field>
+          <Field data-invalid={!!errors.sourceUrl}>
+            <FieldLabel htmlFor={`${id}-source`}>Source URL (optional)</FieldLabel>
+            {/* type="url" for the keyboard only: noValidate leaves the checks to the shared schema */}
+            <Input
+              id={`${id}-source`}
+              name="sourceUrl"
+              type="url"
+              placeholder="https://"
+              maxLength={NOTE_LIMITS.sourceUrlMax}
+              aria-invalid={!!errors.sourceUrl}
+              aria-describedby={errors.sourceUrl ? `${id}-source-error` : undefined}
+            />
+            <FieldError id={`${id}-source-error`}>{errors.sourceUrl}</FieldError>
           </Field>
           <FieldError>{errors.form}</FieldError>
           <Field orientation="horizontal">
