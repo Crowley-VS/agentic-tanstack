@@ -56,8 +56,8 @@ const ServerEnv = z
      */
     REAL_IP_HEADER: z.string().trim().toLowerCase().default('x-real-ip'),
     /**
-     * Mutations per client through the BFF (server/rate-limit.server.ts), on by default.
-     * `prefault`, not `default`: the default value goes through the transform too.
+     * Writes (root mutation fields) per client through the BFF (server/rate-limit.server.ts), on
+     * by default. `prefault`, not `default`: the default value goes through the transform too.
      */
     WRITE_RATE_LIMIT: RateLimit.prefault('10/60s'),
     /** Test-only, set by the e2e servers: turns the write rate limit off. */

@@ -1,11 +1,19 @@
-// The BFF's write rate limit: at most WRITE_RATE_LIMIT mutations per client per window (the board
-// is public and has no accounts). Queries are never limited. In memory, so per process: with
-// several web instances each counts on its own (the effective limit is multiplied by the
-// instance count) and a restart forgets every count; a deployment that needs one shared count
-// moves it to a shared store (e.g. Redis) or the platform's edge.
+// The BFF's write rate limit: at most WRITE_RATE_LIMIT writes (root mutation fields) per client
+// per window (the board is public and has no accounts). Queries are never limited. In memory, so
+// per process: with several web instances each counts on its own (the effective limit is
+// multiplied by the instance count) and a restart forgets every count; a deployment that needs
+// one shared count moves it to a shared store (e.g. Redis) or the platform's edge.
 import { isIPv6 } from 'node:net';
 import { RATE_LIMITED } from '@acme/validators/error-codes';
-import { getOperationAST, OperationTypeNode, parse } from 'graphql';
+import {
+  type DocumentNode,
+  type FragmentDefinitionNode,
+  getOperationAST,
+  Kind,
+  OperationTypeNode,
+  parse,
+  type SelectionSetNode,
+} from 'graphql';
 import type { RateLimit } from '../env.server';
 import { errorResponse } from './responses.server';
 
@@ -13,28 +21,61 @@ import { errorResponse } from './responses.server';
 export const MAX_CLIENTS = 10_000;
 
 /**
- * Whether a JSON request body may change data. Only a body that surely runs a query is a read:
- * one this cannot make sense of (bad JSON, a batch, no query, a syntax error, an operation
- * operationName does not single out) counts as a write, so no body skips the limit by being
- * read differently here than by the API. The app's own requests always parse.
+ * How many writes a JSON request body may make. A body that surely runs a query makes none; a
+ * mutation makes one per root field it selects (aliases let one request run the same mutation
+ * many times). A body this cannot make sense of (bad JSON, a batch, no query, a syntax error, an
+ * operation operationName does not single out) counts as one write, so no body skips the limit by
+ * being read differently here than by the API. The app's own requests always parse.
  */
-export function isWrite(body: string): boolean {
+export function writesIn(body: string): number {
   let params: unknown;
   try {
     params = JSON.parse(body);
   } catch {
-    return true;
+    return 1;
   }
-  if (!(params instanceof Object) || Array.isArray(params)) return true;
+  if (!(params instanceof Object) || Array.isArray(params)) return 1;
   const query: unknown = Reflect.get(params, 'query');
   const name: unknown = Reflect.get(params, 'operationName') ?? undefined;
-  if (typeof query !== 'string' || (name !== undefined && typeof name !== 'string')) return true;
+  if (typeof query !== 'string' || (name !== undefined && typeof name !== 'string')) return 1;
   try {
-    const operation = getOperationAST(parse(query, { noLocation: true }), name);
-    return operation?.operation !== OperationTypeNode.QUERY;
+    const document = parse(query, { noLocation: true });
+    const operation = getOperationAST(document, name);
+    if (operation?.operation === OperationTypeNode.QUERY) return 0;
+    if (!operation) return 1;
+    return Math.max(1, responseKeys(document, operation.selectionSet).size);
   } catch {
-    return true;
+    return 1;
   }
+}
+
+/**
+ * The response keys (alias, else name) of a selection set's fields, through fragment spreads and
+ * inline fragments. The API runs each key once (fields that share one are merged), so for a
+ * mutation's root selection each key is one write.
+ */
+function responseKeys(
+  document: DocumentNode,
+  selectionSet: SelectionSetNode,
+  keys = new Set<string>(),
+  spread = new Set<string>(),
+): Set<string> {
+  for (const selection of selectionSet.selections) {
+    if (selection.kind === Kind.FIELD) keys.add((selection.alias ?? selection.name).value);
+    else if (selection.kind === Kind.INLINE_FRAGMENT)
+      responseKeys(document, selection.selectionSet, keys, spread);
+    else if (!spread.has(selection.name.value)) {
+      // each fragment once: a second spread adds the same keys, and a cycle would never end
+      spread.add(selection.name.value);
+      const fragment = document.definitions.find(
+        (definition): definition is FragmentDefinitionNode =>
+          definition.kind === Kind.FRAGMENT_DEFINITION &&
+          definition.name.value === selection.name.value,
+      );
+      if (fragment) responseKeys(document, fragment.selectionSet, keys, spread);
+    }
+  }
+  return keys;
 }
 
 /**
@@ -54,11 +95,12 @@ export function clientKey(ip: string | undefined): string {
 }
 
 export type Verdict = { ok: true } | { ok: false; retryAfterSeconds: number };
-export type WriteLimiter = { hit(key: string): Verdict; readonly size: number };
+export type WriteLimiter = { hit(key: string, writes?: number): Verdict; readonly size: number };
 
 /**
  * A fixed window per client, opened by its first write: `limit` writes, then a 429 until the
- * window closes. It holds at most `maxClients` windows.
+ * window closes. A request that would take the count past the limit is refused whole (one with
+ * more writes than the limit always is). It holds at most `maxClients` windows.
  */
 export function createWriteLimiter(
   { limit, windowMs }: RateLimit,
@@ -68,7 +110,7 @@ export function createWriteLimiter(
   // lasts windowMs, so the closed ones are always at the front.
   const windows = new Map<string, { count: number; closesAt: number }>();
   return {
-    hit(key) {
+    hit(key, writes = 1) {
       const time = now();
       for (const [client, window] of windows) {
         if (window.closesAt > time) break;
@@ -80,12 +122,12 @@ export function createWriteLimiter(
         window = { count: 0, closesAt: time + windowMs };
         windows.set(key, window);
       }
-      if (window.count >= limit)
+      if (window.count + writes > limit)
         return {
           ok: false,
           retryAfterSeconds: Math.max(1, Math.ceil((window.closesAt - time) / 1000)),
         };
-      window.count += 1;
+      window.count += writes;
       return { ok: true };
     },
     get size() {
