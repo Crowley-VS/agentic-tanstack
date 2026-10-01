@@ -6,6 +6,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { createRouter } from '@tanstack/react-router';
 import { setupRouterSsrQueryIntegration } from '@tanstack/react-router-ssr-query';
 import { ErrorPage } from './components/error-page';
+import { NotFound } from './components/not-found';
 import { shouldRetry } from './lib/graphql/execute';
 import { routeTree } from './routeTree.gen';
 
@@ -23,8 +24,9 @@ export function getRouter() {
     defaultPreload: 'intent',
     // TanStack Query decides freshness: loaders always run; ensureQueryData() is free when cached
     defaultPreloadStaleTime: 0,
-    // the one not-found page: an unknown URL, or notFound() from any route (the root route included)
-    defaultNotFoundComponent: () => <p>Not found.</p>,
+    // the one not-found page: an unknown URL, or notFound() from any route (the root route
+    // included); a route may render it with its own message (routes/notes/$noteId.tsx)
+    defaultNotFoundComponent: () => <NotFound />,
     defaultErrorComponent: ErrorPage,
   });
   // dehydrates the query cache into the SSR stream, hydrates it in the browser, and provides the

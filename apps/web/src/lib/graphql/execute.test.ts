@@ -5,17 +5,24 @@ import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { environmentManager } from '@tanstack/react-query';
 import { afterAll, beforeAll, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { RATE_LIMITED } from '@acme/validators/error-codes';
-import { ApiVersionDocument, TypedDocumentString } from '../../gql/graphql';
+import { TypedDocumentString } from '../../gql/graphql';
 import { GraphQLRequestError } from './errors';
 import { BFF_PATH, execute, postToBff, shouldRetry } from './execute';
 
 const SECRET = 's'.repeat(32);
+// Operations typed by hand, as codegen types them: tests stay out of codegen, and the app's own
+// operations change with its pages.
+/** An operation without variables. */
+const ApiVersionDocument = new TypedDocumentString<
+  { apiVersion: string },
+  { [key: string]: never }
+>('query ApiVersion { apiVersion }');
 /** An operation whose variables are all optional (how codegen types `$first: Int`). */
 const NotesDocument = new TypedDocumentString<
   { notes: { edges: { cursor: string }[] } },
   { first?: number | null }
 >('query Notes($first: Int) { notes(first: $first) { edges { cursor } } }');
-/** An operation with a required variable, typed by hand (tests stay out of codegen). */
+/** An operation with a required variable. */
 const NoteDocument = new TypedDocumentString<{ note: { id: string } | null }, { id: string }>(
   'query Note($id: ID!) { note(id: $id) { id } }',
 );

@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiGraphqlRouteImport } from './routes/api/graphql'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
+import { Route as NotesNoteIdRouteImport } from './routes/notes/$noteId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -28,35 +29,44 @@ const ApiHealthRoute = ApiHealthRouteImport.update({
   path: '/api/health',
   getParentRoute: () => rootRouteImport,
 } as any)
+const NotesNoteIdRoute = NotesNoteIdRouteImport.update({
+  id: '/notes/$noteId',
+  path: '/notes/$noteId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/graphql': typeof ApiGraphqlRoute
   '/api/health': typeof ApiHealthRoute
+  '/notes/$noteId': typeof NotesNoteIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/graphql': typeof ApiGraphqlRoute
   '/api/health': typeof ApiHealthRoute
+  '/notes/$noteId': typeof NotesNoteIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/api/graphql': typeof ApiGraphqlRoute
   '/api/health': typeof ApiHealthRoute
+  '/notes/$noteId': typeof NotesNoteIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/graphql' | '/api/health'
+  fullPaths: '/' | '/api/graphql' | '/api/health' | '/notes/$noteId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/graphql' | '/api/health'
-  id: '__root__' | '/' | '/api/graphql' | '/api/health'
+  to: '/' | '/api/graphql' | '/api/health' | '/notes/$noteId'
+  id: '__root__' | '/' | '/api/graphql' | '/api/health' | '/notes/$noteId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiGraphqlRoute: typeof ApiGraphqlRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  NotesNoteIdRoute: typeof NotesNoteIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -82,6 +92,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/notes/$noteId': {
+      id: '/notes/$noteId'
+      path: '/notes/$noteId'
+      fullPath: '/notes/$noteId'
+      preLoaderRoute: typeof NotesNoteIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -89,6 +106,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiGraphqlRoute: ApiGraphqlRoute,
   ApiHealthRoute: ApiHealthRoute,
+  NotesNoteIdRoute: NotesNoteIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

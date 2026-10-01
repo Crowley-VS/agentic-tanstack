@@ -55,9 +55,8 @@ internal Nx escape hatch, not a documented option: if an Nx upgrade removes it, 
   newest first, so other tests' notes come before the seed.
 - **Seed rows are read-only.** No spec comments on a seed note or changes one: other specs assert
   on their exact titles and comment counts. Work on a note the test created instead.
-- Prefer roles and labels (`getByRole`, `getByLabel`) to CSS selectors; a click right after
-  `page.goto()` can land before hydration, so retry it with `expect(...).toPass()` when it must
-  trigger client code.
+- Prefer roles and labels (`getByRole`, `getByLabel`) to CSS selectors. Buttons that need
+  JavaScript render disabled until hydration (`docs/web.md`), so a click waits for it: no retries.
 - Data setup goes through the BFF (`gql()`), as the browser does: never through the API port.
 - Keep the two `webServer` entries in `playwright.config.mts` exactly as they are: a command that
   is not `pnpm nx run <project>:<target>`, an `env` or `wait` key, or `reuseExistingServer: false`
