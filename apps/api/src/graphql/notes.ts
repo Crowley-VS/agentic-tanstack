@@ -4,8 +4,7 @@
 // own validation never fails for input that got this far.
 import { NotFoundError } from '@acme/core/errors';
 import { addComment, createNote } from '@acme/core/notes';
-import { CommentInput, NOTE_LIMITS, NoteInput } from '@acme/validators/notes';
-import { z } from 'zod';
+import { CommentInput, NOTE_LIMITS, NoteId, NoteInput } from '@acme/validators/notes';
 import { builder } from './builder';
 import { ValidationError } from './errors';
 
@@ -50,7 +49,10 @@ builder.queryFields((t) => ({
       // priced by the page size asked for (the plugin caps pages at NOTE_LIMITS.pageSizeMax)
       complexity: (args) => ({
         field: 1,
-        multiplier: Math.min(args.first ?? args.last ?? 20, NOTE_LIMITS.pageSizeMax),
+        multiplier: Math.min(
+          args.first ?? args.last ?? NOTE_LIMITS.pageSize,
+          NOTE_LIMITS.pageSizeMax,
+        ),
       }),
       resolve: (query, _root, _args, ctx) =>
         ctx.db.query.notes.findMany(query({ orderBy: newestFirst })),
@@ -62,7 +64,7 @@ builder.queryFields((t) => ({
   note: t.drizzleField({
     type: 'notes',
     nullable: true,
-    args: { id: t.arg.id({ required: true, validate: z.uuid({ error: 'Invalid note id' }) }) },
+    args: { id: t.arg.id({ required: true, validate: NoteId }) },
     resolve: (query, _root, { id }, ctx) => ctx.db.query.notes.findFirst(query({ where: { id } })),
   }),
 }));

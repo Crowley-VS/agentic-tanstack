@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CommentInput, NOTE_LIMITS, NoteInput, PageArgs } from './notes';
+import { CommentInput, NOTE_LIMITS, NoteId, NoteInput, PageArgs } from './notes';
 
 describe('NoteInput', () => {
   it('trims and accepts a valid note', () => {
@@ -50,6 +50,14 @@ describe('CommentInput', () => {
 
 const NOTE_ID = '0198f3c0-0000-7000-8000-000000000000';
 
+describe('NoteId', () => {
+  it('accepts a UUID (the database makes v7 ones) and rejects anything else', () => {
+    expect(NoteId.safeParse(NOTE_ID).success).toBe(true);
+    for (const id of ['nope', '', `${NOTE_ID}x`, NOTE_ID.replaceAll('-', '')])
+      expect(NoteId.safeParse(id).error?.issues[0]?.message, id).toBe('Invalid note id');
+  });
+});
+
 describe('length limits', () => {
   it.each([
     [
@@ -85,6 +93,7 @@ describe('length limits', () => {
       bodyMax: 5000,
       authorNameMax: 40,
       commentBodyMax: 1000,
+      pageSize: 20,
       pageSizeMax: 50,
     });
   });
@@ -101,8 +110,8 @@ describe('length limits', () => {
 });
 
 describe('PageArgs', () => {
-  it('defaults to 20 and accepts 1 to pageSizeMax', () => {
-    expect(PageArgs.parse({})).toEqual({ first: 20 });
+  it('defaults to pageSize and accepts 1 to pageSizeMax', () => {
+    expect(PageArgs.parse({})).toEqual({ first: NOTE_LIMITS.pageSize });
     expect(PageArgs.parse({ first: 1 })).toEqual({ first: 1 });
     expect(PageArgs.parse({ first: NOTE_LIMITS.pageSizeMax })).toEqual({ first: 50 });
   });

@@ -4,18 +4,14 @@
 import { createServer } from 'node:http';
 import { createDb } from '@acme/db';
 import { createApp, GRAPHQL_PATH } from './app';
-import { listenPort, loadEnv } from './env';
+import { listenHost, listenPort, loadEnv } from './env';
 
 const env = loadEnv();
 const { db, close } = createDb({ url: env.DATABASE_URL, max: env.DB_POOL_MAX });
-const yoga = createApp({ db, env });
+const yoga = createApp({ db, env, log: console.log });
 const server = createServer((req, res) => void yoga(req, res));
 const port = listenPort(env);
-
-// Production: `::` (IPv6 and IPv4), since Railway's private network is IPv6-only. Development:
-// this machine only, as it serves GraphiQL and introspection and ignores the secret (app.ts
-// enforces it with NODE_ENV=production only).
-const host = env.NODE_ENV === 'production' ? '::' : '127.0.0.1';
+const host = listenHost(env);
 server.listen(port, host, () =>
   console.log(`[api] listening on http://localhost:${port}${GRAPHQL_PATH} (${env.NODE_ENV})`),
 );

@@ -6,8 +6,13 @@ export const NOTE_LIMITS = {
   bodyMax: 5000,
   authorNameMax: 40,
   commentBodyMax: 1000,
+  /** Notes per page when a client asks for no page size. */
+  pageSize: 20,
   pageSizeMax: 50,
 } as const;
+
+/** A note's id from a client: the API's `note(id:)` argument and `CommentInput.noteId`. */
+export const NoteId = z.uuid({ error: 'Invalid note id' });
 
 const trimmed = (min: number, max: number, requiredMessage: string) =>
   z
@@ -23,7 +28,7 @@ export const NoteInput = z.object({
 export type NoteInput = z.infer<typeof NoteInput>;
 
 export const CommentInput = z.object({
-  noteId: z.uuid({ error: 'Invalid note id' }),
+  noteId: NoteId,
   authorName: z
     .string()
     .trim()
@@ -38,5 +43,5 @@ export const CommentInput = z.object({
 export type CommentInput = z.infer<typeof CommentInput>;
 
 export const PageArgs = z.object({
-  first: z.number().int().min(1).max(NOTE_LIMITS.pageSizeMax).default(20),
+  first: z.number().int().min(1).max(NOTE_LIMITS.pageSizeMax).default(NOTE_LIMITS.pageSize),
 });
