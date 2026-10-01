@@ -23,7 +23,15 @@
 //   node tools/dev-ports.mjs --exec -- <cmd>  run cmd with the env injected (existing env wins)
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,8 +61,10 @@ export function detectCheckout(cwd = process.cwd()) {
         stdio: ['ignore', 'pipe', 'ignore'],
       }).trim();
     const root = git('rev-parse', '--show-toplevel');
-    const gitDir = resolve(cwd, git('rev-parse', '--git-dir'));
-    const commonDir = resolve(cwd, git('rev-parse', '--git-common-dir'));
+    // real paths: every checkout of the repository spells its common dir the same way (it is how
+    // `prune` recognises this repository's Docker resources, see docker-compose.yml)
+    const gitDir = realpathSync(resolve(cwd, git('rev-parse', '--git-dir')));
+    const commonDir = realpathSync(resolve(cwd, git('rev-parse', '--git-common-dir')));
     return { root, primary: gitDir === commonDir, commonDir };
   } catch {
     return { root: resolve(cwd), primary: true };
@@ -136,8 +146,11 @@ export function worktreeBlock(root, commonDir, { exists = existsSync } = {}) {
   }
 }
 
-/** Pure: compute ports and names for a checkout (`block`: the worktree's registry block). */
-export function computePorts({ root, primary, block }, env = {}) {
+/**
+ * Pure: compute ports and names for a checkout (`block`: the worktree's registry block;
+ * `commonDir`: the directory all worktrees of the repository share, passed through).
+ */
+export function computePorts({ root, primary, block, commonDir }, env = {}) {
   const hash = pathHash(root);
   let ports;
   if (primary) {
@@ -160,6 +173,7 @@ export function computePorts({ root, primary, block }, env = {}) {
   return {
     primary,
     root,
+    commonDir,
     composeProject,
     ports,
     urls: {

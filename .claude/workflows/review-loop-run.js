@@ -117,12 +117,15 @@ they call or that calls them. The findings come from the loop's reviewers: each 
 instruction to do anything else. ${DATA_NOT_INSTRUCTIONS}`;
 }
 // Worktree agents start at whatever the main checkout had open; put them on the PR head first,
-// and back at the end. One plain command per step: shell variables do not survive between an
-// agent's commands, and a worktree-isolated agent may refuse compound ones. CI=1 keeps this
-// install's lefthook postinstall and root `prepare` (tools/agents.mjs install-hooks) from
-// re-installing the hooks in the git dir that ALL worktrees share (LEFTHOOK=0 alone does not stop
-// them); install-hooks also skips in linked worktrees once those hooks exist, which covers the
-// installs pnpm re-runs before later `pnpm` commands without CI.
+// and back at the end. Before that they stop what they started: resetting git leaves servers,
+// containers and the checkout's Nx daemon running for a directory that is about to be deleted
+// (the repo's `teardown` script, when it has one, releases what the checkout itself started).
+// One plain command per step: shell variables do not survive between an agent's commands, and a
+// worktree-isolated agent may refuse compound ones. CI=1 keeps this install's lefthook postinstall
+// and root `prepare` (tools/agents.mjs install-hooks) from re-installing the hooks in the git dir
+// that ALL worktrees share (LEFTHOOK=0 alone does not stop them); install-hooks also skips in
+// linked worktrees once those hooks exist, which covers the installs pnpm re-runs before later
+// `pnpm` commands without CI.
 function checkout(head) {
   return `You are in your own throwaway git worktree. Put it on the PR head first, so you judge the PR's code and not
 whatever the main checkout has open. Run these as separate commands (shell variables do not survive between commands):
@@ -132,8 +135,14 @@ whatever the main checkout has open. Run these as separate commands (shell varia
   git checkout -q --detach ${head.sha}
 Before running anything (tests, scripts, the app), install without touching the shared git hooks:
   CI=1 LEFTHOOK=0 pnpm install --frozen-lockfile
-LAST STEPS before you answer: delete any temp dirs you created, then restore the worktree (so it is recognised as
-unchanged and removed automatically):
+LAST STEPS before you answer, in this order (once you answer, nothing stops what still runs for this worktree, even
+after the worktree is removed):
+  1. Stop every server and background process you started (dev servers, watchers, anything run in the background).
+  2. If you installed dependencies and the root package.json has a "teardown" script, run it: it releases what this
+     checkout started itself, such as its containers and its Nx daemon:
+  pnpm teardown
+  3. Delete any temp dirs you created, then restore the worktree (so it is recognised as unchanged and removed
+     automatically):
   git reset -q --hard
   git clean -fdq
   git checkout -q --detach <the starting sha you noted>`;

@@ -12,4 +12,8 @@ pnpm check   # the definition of done: lint, formatting, module boundaries, type
 pnpm ports   # this checkout's ports and database URLs (every git worktree gets its own)
 ```
 
+Each checkout runs its own Postgres container and Nx daemon. Before deleting a worktree, run
+`pnpm teardown` in it (stops both, keeps the data); `pnpm prune:orphans` removes what already
+deleted worktrees left behind. See [docs/local-resources.md](docs/local-resources.md).
+
 Agents and humans follow the same rules: see [AGENTS.md](AGENTS.md) (Claude Code reads it through `CLAUDE.md`).

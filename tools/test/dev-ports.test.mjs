@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -165,6 +165,22 @@ describe('detectCheckout', () => {
     const linked = detectCheckout(join(wt, 'sub'));
     expect(linked).toMatchObject({ root: wt, primary: false });
     expect(linked.commonDir).toBe(primary.commonDir);
+  });
+
+  it('spells the common dir the same from every checkout, a symlinked path included (--json)', () => {
+    const root = realpathSync(makeRepo({ 'a.txt': 'x' }));
+    commitAll(root);
+    const wt = join(realpathSync(tempDir()), 'wt');
+    execFileSync('git', ['worktree', 'add', '-q', '--detach', wt], { cwd: root });
+    const link = join(realpathSync(tempDir()), 'link');
+    symlinkSync(root, link);
+    for (const cwd of [root, wt])
+      expect(JSON.parse(cli(['--json'], { cwd }).stdout).commonDir, cwd).toBe(join(root, '.git'));
+    // a caller passing a path through a symlink gets the real one too
+    expect(detectCheckout(link)).toMatchObject({
+      primary: true,
+      commonDir: join(root, '.git'),
+    });
   });
 
   it('gives two real worktrees whose paths hash to the same block distinct ports through the CLI', () => {

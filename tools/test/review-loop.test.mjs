@@ -1110,8 +1110,28 @@ describe('review-loop round-5 fixes', () => {
     // no shell variable (it does not survive between an agent's commands) and one command per line
     expect(reviewer.prompt).not.toMatch(/\$ORIG|ORIG=/);
     const setup = reviewer.prompt.slice(reviewer.prompt.indexOf('throwaway git worktree'));
-    for (const line of setup.split('\n').filter((l) => /^ {2}(git|CI=)/.test(l)))
+    for (const line of setup.split('\n').filter((l) => /^ {2}(git|CI=|pnpm)/.test(l)))
       expect(line).not.toMatch(/&&|;|\|/);
+  });
+
+  it('tells worktree agents to stop what they started before resetting the worktree', async () => {
+    const { of } = await runLoop({
+      review: reviewerFinds([1]),
+      fix: () => ({ checkPassed: false, resolutions: [] }),
+    });
+    // every agent that gets a worktree: reviewers, the tester, verifiers and the fixer
+    for (const c of [...of('review'), ...of('verify'), ...of('fix')]) {
+      const at = (text) => c.prompt.indexOf(text);
+      const steps = [
+        'Stop every server and background process you started',
+        'has a "teardown" script, run it',
+        '\n  pnpm teardown\n',
+        '\n  git reset -q --hard\n',
+      ];
+      for (const step of steps) expect(at(step), `${c.label}: ${step}`).toBeGreaterThan(0);
+      // in this order: servers first, then the repo's teardown, then git
+      expect(steps.map(at), c.label).toEqual(steps.map(at).toSorted((a, b) => a - b));
+    }
   });
 });
 

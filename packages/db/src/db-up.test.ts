@@ -1,5 +1,6 @@
-// scripts/db-up.mjs without Docker: a fake `docker`, alone on PATH, logs its arguments and answers
-// `compose up` as each test scripts it, and the server's port is closed, so nothing ever answers.
+// scripts/db-up.mjs without Docker: a fake `docker`, alone on PATH (or first on it), logs its
+// arguments and answers `compose up` and the listings as each test scripts it, and the server's
+// port is closed, so nothing ever answers.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
@@ -13,8 +14,8 @@ import {
 } from 'node:fs';
 import { type AddressInfo, createServer } from 'node:net';
 import { devNull, tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { delimiter, join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error plain .mjs script
 import { dbUp, isLocalUrl, isOurCluster, psqlArgs, resolveDb } from '../scripts/db-up.mjs';
 
@@ -23,14 +24,32 @@ const tmp = mkdtempSync(join(tmpdir(), 'db-up-test-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 // FAKE_DOCKER_UP: the replies to successive `compose up` calls, [{ stderr, status }] (default: ok)
+// FAKE_DOCKER_LS: what `docker <kind> ls` prints, { container, volume, network } (default: nothing)
+// FAKE_DOCKER_FAIL: stderr of a failure for every call (e.g. the Docker daemon is not running)
+// FAKE_DOCKER_RM_FAIL: the same for removals only
+// FAKE_DOCKER_ENV: a file each `compose` call appends the checkout labels' values to
 const BIN = join(tmp, 'bin');
 mkdirSync(BIN);
 writeFileSync(
   join(tmp, 'docker.mjs'),
   `import { appendFileSync, readFileSync } from 'node:fs';
-const { FAKE_DOCKER_LOG: log, FAKE_DOCKER_UP: up = '[]' } = process.env;
-appendFileSync(log, process.argv.slice(2).join(' ') + '\\n');
-if (process.argv.includes('up')) {
+const { FAKE_DOCKER_LOG: log, FAKE_DOCKER_UP: up = '[]', FAKE_DOCKER_LS: ls = '{}' } = process.env;
+const args = process.argv.slice(2);
+appendFileSync(log, args.join(' ') + '\\n');
+if (process.env.FAKE_DOCKER_FAIL) {
+  process.stderr.write(process.env.FAKE_DOCKER_FAIL);
+  process.exit(1);
+}
+if (process.env.FAKE_DOCKER_RM_FAIL && args.includes('rm')) {
+  process.stderr.write(process.env.FAKE_DOCKER_RM_FAIL);
+  process.exit(1);
+}
+if (args[0] === 'compose' && process.env.FAKE_DOCKER_ENV) {
+  const { DEV_CHECKOUT_ROOT: root, DEV_CHECKOUT_GIT_COMMON_DIR: commonDir } = process.env;
+  appendFileSync(process.env.FAKE_DOCKER_ENV, JSON.stringify({ root, commonDir }) + '\\n');
+}
+if (args[1] === 'ls') process.stdout.write(JSON.parse(ls)[args[0]] ?? '');
+if (args.includes('up')) {
   const n = readFileSync(log, 'utf8').split('\\n').filter((l) => l.split(' ').includes('up')).length;
   const { stderr = '', status = 0 } = JSON.parse(up)[n - 1] ?? {};
   process.stderr.write(stderr);
@@ -46,6 +65,13 @@ chmodSync(join(BIN, 'docker'), 0o755);
 
 const COMPOSE = `compose -p fake-project -f ${join(tmp, 'docker-compose.yml')}`;
 const UP = `${COMPOSE} up -d --wait`;
+/**
+ * The listings db-up reads before it starts a server: this repository's labeled containers and
+ * volumes (leftovers of deleted checkouts?), and, when some are, everything of their projects.
+ */
+const LISTS = ['container ls', 'volume ls'];
+const ORPHAN_LISTS = ['container ls', 'volume ls', 'network ls'];
+const REPO = join(tmp, 'fake-repo', '.git'); // the fake checkout's git common dir
 
 /** A port nothing listens on. */
 async function closedPort(): Promise<number> {
@@ -63,22 +89,41 @@ const local = (port: number) => ({
   url: `postgres://postgres:postgres@127.0.0.1:${port}/app`,
   adminUrl: `postgres://postgres:postgres@127.0.0.1:${port}/postgres`,
   composeFile: join(tmp, 'docker-compose.yml'),
+  root: tmp,
+  commonDir: REPO,
 });
 
 let runs = 0;
-/** dbUp() against the fake docker: the message it failed with (if any) and the docker calls. */
+/**
+ * dbUp() against the fake docker: the message it failed with (if any) and the docker calls (a
+ * listing as its first two words), and what it printed.
+ */
 async function run(
   cfg: ReturnType<typeof local>,
-  { up = [], env = {} }: { up?: object[]; env?: Record<string, string> } = {},
+  { up = [], ls = {}, env = {} }: { up?: object[]; ls?: object; env?: Record<string, string> } = {},
 ) {
   const log = join(tmp, `docker-${runs++}.log`);
-  const fakeEnv = { PATH: BIN, FAKE_DOCKER_LOG: log, FAKE_DOCKER_UP: JSON.stringify(up), ...env };
-  const error: string | undefined = await dbUp(cfg, { env: fakeEnv }).then(
-    () => undefined,
-    (err: Error) => err.message,
-  );
-  const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
-  return { error, calls };
+  const fakeEnv = {
+    PATH: BIN,
+    FAKE_DOCKER_LOG: log,
+    FAKE_DOCKER_UP: JSON.stringify(up),
+    FAKE_DOCKER_LS: JSON.stringify(ls),
+    ...env,
+  };
+  const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  let error: string | undefined;
+  let printed: string[] = [];
+  try {
+    await dbUp(cfg, { env: fakeEnv });
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+  } finally {
+    printed = spy.mock.calls.map((args) => args.join(' '));
+    spy.mockRestore();
+  }
+  const raw = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
+  const calls = raw.map((c) => (/^\w+ ls /.test(c) ? c.split(' ').slice(0, 2).join(' ') : c));
+  return { error, calls, printed, raw };
 }
 
 describe('dbUp', () => {
@@ -89,19 +134,19 @@ describe('dbUp', () => {
       url: 'postgres://u:p@db.example.com:5432/app',
       adminUrl: 'postgres://u:p@db.example.com:5432/postgres',
     };
-    expect(await run(remote)).toEqual({ error: undefined, calls: [] });
+    expect(await run(remote)).toMatchObject({ error: undefined, calls: [], printed: [] });
     // another port on this machine is another server too
     const elsewhere = { ...local(port), url: local(other).url, adminUrl: local(other).adminUrl };
-    expect(await run(elsewhere)).toEqual({ error: undefined, calls: [] });
-    expect((await run(elsewhere, { env: { DB_UP_FORCE: '1' } })).calls).toEqual([UP]);
+    expect(await run(elsewhere)).toMatchObject({ error: undefined, calls: [], printed: [] });
+    expect((await run(elsewhere, { env: { DB_UP_FORCE: '1' } })).calls).toEqual([...LISTS, UP]);
   });
 
   it('starts this checkout’s server even when DATABASE_URL names it (dev-ports --env exports it)', async () => {
     const cfg = local(await closedPort());
-    expect((await run(cfg, { env: { DATABASE_URL: cfg.url } })).calls).toEqual([UP]);
+    expect((await run(cfg, { env: { DATABASE_URL: cfg.url } })).calls).toEqual([...LISTS, UP]);
     // either URL on this checkout's server is enough
     const remoteDev = { ...cfg, url: 'postgres://u:p@db.example.com:5432/app' };
-    expect((await run(remoteDev)).calls).toEqual([UP]);
+    expect((await run(remoteDev)).calls).toEqual([...LISTS, UP]);
   });
 
   it('says so when Docker is not installed', async () => {
@@ -113,7 +158,7 @@ describe('dbUp', () => {
     const stderr =
       'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n';
     const { error, calls } = await run(local(await closedPort()), { up: [{ stderr, status: 1 }] });
-    expect(calls).toEqual([UP]);
+    expect(calls).toEqual([...LISTS, UP]);
     expect(error).toContain('Docker is not running. Start it and retry.');
     expect(error).toContain('docker said: Cannot connect to the Docker daemon');
   });
@@ -122,7 +167,7 @@ describe('dbUp', () => {
     const cfg = local(await closedPort());
     const stderr = `Error response from daemon: driver failed programming external connectivity on endpoint fake-project-postgres-1: Bind for 127.0.0.1:${cfg.port} failed: port is already allocated\n`;
     const { error, calls } = await run(cfg, { up: [{ stderr, status: 1 }] });
-    expect(calls).toEqual([UP, `${COMPOSE} down`]);
+    expect(calls).toEqual([...LISTS, UP, `${COMPOSE} down`]);
     expect(error).toContain(`Port ${cfg.port} is taken by something else.`);
   });
 
@@ -132,7 +177,7 @@ describe('dbUp', () => {
     const { error, calls } = await run(local(await closedPort()), {
       up: [{ stderr, status: 1 }, {}],
     });
-    expect(calls).toEqual([UP, UP]);
+    expect(calls).toEqual([...LISTS, UP, UP]);
     // the retry succeeded; only the check that the port reaches the server is left
     expect(error).toMatch(/healthy but \d+ does not reach it/);
   });
@@ -141,18 +186,188 @@ describe('dbUp', () => {
     const { error, calls } = await run(local(await closedPort()), {
       up: [{ stderr: 'pull access denied\n', status: 18 }],
     });
-    expect(calls).toEqual([UP]);
+    expect(calls).toEqual([...LISTS, UP]);
     expect(error).toContain('docker compose up failed (exit 18):\npull access denied');
   });
 
   it('fails when compose reports the server healthy but its port does not reach it', async () => {
     const cfg = local(await closedPort());
     const { error, calls } = await run(cfg, { up: [{}] });
-    expect(calls).toEqual([UP]);
+    expect(calls).toEqual([...LISTS, UP]);
     expect(error).toContain(
       `compose reports fake-project healthy but ${cfg.port} does not reach it`,
     );
   });
+
+  it('removes the leftovers of deleted checkouts before it starts the server, and says so', async () => {
+    const gone = join(tmp, 'deleted-worktree');
+    const cfg = local(await closedPort());
+    const { error, calls, printed, raw } = await run(cfg, {
+      up: [{}],
+      // (the fake answers every listing with all of these, whatever its filter)
+      ls: listing([
+        ['container', 'cid', 'gone-proj', gone, gone],
+        ['volume', 'gone-proj_pgdata', 'gone-proj', '', gone],
+        ['network', 'gone-proj_default', 'gone-proj'],
+        // another repository's, its checkout gone too: never ours to remove
+        ['volume', 'decoy_pgdata', 'decoy', '', gone, join(tmp, 'other', '.git')],
+        // this checkout's own
+        ['volume', 'fake-project_pgdata', 'fake-project', '', tmp],
+      ]),
+    });
+    expect(error).toMatch(/does not reach it/); // the fake server never answers
+    // Docker picks this repository's labeled resources first, then lists the candidates' projects
+    for (const call of raw.slice(0, 2))
+      expect(call).toContain(` --filter label=dev-checkout.git-common-dir=${REPO} `);
+    for (const call of raw.slice(2, 5))
+      expect(call).toContain(' --filter label=com.docker.compose.project ');
+    expect(calls).toEqual([
+      ...LISTS,
+      ...ORPHAN_LISTS,
+      'rm --force --volumes cid',
+      'network rm gone-proj_default',
+      'volume rm gone-proj_pgdata',
+      UP,
+    ]);
+    expect(printed).toEqual([
+      '[db-up] removed 1 container, 1 volume, 1 network of deleted checkouts:',
+      `[db-up]   gone-proj (${gone})`,
+    ]);
+  });
+
+  it('still starts the server, and reports Docker’s own error, when Docker cannot list', async () => {
+    const stderr =
+      'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n';
+    const { error, calls } = await run(local(await closedPort()), {
+      env: { FAKE_DOCKER_FAIL: stderr },
+    });
+    expect(calls).toEqual(['container ls', UP]);
+    expect(error).toContain('Docker is not running. Start it and retry.');
+  });
+
+  it('labels the container and volume with this repository and checkout', async () => {
+    const env = join(tmp, `compose-env-${runs}.log`);
+    await run(local(await closedPort()), { up: [{}], env: { FAKE_DOCKER_ENV: env } });
+    expect(readFileSync(env, 'utf8')).toBe(`${JSON.stringify({ root: tmp, commonDir: REPO })}\n`);
+  });
+
+  // the compose file turns those values into labels, on the service and on the volume
+  const hasCompose = spawnSync('docker', ['compose', 'version'], { stdio: 'ignore' }).status === 0;
+  it.runIf(hasCompose)('docker-compose.yml labels the service and the volume', () => {
+    const res = spawnSync(
+      'docker',
+      ['compose', '-f', join(DB, '../../docker-compose.yml'), 'config', '--format', 'json'],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, DEV_CHECKOUT_ROOT: '/r', DEV_CHECKOUT_GIT_COMMON_DIR: '/r/.git' },
+      },
+    );
+    expect(res.status, res.stderr).toBe(0);
+    const config = JSON.parse(res.stdout);
+    const labels = { 'dev-checkout.root': '/r', 'dev-checkout.git-common-dir': '/r/.git' };
+    expect(config.services.postgres.labels).toMatchObject(labels);
+    expect(config.volumes.pgdata.labels).toMatchObject(labels);
+  });
+
+  // the fast path: this checkout's own server answers, so Docker is never asked (not even to prune)
+  const url = process.env.TEST_FILE_DATABASE_URL ?? '';
+  const onComposeServer = isLocalUrl(url) && Number(new URL(url).port) === resolveDb().port;
+  it.runIf(onComposeServer)('calls no Docker at all while the server answers', async () => {
+    const { error, calls } = await run(resolveDb());
+    expect({ error, calls }).toEqual({ error: undefined, calls: [] });
+  });
+});
+
+/**
+ * FAKE_DOCKER_LS for `docker <kind> ls`: [kind, id, project, workingDir, root, commonDir = REPO]
+ * per resource, as orphans.mjs formats them (id, then its LABELS' values).
+ */
+function listing(rows: string[][]) {
+  const ls: Record<string, string> = {};
+  for (const [kind = '', id, project, workingDir = '', root = '', commonDir = REPO] of rows) {
+    const labels =
+      kind === 'network' ? ['', '', project, ''] : [commonDir, root, project, workingDir];
+    ls[kind] = `${ls[kind] ?? ''}${[id, ...labels].map((v) => JSON.stringify(v)).join('\t')}\n`;
+  }
+  return ls;
+}
+
+/** db-up.mjs `mode` in this checkout, with the fake docker first on PATH. */
+function cli(mode: string, env: Record<string, string> = {}) {
+  const log = join(tmp, `docker-${runs++}.log`);
+  const res = spawnSync(process.execPath, ['scripts/db-up.mjs', mode], {
+    cwd: DB,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${BIN}${delimiter}${process.env.PATH}`,
+      FAKE_DOCKER_LOG: log,
+      ...env,
+    },
+  });
+  const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
+  return { ...res, calls };
+}
+
+describe('down and prune', () => {
+  const notRunning =
+    'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n';
+
+  it('down stops this checkout’s server, keeps its volume, and is done when Docker is not running', () => {
+    const { project, composeFile } = resolveDb();
+    const ok = cli('down');
+    expect(ok.status, ok.stderr).toBe(0);
+    expect(ok.calls).toEqual([`compose -p ${project} -f ${composeFile} down`]); // no -v
+    const off = cli('down', { FAKE_DOCKER_FAIL: notRunning });
+    expect(off.status, off.stderr).toBe(0);
+    expect(off.stdout).toContain(`[db-up] Docker is not running: nothing to stop for ${project}`);
+    // any other failure is one, a Docker that runs but refuses this user included
+    const denied =
+      'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock\n';
+    const failed = cli('down', { FAKE_DOCKER_FAIL: denied });
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain('permission denied');
+  }, 30_000);
+
+  it('prune removes this repository’s leftovers and prints them, or says there were none', () => {
+    const { commonDir } = resolveDb();
+    const gone = join(tmp, 'deleted-worktree');
+    const ls = listing([['volume', 'gone-proj_pgdata', 'gone-proj', '', gone, commonDir]]);
+    const res = cli('prune', { FAKE_DOCKER_LS: JSON.stringify(ls) });
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.stdout).toBe(
+      `[db-up] removed 1 volume of deleted checkouts:\n[db-up]   gone-proj (${gone})\n`,
+    );
+    expect(res.calls.at(-1)).toBe('volume rm gone-proj_pgdata');
+    expect(cli('prune').stdout).toBe('[db-up] no leftovers of deleted checkouts\n');
+    const off = cli('prune', { FAKE_DOCKER_FAIL: notRunning });
+    expect(off.status, off.stderr).toBe(0);
+    expect(off.stdout).toContain('Cannot connect to the Docker daemon');
+    expect(off.stdout).toContain(': no containers or volumes to prune');
+  }, 30_000);
+
+  it('prune counts what another prune removed first as removed, and reports a real refusal', () => {
+    const { commonDir } = resolveDb();
+    const gone = join(tmp, 'deleted-worktree');
+    const ls = JSON.stringify(
+      listing([['volume', 'gone-proj_pgdata', 'gone-proj', '', gone, commonDir]]),
+    );
+    const raced = cli('prune', {
+      FAKE_DOCKER_LS: ls,
+      FAKE_DOCKER_RM_FAIL: 'Error response from daemon: get gone-proj_pgdata: no such volume\n',
+    });
+    expect(raced.status, raced.stderr).toBe(0);
+    expect(raced.stderr).toBe('');
+    const refused = cli('prune', {
+      FAKE_DOCKER_LS: ls,
+      FAKE_DOCKER_RM_FAIL:
+        'Error response from daemon: remove gone-proj_pgdata: volume is in use - [0123abcd]\n',
+    });
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toBe(
+      '[db-up] could not prune: docker volume rm: Error response from daemon: remove gone-proj_pgdata: volume is in use - [0123abcd]\n',
+    );
+  }, 30_000);
 });
 
 describe('isOurCluster', () => {
