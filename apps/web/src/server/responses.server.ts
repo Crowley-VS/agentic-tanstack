@@ -1,11 +1,15 @@
 // The web server's own error answers on /api/*, in GraphQL's response shape ({ errors: [...] }), so
-// execute() and the UI read a BFF refusal (405, 413, 415, 502, 504) like an error from the API.
+// execute() and the UI read a BFF refusal (405, 413, 415, 429, 502, 504) like an error from the
+// API; `extensions.code` tells one refusal from another (429: RATE_LIMITED).
+
+type ErrorInit = { headers?: Record<string, string>; extensions?: Record<string, unknown> };
 
 export const errorResponse = (
   status: number,
   message: string,
-  { headers }: { headers?: Record<string, string> } = {},
-) => Response.json({ errors: [{ message }] }, { status, headers });
+  { headers, extensions }: ErrorInit = {},
+) =>
+  Response.json({ errors: [{ message, ...(extensions && { extensions }) }] }, { status, headers });
 
 /**
  * 405 for a method a server route does not serve. A route needs an `ANY` handler that answers

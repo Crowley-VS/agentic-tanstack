@@ -22,6 +22,7 @@ describe('serverEnv', () => {
       API_PORT: 4000,
       INTERNAL_API_SECRET: undefined,
       REAL_IP_HEADER: 'x-real-ip',
+      writeRateLimit: { limit: 10, windowMs: 60_000 },
     });
   });
 
@@ -77,6 +78,30 @@ describe('serverEnv', () => {
     expect(() => serverEnv({ INTERNAL_API_SECRET: 'short' })).toThrow(
       'INTERNAL_API_SECRET must be at least 32 characters',
     );
+  });
+
+  it.each([
+    ['5/30s', { limit: 5, windowMs: 30_000 }],
+    ['100/1h', { limit: 100, windowMs: 3_600_000 }],
+    [' 3/2m ', { limit: 3, windowMs: 120_000 }],
+    ['off', null],
+  ])('reads WRITE_RATE_LIMIT=%j', (WRITE_RATE_LIMIT, writeRateLimit) => {
+    expect(serverEnv({ WRITE_RATE_LIMIT }).writeRateLimit).toEqual(writeRateLimit);
+  });
+
+  it.each(['10', '0/60s', '10/0s', '10/60', 'ten/60s', '10/60d', ''])(
+    'refuses WRITE_RATE_LIMIT=%j',
+    (WRITE_RATE_LIMIT) => {
+      expect(() => serverEnv({ WRITE_RATE_LIMIT })).toThrow(
+        'WRITE_RATE_LIMIT: must look like 10/60s, or be off',
+      );
+    },
+  );
+
+  it('turns the write rate limit off for the e2e servers (E2E=1)', () => {
+    expect(serverEnv({ E2E: '1' }).writeRateLimit).toBeNull();
+    expect(serverEnv({ E2E: '1', WRITE_RATE_LIMIT: '3/60s' }).writeRateLimit).toBeNull();
+    expect(serverEnv({ E2E: '0' }).writeRateLimit).toEqual({ limit: 10, windowMs: 60_000 });
   });
 
   it('reads the client IP header in lower case; empty means the socket address', () => {

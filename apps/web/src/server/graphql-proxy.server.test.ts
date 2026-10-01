@@ -1,4 +1,5 @@
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
+import { RATE_LIMITED } from '@acme/validators/error-codes';
 import { CLIENT_IP_HEADER, REQUEST_ID_HEADER, SECRET_HEADER } from '@acme/validators/internal-api';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { serverEnv } from '../env.server';
@@ -9,6 +10,7 @@ const SECRET = 's'.repeat(32);
 /** A request body that makes the stub API never answer. */
 const HANG = '{"query":"{ hang }"}';
 const QUERY = '{"query":"{ ok }"}';
+const MUTATION = '{"query":"mutation { createNote { __typename } }"}';
 const UUID = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/;
 let upstream: Server;
 let port: number;
@@ -181,6 +183,92 @@ describe('proxyGraphql', () => {
     browser.abort();
     expect((await pending).status).toBe(499); // nobody reads it
     expect(console.error).not.toHaveBeenCalled();
+  });
+});
+
+/** Every test gets client IPs of its own: the process-wide rate limiter outlives a test. */
+let lastIp = 0;
+const freshIp = () => `198.51.100.${++lastIp}`;
+const limited = (overrides: Record<string, string> = {}) =>
+  env({ WRITE_RATE_LIMIT: '2/60s', ...overrides });
+/** A mutation as the proxy in front passes it on: X-Real-IP names the client. */
+const writeFrom = (ip: string) => post(MUTATION, { 'x-real-ip': ip });
+/** A mutation whose client claims a new address in both headers it controls. */
+const spoofed = (n: number) =>
+  post(MUTATION, { 'x-forwarded-for': `192.0.2.${n}`, 'x-real-ip': `192.0.2.${n}` });
+
+describe('the write rate limit', () => {
+  it('answers the write after the limit with 429, Retry-After and RATE_LIMITED', async () => {
+    const socketIp = freshIp();
+    for (let i = 0; i < 2; i++)
+      expect((await proxyGraphql(post(MUTATION), limited(), { socketIp })).status).toBe(200);
+    received = undefined;
+    const res = await proxyGraphql(post(MUTATION), limited(), { socketIp });
+    expect(res.status).toBe(429);
+    const retryAfter = Number(res.headers.get('retry-after'));
+    expect(retryAfter).toBeGreaterThanOrEqual(59);
+    expect(await res.json()).toEqual({
+      errors: [
+        {
+          message: `Too many writes: try again in ${retryAfter} s.`,
+          extensions: { code: RATE_LIMITED, retryAfter },
+        },
+      ],
+    });
+    expect(received).toBeUndefined(); // the API never saw it
+    // another client still writes
+    expect((await proxyGraphql(post(MUTATION), limited(), { socketIp: freshIp() })).status).toBe(
+      200,
+    );
+  });
+
+  it('never limits queries', async () => {
+    const socketIp = freshIp();
+    for (let i = 0; i < 5; i++)
+      expect((await proxyGraphql(post(QUERY), limited(), { socketIp })).status).toBe(200);
+    expect((await proxyGraphql(post(MUTATION), limited(), { socketIp })).status).toBe(200);
+  });
+
+  it('never counts a body it refuses (415, 413)', async () => {
+    const socketIp = freshIp();
+    const refused = (headers: Record<string, string>) =>
+      proxyGraphql(post(MUTATION, headers), limited(), { socketIp }).then((res) => res.status);
+    for (let i = 0; i < 2; i++) {
+      expect(await refused({ 'content-type': 'text/plain' })).toBe(415);
+      expect(await refused({ 'content-length': String(MAX_BODY_BYTES + 1) })).toBe(413);
+    }
+    // both writes of the window are still there
+    for (let i = 0; i < 2; i++)
+      expect((await proxyGraphql(post(MUTATION), limited(), { socketIp })).status).toBe(200);
+  });
+
+  it('counts per address in X-Real-IP, which it trusts by default', async () => {
+    const socketIp = freshIp(); // the proxy in front: every client comes from it
+    for (const ip of ['203.0.113.1', '203.0.113.1', '203.0.113.2'])
+      expect((await proxyGraphql(writeFrom(ip), limited(), { socketIp })).status).toBe(200);
+    expect((await proxyGraphql(writeFrom('203.0.113.1'), limited(), { socketIp })).status).toBe(
+      429,
+    );
+    expect(received?.headers[CLIENT_IP_HEADER]).toBe('203.0.113.2');
+  });
+
+  it('ignores X-Forwarded-For, and X-Real-IP too when REAL_IP_HEADER is empty', async () => {
+    const socketIp = freshIp();
+    const direct = limited({ REAL_IP_HEADER: '' });
+    for (const n of [1, 2])
+      expect((await proxyGraphql(spoofed(n), direct, { socketIp })).status).toBe(200);
+    expect((await proxyGraphql(spoofed(3), direct, { socketIp })).status).toBe(429);
+  });
+
+  it('is off with WRITE_RATE_LIMIT=off, and on the e2e servers (E2E=1)', async () => {
+    const off: Record<string, string>[] = [{ WRITE_RATE_LIMIT: 'off' }, { E2E: '1' }];
+    for (const overrides of off) {
+      const socketIp = freshIp();
+      for (let i = 0; i < 3; i++)
+        expect((await proxyGraphql(post(MUTATION), limited(overrides), { socketIp })).status).toBe(
+          200,
+        );
+    }
   });
 });
 
