@@ -27,7 +27,12 @@ import {
   unsafeAllowRule,
 } from '../agents.mjs';
 import { formatCheck, looseFiles, steps } from '../check.mjs';
-import { collectVersions, mismatches } from '../check-versions.mjs';
+import {
+  catalogVersions,
+  collectVersions,
+  lockstepMismatches,
+  mismatches,
+} from '../check-versions.mjs';
 import { nodeBin } from '../lib/bin.mjs';
 import { commitAll, makeRepo, tempDir, writeFile } from './helpers.mjs';
 
@@ -951,6 +956,53 @@ describe('check-versions', () => {
     expect(problems).toContain('node versions disagree');
     expect(problems).toContain('pnpm versions disagree');
     expect(problems).toContain('apps/api/Dockerfile=11.27.1');
+  });
+
+  it('reports lockstep catalog entries that disagree, and skips entries not in the catalog', () => {
+    const root = makeRepo({
+      'pnpm-workspace.yaml': [
+        'packages:',
+        '  - apps/*',
+        '',
+        'catalog:',
+        '  # exact, with playwright',
+        "  '@playwright/test': 1.64.0",
+        '  playwright: 1.63.0',
+        "  '@nx/js': 23.2.1",
+        "  '@nx/vitest': '23.1.0'",
+        '  nx: 23.2.1 # with every @nx/*',
+        '  vitest: 4.1.11',
+        '',
+        'overrides:',
+        '  playwright: 1.64.0',
+        '',
+      ].join('\n'),
+    });
+    const catalog = catalogVersions(root);
+    expect(catalog).toEqual({
+      '@playwright/test': '1.64.0',
+      playwright: '1.63.0',
+      '@nx/js': '23.2.1',
+      '@nx/vitest': '23.1.0',
+      nx: '23.2.1',
+      vitest: '4.1.11',
+    });
+    expect(lockstepMismatches(catalog)).toEqual([
+      'catalog versions disagree: @playwright/test=1.64.0, playwright=1.63.0 (bump both)',
+      'catalog versions disagree: nx=23.2.1, @nx/vitest=23.1.0 (bump both)',
+    ]);
+    // vitest without @vitest/browser-playwright, and either one alone, is no mismatch
+    expect(
+      lockstepMismatches({ ...catalog, playwright: '1.64.0', '@nx/vitest': '23.2.1' }),
+    ).toEqual([]);
+    expect(lockstepMismatches({ '@nx/js': '1.0.0', playwright: '2.0.0' })).toEqual([]);
+  });
+
+  it("holds for this repo's catalog", () => {
+    const catalog = catalogVersions(REPO);
+    expect(catalog.playwright).toBeDefined();
+    expect(catalog.nx).toBeDefined();
+    expect(lockstepMismatches(catalog)).toEqual([]);
   });
 });
 

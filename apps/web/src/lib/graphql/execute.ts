@@ -6,7 +6,7 @@
 import { environmentManager } from '@tanstack/react-query';
 import { createIsomorphicFn } from '@tanstack/react-start';
 import { serverEnv } from '../../env.server';
-import type { TypedDocumentString } from '../../gql/graphql';
+import { TypedDocumentString } from '../../gql/graphql';
 import { callInternalApi } from '../../server/internal-api.server';
 
 /** The BFF route (routes/api/graphql.ts). */
@@ -42,35 +42,46 @@ export class GraphQLRequestError extends Error {
   }
 }
 
+/**
+ * The browser's transport: the same-origin BFF. Exported for its test: without the Start compiler
+ * (Vitest), createIsomorphicFn always runs its .server() branch.
+ */
+export const postToBff = (body: string, signal?: AbortSignal) =>
+  fetch(BFF_PATH, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/graphql-response+json, application/json',
+    },
+    body,
+    signal,
+  });
+
 // Untyped transport: createIsomorphicFn fixes its argument types (no generics), so the typed
 // execute() below wraps it.
 const post = createIsomorphicFn()
   .server((body: string, signal?: AbortSignal) => callInternalApi(serverEnv(), body, { signal }))
-  .client((body: string, signal?: AbortSignal) =>
-    fetch(BFF_PATH, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/graphql-response+json, application/json',
-      },
-      body,
-      signal,
-    }),
-  );
+  .client(postToBff);
 
 type ExecuteInit = { signal?: AbortSignal };
 
-/** Operations without variables take none (pass `undefined` to reach `init`); others need theirs. */
-type ExecuteArgs<TVariables> =
-  TVariables extends Record<string, never>
-    ? [variables?: TVariables, init?: ExecuteInit]
-    : [variables: TVariables, init?: ExecuteInit];
+/**
+ * Variables may be left out when an empty object satisfies them (an operation without variables,
+ * or with optional ones only; pass `undefined` to reach `init`); otherwise they are required.
+ */
+type ExecuteArgs<TVariables> = {} extends TVariables
+  ? [variables?: TVariables, init?: ExecuteInit]
+  : [variables: TVariables, init?: ExecuteInit];
 
 /** Run a graphql() document; resolves to its typed `data`, rejects with a GraphQLRequestError. */
 export async function execute<TResult, TVariables>(
   document: TypedDocumentString<TResult, TVariables>,
   ...[variables, init]: ExecuteArgs<TVariables>
 ): Promise<TResult> {
+  // graphql() returns {} for an operation src/gql does not have yet: posting it would send
+  // "[object Object]" and fail with a cryptic syntax error
+  if (!(document instanceof TypedDocumentString))
+    throw new Error('GraphQL operation not generated: run `pnpm nx run web:codegen`');
   // toString(): a TypedDocumentString is a String object, not a primitive string
   const body = JSON.stringify({ query: document.toString(), variables });
   const response = await post(body, init?.signal);

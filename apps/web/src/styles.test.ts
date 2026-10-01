@@ -1,7 +1,7 @@
 // The app's stylesheet (src/styles.css) built as `vite build` builds it: Tailwind emits only the
 // classes it finds in the files its @source globs match, and a glob that matches the wrong files
 // fails silently (unstyled components, or CSS that depends on files web:build does not hash).
-import { relative, sep } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import { build, type Plugin } from 'vite';
@@ -58,7 +58,10 @@ describe('src/styles.css', () => {
   });
 
   it('reads only files web:build hashes: the src of this app and of @acme/ui, no tests', () => {
-    const files = [...reads].map((file) => relative(workspace, file).split(sep).join('/'));
+    // some entries are globs relative to the Vite root (apps/web), whatever the cwd
+    const files = [...reads].map((file) =>
+      relative(workspace, resolve(root, file)).split(sep).join('/'),
+    );
     const sources = files.filter((file) => !file.includes('node_modules/'));
     expect(sources).toContain('apps/web/src/routes/index.tsx');
     expect(sources).toContain('packages/ui/src/components/button.tsx');

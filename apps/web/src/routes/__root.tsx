@@ -1,5 +1,5 @@
-// The HTML shell every page renders in (SSR), plus the not-found page. Loaders get the request's
-// QueryClient as `context.queryClient` (router.tsx).
+// The HTML shell every page renders in (SSR). Loaders get the request's QueryClient as
+// `context.queryClient`; the error and not-found pages are router.tsx's defaults.
 import { Toaster } from '@acme/ui/components/sonner';
 import { ThemeProvider } from '@acme/ui/components/theme-provider';
 import type { QueryClient } from '@tanstack/react-query';
@@ -22,7 +22,6 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   }),
   shellComponent: RootDocument,
   component: () => <Outlet />,
-  notFoundComponent: () => <p>Not found.</p>,
 });
 
 function RootDocument({ children }: { children: ReactNode }) {

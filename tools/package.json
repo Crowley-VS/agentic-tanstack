@@ -20,6 +20,7 @@
           "{workspaceRoot}/.claude/settings.json",
           "{workspaceRoot}/.claude/workflows/**/*",
           "{workspaceRoot}/AGENTS.md",
+          "{workspaceRoot}/apps/web/codegen.ts",
           "{workspaceRoot}/eslint.config.mjs",
           "{workspaceRoot}/lefthook.yml",
           "{workspaceRoot}/nx.json",

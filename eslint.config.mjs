@@ -28,6 +28,8 @@ export default [
       '**/out-tsc',
       '**/node_modules',
       '**/coverage',
+      // test artifacts (gitignored): tests write throwaway sources there, e.g. a broken route file
+      '**/test-output',
       ...generatedIgnores,
     ],
   },

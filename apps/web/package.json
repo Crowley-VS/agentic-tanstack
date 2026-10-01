@@ -68,6 +68,7 @@
       },
       "test": {
         "dependsOn": [
+          "generate-routes",
           "codegen",
           "..."
         ],
@@ -182,11 +183,11 @@
           }
         ],
         "outputs": [
-          "{projectRoot}/src/gql"
+          "{projectRoot}/src/gql/*.ts"
         ]
       },
       "codegen-watch": {
-        "command": "nx watch --projects=api,web --includeDependencies -- nx run web:codegen",
+        "command": "NX_DAEMON=${NX_DAEMON:-true} nx watch --projects=api,web --includeDependencies -- nx run web:codegen",
         "continuous": true
       },
       "build": {
