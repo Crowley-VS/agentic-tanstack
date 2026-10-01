@@ -58,6 +58,12 @@ function commit(root, ...args) {
   expect(res.status, `${res.stdout}${res.stderr}`).toBe(0);
 }
 const workflow = (name) => `export const meta = {\n  name: '${name}',\n  description: 'x',\n};\n`;
+/** check.mjs's nx step, found by name: it is not the first gate. */
+function nxGate(nxMode) {
+  const step = steps(nxMode).find((s) => s.name === 'nx');
+  if (!step) throw new Error('pnpm check has no `nx` step');
+  return step;
+}
 
 const skill = (name, description = 'Use when testing things.') =>
   `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
@@ -616,6 +622,33 @@ describe('pnpm check gates', () => {
     }
   });
 
+  it('report a generated file that is stale in the commit, although a task in the nx step regenerates it', () => {
+    const root = makeRepo({
+      '.agents/generated.json': {
+        artifacts: [{ id: 'out', paths: ['gen/**'], regen: 'node make.mjs' }],
+      },
+      'make.mjs': "import { writeFileSync } from 'node:fs';\nwriteFileSync('gen/a.txt', 'v2');\n",
+      'gen/a.txt': 'v1',
+    });
+    commitAll(root);
+
+    const gates = {
+      // a task in the nx step that depends on the generator
+      nx: () => {
+        execFileSync('node', ['make.mjs'], { cwd: root });
+        return [];
+      },
+      'generated files': () => regen(root, { checkOnly: true }),
+    };
+    const order = steps([])
+      .map((s) => s.name)
+      .filter((name) => name in gates);
+    expect(order.flatMap((name) => gates[name]())).toEqual([
+      expect.stringContaining('gen/a.txt was out of date'),
+    ]);
+    expect(order).toEqual(['generated files', 'nx']);
+  });
+
   it('check Nx sync (tsconfig project references) in a gate of its own: Nx skips it when CI is set', () => {
     expect(steps([]).find((s) => s.name === 'nx sync')?.command).toEqual([
       'pnpm',
@@ -773,7 +806,7 @@ describe('check', () => {
         execFileSync(cmd, [...pre, 'show', ...args, '--json'], { cwd: REPO, encoding: 'utf8' }),
       );
     // the targets `pnpm check` runs, of every project: each has its rule, and each rule a target
-    const [nxStep] = steps([]);
+    const nxStep = nxGate([]);
     const checked = nxStep.command
       .slice(nxStep.command.indexOf('-t') + 1)
       .filter((a) => !a.startsWith('-'));
@@ -848,7 +881,7 @@ describe('check', () => {
   });
 
   it('keeps the "only what changed" command in AGENTS.md in step with pnpm check', () => {
-    const [nx] = steps(['affected']);
+    const nx = nxGate(['affected']);
     const targets = nx.command
       .slice(nx.command.indexOf('-t') + 1)
       .filter((a) => !a.startsWith('--'));
