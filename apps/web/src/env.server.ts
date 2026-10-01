@@ -18,6 +18,23 @@ const isProduction = (env: { NODE_ENV: string }) =>
 /** A host name (`api.railway.internal`, `api`) or a bare IP address: no scheme, port or brackets. */
 const isHost = (host: string) => isIP(host) !== 0 || /^[\w-]+(\.[\w-]+)*$/.test(host);
 
+const RATE = /^([1-9]\d*)\/([1-9]\d*)([smh])$/;
+const UNIT_MS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
+
+/** WRITE_RATE_LIMIT: `<writes>/<window>`, the window in s, m or h (`10/60s`); null when `off`. */
+const RateLimit = z
+  .string()
+  .trim()
+  .refine((value) => value === 'off' || RATE.test(value), 'must look like 10/60s, or be off')
+  .transform((value) => {
+    const [, limit, amount, unit = 's'] = RATE.exec(value) ?? [];
+    if (!limit || !amount) return null;
+    return { limit: Number(limit), windowMs: Number(amount) * (UNIT_MS[unit] ?? 1000) };
+  });
+
+/** A write rate limit in force: `limit` writes per client per window of `windowMs`. */
+export type RateLimit = NonNullable<z.infer<typeof RateLimit>>;
+
 const ServerEnv = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -38,6 +55,13 @@ const ServerEnv = z
      * (server/client-ip.server.ts). Empty: no proxy in front, the socket's address is the client's.
      */
     REAL_IP_HEADER: z.string().trim().toLowerCase().default('x-real-ip'),
+    /**
+     * Writes (root mutation fields) per client through the BFF (server/rate-limit.server.ts), on
+     * by default. `prefault`, not `default`: the default value goes through the transform too.
+     */
+    WRITE_RATE_LIMIT: RateLimit.prefault('10/60s'),
+    /** Test-only, set by the e2e servers: turns the write rate limit off. */
+    E2E: z.stringbool().default(false),
   })
   .refine((env) => !isProduction(env) || env.INTERNAL_API_SECRET, SECRET_REQUIRED_IN_PRODUCTION)
   // no fallback to this machine in production: a forgotten address fails the healthcheck
@@ -49,10 +73,12 @@ const ServerEnv = z
     path: ['API_PORT'],
     message: 'API_PORT is required in production',
   })
-  .transform(({ API_HOST = 'localhost', API_PORT = 4000, ...env }) => ({
+  .transform(({ API_HOST = 'localhost', API_PORT = 4000, WRITE_RATE_LIMIT, E2E, ...env }) => ({
     ...env,
     API_HOST,
     API_PORT,
+    /** The write rate limit in force: null when WRITE_RATE_LIMIT is off or E2E is set. */
+    writeRateLimit: E2E ? null : WRITE_RATE_LIMIT,
   }));
 
 export type ServerEnv = z.infer<typeof ServerEnv>;
