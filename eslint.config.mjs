@@ -74,6 +74,8 @@ export default [
               bannedExternalImports: ['react', 'react-dom', '@tanstack/*', 'vite'],
             },
             { sourceTag: 'type:ui', onlyDependOnLibsWithTags: ['type:ui', 'type:util'] },
+            // e2e specs see the apps as a browser does: shared utilities at most, never app code
+            { sourceTag: 'type:e2e', onlyDependOnLibsWithTags: ['type:util'] },
             {
               sourceTag: 'type:util',
               onlyDependOnLibsWithTags: ['type:util'],
