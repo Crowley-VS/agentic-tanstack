@@ -1,6 +1,8 @@
 // The server route files only wire methods to handlers (tested next to their modules). Test files
 // stay out of src/routes: the route generator would treat them as routes.
 import { describe, expect, it } from 'vitest';
+import { BFF_PATH } from './lib/graphql/execute';
+import { getRouter } from './router';
 import { Route as GraphqlRoute } from './routes/api/graphql';
 import { Route as HealthRoute } from './routes/api/health';
 
@@ -33,5 +35,9 @@ describe('server routes', () => {
     const res = await call(GraphqlRoute, 'ANY');
     expect(res.status).toBe(405);
     expect(res.headers.get('allow')).toBe('POST');
+  });
+
+  it("/api/graphql is the path execute()'s browser branch posts to", () => {
+    expect(getRouter().routesByPath[BFF_PATH]).toBe(GraphqlRoute);
   });
 });

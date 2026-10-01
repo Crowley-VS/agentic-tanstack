@@ -1,10 +1,15 @@
-// The data wiring (router.tsx, routes/index.tsx) without a server. Start calls getRouter() for
-// every request, so each must get its own QueryClient: a shared one would serve one user's data
-// to another. Test files stay out of src/routes (the route generator would take them for routes).
+// The wiring (router.tsx, routes/__root.tsx, routes/index.tsx) without a server. Start calls
+// getRouter() for every request, so each must get its own QueryClient: a shared one would serve
+// one user's data to another. Test files stay out of src/routes (the route generator would take
+// them for routes).
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { shouldRetry } from './lib/graphql/execute';
 import { getRouter } from './router';
+import { Route as RootRoute } from './routes/__root';
 import { Route as HomeRoute } from './routes/index';
+
+// node tests do not process CSS (its ?url is ''): give the app stylesheet a URL to look for
+vi.mock('./styles.css?url', () => ({ default: '/assets/styles.css' }));
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -18,6 +23,21 @@ describe('getRouter', () => {
       staleTime: 30_000,
       retry: shouldRetry,
     });
+  });
+
+  it("has one not-found page, the router's default: the root route sets none of its own", () => {
+    expect(getRouter().options.defaultNotFoundComponent).toBeTypeOf('function');
+    expect(RootRoute.options.notFoundComponent).toBeUndefined();
+  });
+});
+
+describe('the root route', () => {
+  it('links the app stylesheet from every page', async () => {
+    const head: unknown = Reflect.get(RootRoute.options, 'head');
+    if (typeof head !== 'function') throw new Error('the root route has no head()');
+    const { links } = await head({});
+    // styles.test.ts builds src/styles.css; without this link no page uses it
+    expect(links).toContainEqual({ rel: 'stylesheet', href: '/assets/styles.css' });
   });
 });
 

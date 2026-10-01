@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { ESLint } from 'eslint';
 import { describe, expect, it } from 'vitest';
 
@@ -42,6 +43,23 @@ describe('eslint.config.mjs', () => {
     const config = await eslint.calculateConfigForFile('apps/web/src/x.tsx');
     expect(config.rules['@nx/enforce-module-boundaries']?.[0]).toBe(2);
     expect(config.processor?.meta?.name).toBe('@graphql-eslint/processor');
+    // the processor must hand back the TS source next to the operations it extracts
+    expect(await lintWeb(`import { db } from '@acme/db';\n${probe('apiVersion')}`)).toEqual([
+      '1: @nx/enforce-module-boundaries',
+    ]);
+  });
+
+  it('gives the cross-file GraphQL rules the documents codegen types (apps/web/codegen.ts)', async () => {
+    const config = await eslint.calculateConfigForFile('apps/web/src/x.graphql');
+    // a computed path: a literal import of another project's file breaks the boundaries rule
+    const { default: codegen } = await import(
+      pathToFileURL(join(REPO, 'apps/web/codegen.ts')).href
+    );
+    const web = `${REPO.split(sep).join('/')}/apps/web/`;
+    const rebased = codegen.documents.map((d) =>
+      d.startsWith('!') ? `!${web}${d.slice(1)}` : `${web}${d}`,
+    );
+    expect(config.languageOptions.parserOptions.graphQLConfig.documents).toEqual(rebased);
   });
 
   it('checks the operations in apps/web against the API schema, at the real line', async () => {

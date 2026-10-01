@@ -1,12 +1,18 @@
 // Node, without the Start compiler: createIsomorphicFn runs its .server() branch, so these tests
-// cover SSR's direct call to the API (a stub here). The browser branch goes through the BFF.
+// cover SSR's direct call to the API (a stub here). The browser branch goes through the BFF
+// (postToBff, tested on its own below).
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { environmentManager } from '@tanstack/react-query';
 import { afterAll, beforeAll, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { ApiVersionDocument, TypedDocumentString } from '../../gql/graphql';
-import { execute, GraphQLRequestError, shouldRetry } from './execute';
+import { BFF_PATH, execute, GraphQLRequestError, postToBff, shouldRetry } from './execute';
 
 const SECRET = 's'.repeat(32);
+/** An operation whose variables are all optional (how codegen types `$first: Int`). */
+const NotesDocument = new TypedDocumentString<
+  { notes: { edges: { cursor: string }[] } },
+  { first?: number | null }
+>('query Notes($first: Int) { notes(first: $first) { edges { cursor } } }');
 /** An operation with a required variable, typed by hand (tests stay out of codegen). */
 const NoteDocument = new TypedDocumentString<{ note: { id: string } | null }, { id: string }>(
   'query Note($id: ID!) { note(id: $id) { id } }',
@@ -56,6 +62,9 @@ beforeEach(() => {
  */
 async function typedCalls() {
   expectTypeOf(await execute(ApiVersionDocument)).toEqualTypeOf<{ apiVersion: string }>();
+  // optional variables may be left out
+  await execute(NotesDocument);
+  await execute(NotesDocument, { first: 5 });
   // @ts-expect-error: this operation requires its variables
   await execute(NoteDocument);
   // @ts-expect-error: `id` is a string
@@ -118,8 +127,40 @@ describe('execute on the server', () => {
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
   });
 
+  it('refuses an operation codegen has not generated yet, without calling the API', async () => {
+    // what graphql() returns for a source src/gql does not know (codegen failed or has not run);
+    // its type is not a document, so execute() is called untyped
+    const ungenerated = {};
+    await expect(Reflect.apply(execute, undefined, [ungenerated])).rejects.toThrow(
+      'run `pnpm nx run web:codegen`',
+    );
+    expect(received).toBeUndefined();
+  });
+
   it('types variables and results from the document (web:typecheck checks typedCalls)', () => {
     expect(typedCalls).toBeTypeOf('function');
+  });
+});
+
+describe('the browser transport', () => {
+  it('posts the body to the same-origin BFF, with no secret, forwarding the signal', async () => {
+    const fetchSpy = vi.fn(async () => Response.json({ data: { apiVersion: 'dev' } }));
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const { signal } = new AbortController();
+      await postToBff('{"query":"{ apiVersion }"}', signal);
+      expect(fetchSpy).toHaveBeenCalledExactlyOnceWith(BFF_PATH, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/graphql-response+json, application/json',
+        },
+        body: '{"query":"{ apiVersion }"}',
+        signal,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

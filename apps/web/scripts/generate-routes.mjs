@@ -2,10 +2,13 @@
 // TanStack Start's route generator (its configResolved hook), exactly as `vite dev` and
 // `vite build` do, Start's `Register` footer included (`tsr generate` from @tanstack/router-cli
 // omits that footer, so its output would never match).
+//
+//   node scripts/generate-routes.mjs [root]   (default: apps/web; the test passes a copy)
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveConfig } from 'vite';
 
-const root = fileURLToPath(new URL('..', import.meta.url));
+const root = resolve(process.argv[2] ?? fileURLToPath(new URL('..', import.meta.url)));
 // The generator writes a temp file under <cwd>/.tanstack/tmp and renames it into src/: same disk.
 process.chdir(root);
 // The generator logs a failure and carries on (a dev server must survive a broken route file);

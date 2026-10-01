@@ -59,9 +59,11 @@ jobs:
       # Same definition of done as local development and agents.
       - run: pnpm check
 
-      # Cache correctness: `pnpm check` just ran (or replayed) these generators and builds, so a
-      # second run must replay every task from the cache ("Cache: N/N hit"). A miss means a task
-      # changes its own inputs (it writes a file it hashes), so its cache never serves the next run.
+      # Cache correctness: `pnpm check` just ran (or replayed) these generators and builds, so
+      # running them again must replay every task from the cache ("Cache: N/N hit"). A miss means a
+      # task changes its own inputs (it writes a file it hashes), so its cache never serves the next
+      # run. The builds run here a second time, the generators a third: pnpm check's `generated
+      # files` gate runs them first, and that gate is what catches a generator writing its own inputs.
       - name: Generators and builds replay from the cache
         run: |
           set -o pipefail
@@ -71,3 +73,15 @@ jobs:
             /Cache: +[0-9]+\/[0-9]+ hit/ { split($2, n, "/"); ok = n[1] == n[2] }
             END { exit !ok }' "$RUNNER_TEMP/replay.log" \
             || { echo "::error::a task above missed the Nx cache on its second run"; exit 1; }
+
+      # Keep what failing tests leave in apps/*/test-output/ (the browser tests' screenshots and
+      # attachments, see apps/web/vitest.browser.config.ts): without it a CI-only failure has only
+      # the log. Keep it the last step: it covers a failure in any step before it.
+      - name: Upload test output
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-output
+          path: apps/*/test-output/
+          if-no-files-found: ignore
+          retention-days: 14

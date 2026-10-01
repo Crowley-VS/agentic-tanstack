@@ -21,7 +21,7 @@ Never claim "done" without running these. If a check fails, fix the cause; never
 
 Stack checks: `pnpm check` also runs the database tests, which need **Docker** (each test file gets its own
 Postgres database). The web app (M5+) adds `pnpm nx e2e web-e2e` for route and UI changes.
-Browser tests (`*.browser.test.tsx`) need Chromium once per machine (`pnpm exec playwright install chromium`); watch them with `HEADED=1 pnpm nx run web:test-browser --skip-nx-cache`.
+Browser tests (`*.browser.test.{ts,tsx}`) need Chromium once per machine and after each Playwright bump (`pnpm exec playwright install chromium`); watch them with `HEADED=1 pnpm nx run web:test-browser --skip-nx-cache --watch`.
 
 <!-- stack:end -->
 
@@ -69,12 +69,12 @@ Browser tests (`*.browser.test.tsx`) need Chromium once per machine (`pnpm exec 
 
 **Web** (`apps/web`, health at `/api/health`; a production build needs `INTERNAL_API_SECRET`):
 
-| Task                                  | Command                                                   |
-| ------------------------------------- | --------------------------------------------------------- |
-| Run web + API (reloads)               | `pnpm dev` in the background, then curl its `/api/health` |
-| Production build / run it             | `pnpm nx run web:build` / `pnpm nx run web:serve`         |
-| After adding or renaming a route file | `pnpm nx run web:generate-routes` (or `pnpm regen`)       |
-| After editing a `graphql()` operation | `pnpm nx run web:codegen` (`pnpm dev` does it on save)    |
+| Task                                  | Command                                                      |
+| ------------------------------------- | ------------------------------------------------------------ |
+| Run web + API (reloads)               | `pnpm dev` in background; curl `/api/health` + API `/health` |
+| Production build / run it             | `pnpm nx run web:build` / `pnpm nx run web:serve`            |
+| After adding or renaming a route file | `pnpm nx run web:generate-routes` (or `pnpm regen`)          |
+| After editing a `graphql()` operation | `pnpm nx run web:codegen` (`pnpm dev` does it on save)       |
 
 <!-- stack:end -->
 
@@ -115,7 +115,8 @@ Browser tests (`*.browser.test.tsx`) need Chromium once per machine (`pnpm exec 
 
 `tools` is plain `.mjs` with no `typecheck` target: its gates are lint, boundaries and tests. Projects tagged
 `needs-db` need Docker for their tests (`pnpm nx affected -t test --exclude=tag:needs-db` skips them).
-Add a UI component with the pinned CLI: `pnpm --filter @acme/ui exec shadcn add <name>`, then `pnpm format`.
+Add a UI component with the pinned CLI: `pnpm --filter @acme/ui exec shadcn add <name> --overwrite`, then `pnpm format`
+and `git diff packages/ui` (`docs/web.md`).
 
 <!-- stack:end -->
 

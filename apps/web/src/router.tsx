@@ -23,6 +23,7 @@ export function getRouter() {
     defaultPreload: 'intent',
     // TanStack Query decides freshness: loaders always run; ensureQueryData() is free when cached
     defaultPreloadStaleTime: 0,
+    // the one not-found page: an unknown URL, or notFound() from any route (the root route included)
     defaultNotFoundComponent: () => <p>Not found.</p>,
     defaultErrorComponent: ErrorPage,
   });
