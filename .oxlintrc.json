@@ -11,7 +11,8 @@
   "rules": {
     "typescript/no-floating-promises": "error",
     "typescript/no-misused-promises": "error",
-    "import/no-cycle": "error"
+    "import/no-cycle": "error",
+    "eslint/no-underscore-dangle": ["warn", { "allow": ["__typename"] }]
   },
   "ignorePatterns": [
     "**/dist/**",

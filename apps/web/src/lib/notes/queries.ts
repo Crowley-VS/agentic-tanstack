@@ -43,6 +43,48 @@ const NoteQuery = graphql(`
   }
 `);
 
+export const CreateNoteMutation = graphql(`
+  mutation CreateNote($input: CreateNoteInput!) {
+    createNote(input: $input) {
+      __typename
+      ... on MutationCreateNoteSuccess {
+        data {
+          id
+        }
+      }
+      ... on ValidationError {
+        fieldErrors {
+          path
+          message
+        }
+      }
+    }
+  }
+`);
+
+export const AddCommentMutation = graphql(`
+  mutation AddComment($input: AddCommentInput!) {
+    addComment(input: $input) {
+      __typename
+      ... on MutationAddCommentSuccess {
+        data {
+          id
+        }
+      }
+      ... on ValidationError {
+        fieldErrors {
+          path
+          message
+        }
+      }
+      ... on NotFoundError {
+        id
+        message
+      }
+    }
+  }
+`);
+
 /** Query keys, broad to narrow: invalidating `all` refetches every notes query. */
 export const noteKeys = {
   all: ['notes'] as const,

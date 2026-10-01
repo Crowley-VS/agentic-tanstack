@@ -15,6 +15,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-react';
 import type { NoteQuery, NotesQuery } from './gql/graphql';
+import { appStatusOptions } from './lib/app-status';
 import { noteOptions, notesOptions } from './lib/notes/queries';
 import { Route as BoardRoute } from './routes/index';
 import { Route as NoteRoute } from './routes/notes/$noteId';
@@ -30,8 +31,9 @@ afterEach(() => {
 
 /**
  * A route's component at `url`, in a small in-memory router (its links need one) with the route's
- * `path`, over a query cache filled as the loader leaves it. Loaders do not run here
- * (router.test.ts covers them), and file routes get their path from routeTree.gen.ts.
+ * `path`, over a query cache filled as the loaders leave it (the root's app status, writable, for
+ * the page's form). Loaders do not run here (router.test.ts covers them), and file routes get
+ * their path from routeTree.gen.ts.
  */
 async function renderRoute(
   route: AnyRoute,
@@ -44,6 +46,7 @@ async function renderRoute(
   const queryClient = new QueryClient({
     defaultOptions: { queries: { staleTime: 30_000, retry: false } },
   });
+  queryClient.setQueryData(appStatusOptions().queryKey, { readOnly: false });
   fill(queryClient);
   const root = createRootRoute();
   const router = createRouter({
