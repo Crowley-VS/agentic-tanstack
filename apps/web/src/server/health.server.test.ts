@@ -2,6 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { health } from './health.server';
 
 const SECRET = 's'.repeat(32);
+/** Everything production requires. */
+const production = {
+  NODE_ENV: 'production',
+  INTERNAL_API_SECRET: SECRET,
+  API_HOST: 'api.railway.internal',
+  API_PORT: '8080',
+};
 
 beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -13,7 +20,7 @@ afterEach(() => {
 
 describe('GET /api/health', () => {
   it('answers 200, never cached, when the environment is valid', async () => {
-    for (const env of [{}, { NODE_ENV: 'production', INTERNAL_API_SECRET: SECRET }]) {
+    for (const env of [{}, production]) {
       const res = health(env);
       expect(res.status).toBe(200);
       expect(res.headers.get('cache-control')).toBe('no-store');
@@ -29,6 +36,15 @@ describe('GET /api/health', () => {
     expect(console.error).toHaveBeenCalledWith(
       '[web] /api/health:',
       expect.stringContaining('INTERNAL_API_SECRET is required in production'),
+    );
+  });
+
+  it('answers 503 when production has no API address (no fallback to this machine)', () => {
+    const { API_HOST: _, ...noHost } = production;
+    expect(health(noHost).status).toBe(503);
+    expect(console.error).toHaveBeenCalledWith(
+      '[web] /api/health:',
+      expect.stringContaining('API_HOST is required in production'),
     );
   });
 
