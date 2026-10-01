@@ -5,6 +5,9 @@ import { randomUUID } from 'node:crypto';
 import type { APIRequestContext } from '@playwright/test';
 import { expect, gql, SEED, test, uniqueTitle } from './fixtures';
 
+/** Notes per board page (NOTE_LIMITS.pageSize in @acme/validators). */
+const PAGE_SIZE = 20;
+
 /** The id of seed note `n` ("Seed note 03" for 3), from the oldest end of the list. */
 async function seedNoteId(request: APIRequestContext, n: number) {
   const { notes } = await gql<{ notes: { edges: { node: { id: string; title: string } }[] } }>(
@@ -36,7 +39,7 @@ test.describe('server-rendered (JavaScript off)', () => {
     expect(response?.status()).toBe(200);
     await expect(page).toHaveTitle('Notes · acme-app');
     const notes = page.getByRole('region', { name: 'All notes' }).getByRole('listitem');
-    await expect(notes).toHaveCount(20);
+    await expect(notes).toHaveCount(PAGE_SIZE);
     // a click before hydration would be lost
     await expect(page.getByRole('button', { name: 'Load more' })).toBeDisabled();
   });
@@ -50,7 +53,27 @@ test.describe('server-rendered (JavaScript off)', () => {
   });
 });
 
-test('Load more pages through the board, down to the oldest note', async ({ page }) => {
+test('Load more pages through the board, down to the oldest note', async ({
+  page,
+  request,
+  createNote,
+}) => {
+  // at least three pages, so the loop below must load more than once (other specs only add notes)
+  const { notes: firstNotes } = await gql<{ notes: { edges: unknown[] } }>(
+    request,
+    /* GraphQL */ `
+      query E2EBoardNoteCount($first: Int!) {
+        notes(first: $first) {
+          edges {
+            cursor
+          }
+        }
+      }
+    `,
+    { first: 2 * PAGE_SIZE + 1 },
+  );
+  for (let count = firstNotes.edges.length; count <= 2 * PAGE_SIZE; count++) await createNote();
+
   await page.goto('/');
   const notes = page.getByRole('region', { name: 'All notes' }).getByRole('listitem');
   const loadMore = page.getByRole('button', { name: 'Load more' });
@@ -62,7 +85,8 @@ test('Load more pages through the board, down to the oldest note', async ({ page
     const shown = await notes.count();
     await loadMore.click({ timeout: 5000 }); // enabled once hydrated and the last page is in
     await expect.poll(() => notes.count()).toBeGreaterThan(shown);
-    await expect(oldest).toBeVisible({ timeout: 0 });
+    // checks once: an expect timeout of 0 would wait forever, so toPass would never load another page
+    expect(await oldest.isVisible()).toBe(true);
   }).toPass();
   await expect(loadMore).toBeHidden();
 });
