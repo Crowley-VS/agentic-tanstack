@@ -31,6 +31,13 @@ describe('eslint.config.mjs', () => {
     },
   );
 
+  it('skips test artifacts, so a test writing a broken source there cannot fail a concurrent lint', async () => {
+    expect(
+      await eslint.isPathIgnored('apps/web/test-output/generate-routes-x/src/routes/broken.tsx'),
+    ).toBe(true);
+    expect(await eslint.isPathIgnored('apps/web/src/routes/index.tsx')).toBe(false);
+  });
+
   it("allows packages/ui's own #/ subpath imports (what `shadcn add` writes)", async () => {
     expect(await lintUi("import { Button } from '#/components/button';\n")).toEqual([]);
     // the rule is live here: a self-import through the package name is still an error

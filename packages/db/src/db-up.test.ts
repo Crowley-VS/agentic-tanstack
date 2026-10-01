@@ -187,7 +187,8 @@ describe('isLocalUrl', () => {
     expect(res.stderr).toContain(
       '[db] refusing to migrate a non-local database (db.example.com); set DB_ALLOW_REMOTE=1',
     );
-  });
+    // a cold tsx start under CI load takes about 6 s (0.4 s warm): more than Vitest's 5 s default
+  }, 30_000);
 });
 
 describe('studio', () => {
