@@ -91,6 +91,7 @@ const local = (port: number) => ({
   composeFile: join(tmp, 'docker-compose.yml'),
   root: tmp,
   commonDir: REPO,
+  ownsProject: true,
 });
 
 let runs = 0;
@@ -249,6 +250,14 @@ describe('dbUp', () => {
     const env = join(tmp, `compose-env-${runs}.log`);
     await run(local(await closedPort()), { up: [{}], env: { FAKE_DOCKER_ENV: env } });
     expect(readFileSync(env, 'utf8')).toBe(`${JSON.stringify({ root: tmp, commonDir: REPO })}\n`);
+  });
+
+  it('labels nothing as this checkout’s in a project COMPOSE_PROJECT_NAME names (it may be shared)', async () => {
+    const env = join(tmp, `compose-env-${runs}.log`);
+    const shared = { ...local(await closedPort()), ownsProject: false };
+    await run(shared, { up: [{}], env: { FAKE_DOCKER_ENV: env } });
+    // empty labels: `prune` never removes it, whichever checkout created it is deleted
+    expect(readFileSync(env, 'utf8')).toBe(`${JSON.stringify({ root: '', commonDir: '' })}\n`);
   });
 
   // the compose file turns those values into labels, on the service and on the volume
@@ -508,6 +517,22 @@ describe('resolveDb', () => {
     const wt = resolveDb(worktree, env);
     expect(new URL(wt.url).pathname).toMatch(/^\/app_[0-9a-f]{8}$/);
     expect(wt.testTemplate).toBe(`test_template${new URL(wt.url).pathname.slice('/app'.length)}`);
+  });
+
+  it('owns its compose project unless COMPOSE_PROJECT_NAME names another', () => {
+    for (const checkout of [repo, worktree]) {
+      const own = resolveDb(checkout, env);
+      expect(own.ownsProject).toBe(true);
+      // what `dev-ports --exec` exports to its children: the checkout's own name
+      expect(resolveDb(checkout, { ...env, COMPOSE_PROJECT_NAME: own.project }).ownsProject).toBe(
+        true,
+      );
+      const shared = resolveDb(checkout, { ...env, COMPOSE_PROJECT_NAME: 'shared-pg' });
+      expect(shared).toMatchObject({ project: 'shared-pg', ownsProject: false });
+    }
+    // a worktree pointed at the primary checkout's project
+    const primary = resolveDb(repo, env).project;
+    expect(resolveDb(worktree, { ...env, COMPOSE_PROJECT_NAME: primary }).ownsProject).toBe(false);
   });
 
   it('names the e2e database per checkout, and never takes it from DATABASE_URL', () => {

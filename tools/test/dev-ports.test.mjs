@@ -70,6 +70,7 @@ describe('computePorts', () => {
     expect(a.ports.api).toBe(a.ports.web + 1);
     expect(a.ports.studio).toBe(a.ports.web + 3); // never drizzle-kit's default 4983
     expect(a.composeProject).toBe(`a-${pathHash('/work/my-app/.claude/worktrees/a')}`);
+    expect(a.ownsComposeProject).toBe(true);
     expect(b.composeProject).not.toBe(a.composeProject);
   });
 
@@ -82,6 +83,7 @@ describe('computePorts', () => {
     expect(info.ports.db).toBe(6543);
     expect(info.ports.studio).toBe(5983);
     expect(info.composeProject).toBe('ci');
+    expect(info.ownsComposeProject).toBe(false); // db-up labels nothing as this checkout's
     expect(info.databaseUrls.e2e).toBe('postgres://postgres:postgres@127.0.0.1:6543/e2e');
   });
 

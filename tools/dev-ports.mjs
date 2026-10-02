@@ -11,7 +11,7 @@
 //                        app_<hash> / e2e_<hash>, which stay apart even when an override
 //                        points several worktrees at one Postgres server
 //   env overrides     -> WEB_PORT, API_PORT, DB_PORT, DB_STUDIO_PORT, WEB_E2E_PORT, API_E2E_PORT,
-//                        COMPOSE_PROJECT_NAME
+//                        COMPOSE_PROJECT_NAME (then not this checkout's own: `ownsComposeProject`)
 //   test database URL -> the server's `postgres` maintenance database, for tests that create
 //                        databases of their own
 //
@@ -167,7 +167,8 @@ export function computePorts({ root, primary, block, commonDir }, env = {}) {
       .toLowerCase()
       .replace(/[^a-z0-9-]/g, '-')
       .replace(/^-+|-+$/g, '') || 'app';
-  const composeProject = env.COMPOSE_PROJECT_NAME || (primary ? slug : `${slug}-${hash}`);
+  const ownProject = primary ? slug : `${slug}-${hash}`;
+  const composeProject = env.COMPOSE_PROJECT_NAME || ownProject;
   const dbUrl = (db) => `postgres://postgres:postgres@127.0.0.1:${ports.db}/${db}`;
   const dbName = (name) => (primary ? name : `${name}_${hash}`);
   return {
@@ -175,6 +176,9 @@ export function computePorts({ root, primary, block, commonDir }, env = {}) {
     root,
     commonDir,
     composeProject,
+    // false when COMPOSE_PROJECT_NAME names another project (one server shared by several
+    // checkouts, say): db-up then labels nothing as this checkout's, so `prune` never removes it
+    ownsComposeProject: composeProject === ownProject,
     ports,
     urls: {
       web: `http://localhost:${ports.web}`,

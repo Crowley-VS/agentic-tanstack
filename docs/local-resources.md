@@ -26,12 +26,16 @@ they reset their worktree (`.claude/workflows/review-loop-run.js`).
 
 (`pnpm prune` is pnpm's own command, hence the name.) It removes:
 
-- **Nx daemons** of this user whose workspace directory no longer exists (`tools/nx-daemons.mjs`).
+- **Nx daemons** of this user whose workspace directory was deleted (`tools/nx-daemons.mjs`).
   Nx 23.2's daemon exits by itself within moments of its checkout's deletion (it checks every
   20 ms that its pid file and the lock file are unchanged); this catches one that does not
   (another Nx version, a stuck process). A daemon's workspace is its working directory; it gets
-  SIGTERM, Nx's own clean shutdown. One for a directory that is gone can serve no one, whichever
-  repository it was.
+  SIGTERM, Nx's own clean shutdown. One for a deleted directory can serve no one, whichever
+  repository it was. On Linux "deleted" is the kernel's own mark on the directory, and only for a
+  daemon in this machine's mount namespace: a daemon in a container (a devcontainer's, often the
+  same uid) has paths that do not exist on the host and is alive, so it is never a candidate. A
+  daemon that refuses the signal (a sandbox or security module's denial) is reported, and the
+  command exits non-zero.
 - **Temp Nx installs** of processes that have exited: the `<tmp>/tmp-<pid>-*` copies of
   `nx@latest` (~4k files each) that every Nx daemon started without `NX_USE_LOCAL=true` leaves
   behind when it exits, however it exits (see below). Only this user's, holding a package.json
@@ -55,6 +59,14 @@ whose checkout directory is gone are looked at further. Such a project is remove
 resource of it labeled with this repository's common dir names a checkout directory that is gone,
 and no container of it runs from a directory that still exists. Its containers, volumes and
 networks then go, unlabeled ones of the same project included.
+
+`db-up` labels only a checkout's own compose project. When `COMPOSE_PROJECT_NAME` names another
+one (to point several checkouts at one Postgres server, say), what it creates carries empty labels,
+since whichever checkout created the server, the others may still use it: such a project is never
+pruned, and you remove it yourself (`docker compose -p <name> down -v`) when no checkout needs it.
+Pointing `COMPOSE_PROJECT_NAME` at another worktree's own project (`<dir>-<hash>`) ties your
+database to that worktree: once its directory is gone, its project goes, unless your checkout
+recreated the container since.
 
 Never touched: other repositories' resources (another common dir, or no labels), anything of a
 checkout whose directory exists, and projects without the labels: those made by a bare

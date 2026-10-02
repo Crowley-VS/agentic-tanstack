@@ -7,11 +7,14 @@
 // one that misses it (another Nx version, a stuck process) keeps running with its watchers.
 //
 //   node tools/nx-daemons.mjs prune   stop (SIGTERM, its own clean shutdown) every Nx daemon of
-//                                     this user whose workspace directory is gone, then delete
+//                                     this user whose workspace directory was deleted, then delete
 //                                     the temp Nx installs of processes that have exited
 //
-// A daemon's workspace is its working directory (Nx starts it in the workspace root). Linux and
-// macOS; elsewhere it does nothing. `nx daemon --stop` stops the current checkout's own daemon.
+// A daemon's workspace is its working directory (Nx starts it in the workspace root). On Linux it
+// is gone only when the kernel marks that directory deleted, and only for a daemon in this mount
+// namespace: one in a container (a devcontainer's, often the same uid) has paths of its own that do
+// not exist here, and is alive. Linux and macOS; elsewhere it does nothing. `nx daemon --stop`
+// stops the current checkout's own daemon.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -50,6 +53,31 @@ export function workingDir(pid, { platform = process.platform } = {}) {
   return undefined;
 }
 
+/**
+ * True when process `pid` sees this process's mounts (Linux: the same mount namespace), so its
+ * working directory is a path on this machine; false for a container's process, or when it cannot
+ * tell. Always true elsewhere (macOS runs containers in a VM: their processes are not listed).
+ */
+export function sameMounts(pid, { platform = process.platform } = {}) {
+  if (platform !== 'linux') return true;
+  try {
+    return readlinkSync(`/proc/${pid}/ns/mnt`) === readlinkSync('/proc/self/ns/mnt');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pure: the deleted workspace a daemon's working directory `dir` (from workingDir) names, else
+ * undefined. Linux appends " (deleted)" to a removed directory's link: a path that merely does not
+ * exist is no proof, and neither is a deleted one recreated since.
+ */
+export function deletedWorkspace(dir, { platform = process.platform, exists = existsSync } = {}) {
+  if (dir === undefined) return undefined;
+  const path = platform === 'linux' ? dir.match(/^(.*) \(deleted\)$/)?.[1] : dir;
+  return path !== undefined && !exists(path) ? path : undefined;
+}
+
 /** Every process: `pid uid args` lines. */
 export function listProcesses() {
   if (process.platform === 'win32') return '';
@@ -67,29 +95,36 @@ export function isAlive(pid) {
 }
 
 /**
- * Stop the Nx daemons whose workspace directory no longer exists. Returns [{ pid, workspace }].
- * `ps` (the process listing) and `cwd` (pid → working directory) can be replaced in tests.
+ * Stop the Nx daemons whose workspace directory has been deleted. Returns { stopped, failed }:
+ * [{ pid, workspace }], and the same with `error` for those that refused the signal. `ps` (the
+ * process listing), `cwd` (pid → working directory) and `mounts` (pid → sameMounts) can be
+ * replaced in tests.
  */
 export function pruneDaemons({
   ps = listProcesses,
   cwd = workingDir,
+  mounts = sameMounts,
   exists = existsSync,
+  platform = process.platform,
   kill = (pid) => process.kill(pid, 'SIGTERM'),
   uid = process.getuid?.(), // undefined on Windows, where `ps` lists nothing either
 } = {}) {
   const stopped = [];
+  const failed = [];
   for (const pid of daemonPids(ps(), uid)) {
-    const workspace = cwd(pid);
-    // the raw link: a deleted directory reads "<path> (deleted)", which does not exist either
-    if (workspace === undefined || exists(workspace)) continue;
+    if (!mounts(pid)) continue; // a container's daemon: alive, its paths are not this machine's
+    const workspace = deletedWorkspace(cwd(pid), { platform, exists });
+    if (workspace === undefined) continue;
     try {
       kill(pid);
-      stopped.push({ pid, workspace: workspace.replace(/ \(deleted\)$/, '') });
-    } catch {
-      // exited meanwhile
+      stopped.push({ pid, workspace });
+    } catch (err) {
+      // ESRCH: exited meanwhile; anything else (EPERM: a sandbox's or security module's refusal)
+      // leaves it running, and is said so
+      if (err.code !== 'ESRCH') failed.push({ pid, workspace, error: err.code ?? err.message });
     }
   }
-  return stopped;
+  return { stopped, failed };
 }
 
 /**
@@ -125,10 +160,16 @@ async function main([mode]) {
     return;
   }
   if (process.platform === 'win32') return;
-  const stopped = pruneDaemons();
-  if (stopped.length === 0) console.log('[nx-daemons] no Nx daemons of deleted checkouts');
+  const { stopped, failed } = pruneDaemons();
+  if (stopped.length + failed.length === 0)
+    console.log('[nx-daemons] no Nx daemons of deleted checkouts');
   for (const { pid, workspace } of stopped)
     console.log(`[nx-daemons] stopped the Nx daemon of deleted ${workspace} (pid ${pid})`);
+  for (const { pid, workspace, error } of failed)
+    console.error(
+      `[nx-daemons] could not stop the Nx daemon of deleted ${workspace} (pid ${pid}): ${error}`,
+    );
+  if (failed.length) process.exitCode = 1;
   // the daemons just stopped exit within moments; their temp installs are stale once they have
   for (let i = 0; i < 50 && stopped.some(({ pid }) => isAlive(pid)); i++)
     await new Promise((done) => setTimeout(done, 100));

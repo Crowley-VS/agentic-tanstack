@@ -4,9 +4,11 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import {
   daemonPids,
+  deletedWorkspace,
   isAlive,
   listProcesses,
   pruneDaemons,
+  sameMounts,
   staleTempInstalls,
   workingDir,
 } from '../nx-daemons.mjs';
@@ -30,32 +32,65 @@ describe('daemonPids', () => {
   });
 });
 
-/** Three daemons: one in a deleted workspace, one in a live one, one whose workspace is unknown. */
+/**
+ * Four daemons: one in a deleted workspace, one in a live one, one whose workspace is unknown, and
+ * one in a container (another mount namespace), whose workspace does not exist on this machine.
+ */
 const ps = () =>
-  `1 1000 node /w/gone/${START}\n2 1000 node /w/live/${START}\n3 1000 node /w/x/${START}\n`;
-const cwds = { 1: '/w/gone (deleted)', 2: '/w/live', 3: undefined };
-const exitedAlready = () => {
-  throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+  [1, 2, 3, 4].map((pid) => `${pid} 1000 node /w/${pid}/${START}\n`).join('') +
+  `5 1000 /sbin/docker-init -- node /workspaces/app/${START}\n`;
+const cwds = { 1: '/w/gone (deleted)', 2: '/w/live', 3: undefined, 4: '/workspaces/app', 5: '/' };
+const linux = {
+  ps,
+  cwd: (pid) => cwds[pid],
+  mounts: (pid) => pid < 4,
+  exists: (dir) => dir === '/w/live' || dir === '/',
+  platform: 'linux',
+  uid: 1000,
+};
+const refuse = (code) => () => {
+  throw Object.assign(new Error(`kill ${code}`), { code });
 };
 
 describe('pruneDaemons', () => {
-  it('stops the daemons whose workspace directory is gone, and only those', () => {
+  it('stops the daemons whose workspace directory was deleted, and only those', () => {
     const killed = [];
-    const stopped = pruneDaemons({
-      ps,
-      cwd: (pid) => cwds[pid],
-      exists: (dir) => dir === '/w/live',
-      kill: (pid) => killed.push(pid),
-      uid: 1000,
-    });
+    const { stopped, failed } = pruneDaemons({ ...linux, kill: (pid) => killed.push(pid) });
     expect(stopped).toEqual([{ pid: 1, workspace: '/w/gone' }]);
-    expect(killed).toEqual([1]); // never one whose workspace it cannot tell (pid 3)
+    expect(failed).toEqual([]);
+    // never one whose workspace it cannot tell (3), nor a container's (4, 5): alive, elsewhere
+    expect(killed).toEqual([1]);
   });
 
-  it('does not report a daemon that exited before it could be stopped', () => {
-    const opts = { ps, cwd: (pid) => cwds[pid], exists: () => false, uid: 1000 };
-    expect(pruneDaemons({ ...opts, kill: exitedAlready })).toEqual([]);
-    expect(pruneDaemons({ ...opts, kill: () => {} }).map((d) => d.pid)).toEqual([1, 2]);
+  it('leaves a container’s daemon alone even when the kernel marks its directory deleted', () => {
+    const killed = [];
+    const deleted = { ...linux, cwd: (pid) => `/w/${pid} (deleted)`, exists: () => false };
+    pruneDaemons({ ...deleted, kill: (pid) => killed.push(pid) });
+    expect(killed).toEqual([1, 2, 3]);
+  });
+
+  it('does not report a daemon that exited meanwhile, and reports one that refused the signal', () => {
+    expect(pruneDaemons({ ...linux, kill: refuse('ESRCH') })).toEqual({ stopped: [], failed: [] });
+    expect(pruneDaemons({ ...linux, kill: refuse('EACCES') })).toEqual({
+      stopped: [],
+      failed: [{ pid: 1, workspace: '/w/gone', error: 'EACCES' }],
+    });
+  });
+});
+
+describe('deletedWorkspace', () => {
+  it('on Linux, trusts only the kernel’s " (deleted)" mark, and not for a recreated directory', () => {
+    const opts = { platform: 'linux', exists: (dir) => dir === '/w/again' };
+    expect(deletedWorkspace('/w/gone (deleted)', opts)).toBe('/w/gone');
+    expect(deletedWorkspace('/workspaces/app', opts)).toBeUndefined(); // missing, not deleted
+    expect(deletedWorkspace('/w/again (deleted)', opts)).toBeUndefined();
+    expect(deletedWorkspace(undefined, opts)).toBeUndefined();
+  });
+
+  it('on macOS (lsof, no mark), takes a directory that does not exist', () => {
+    const opts = { platform: 'darwin', exists: (dir) => dir === '/w/live' };
+    expect(deletedWorkspace('/w/gone', opts)).toBe('/w/gone');
+    expect(deletedWorkspace('/w/live', opts)).toBeUndefined();
   });
 });
 
@@ -97,12 +132,22 @@ describe.runIf(['linux', 'darwin'].includes(process.platform))('on this machine'
     );
     expect(workingDir(live.pid)).toBe(liveDir);
 
+    expect(sameMounts(live.pid)).toBe(true);
     rmSync(goneDir, { recursive: true, force: true });
-    const stopped = pruneDaemons({ ps: ours });
+    const { stopped, failed } = pruneDaemons({ ps: ours });
     expect(stopped).toEqual([{ pid: gone.pid, workspace: goneDir }]);
+    expect(failed).toEqual([]);
     expect(await exitSignal(gone)).toBe('SIGTERM');
     expect(live.exitCode).toBeNull();
     expect(live.signalCode).toBeNull();
+  });
+});
+
+describe.runIf(process.platform === 'linux')('sameMounts', () => {
+  it('knows a process of this mount namespace, and says no when it cannot tell', () => {
+    expect(sameMounts(process.pid)).toBe(true);
+    const done = spawnSync(process.execPath, ['-e', '']);
+    expect(sameMounts(done.pid)).toBe(false); // exited: no /proc entry to compare
   });
 });
 

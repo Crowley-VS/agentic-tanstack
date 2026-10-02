@@ -58,9 +58,12 @@ export function resolveDb(cwd = HERE, env = process.env) {
     testTemplate: new URL(info.databaseUrls.dev).pathname.slice(1).replace(/^app/, 'test_template'),
     composeFile: join(info.root, 'docker-compose.yml'),
     primary: info.primary,
-    // the labels docker-compose.yml puts on the container and volume (scripts/orphans.mjs)
+    // the labels docker-compose.yml puts on the container and volume (scripts/orphans.mjs), put
+    // only on this checkout's own project: one named by COMPOSE_PROJECT_NAME may serve other
+    // checkouts too, and must outlive this one
     root: info.root,
     commonDir: info.commonDir,
+    ownsProject: info.ownsComposeProject === true,
   };
 }
 
@@ -101,8 +104,8 @@ function compose(cfg, args, { stdio = ['ignore', 'pipe', 'pipe'], env = process.
       ...env,
       DB_PORT: String(cfg.port),
       COMPOSE_PROJECT_NAME: cfg.project,
-      DEV_CHECKOUT_ROOT: cfg.root ?? '',
-      DEV_CHECKOUT_GIT_COMMON_DIR: cfg.commonDir ?? '',
+      DEV_CHECKOUT_ROOT: (cfg.ownsProject && cfg.root) || '',
+      DEV_CHECKOUT_GIT_COMMON_DIR: (cfg.ownsProject && cfg.commonDir) || '',
     },
     encoding: 'utf8',
     stdio,
