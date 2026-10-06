@@ -1,7 +1,18 @@
 # The API (`apps/api`)
 
-Details behind the API lines of `AGENTS.md`: how to run the production bundle, the rules its code
-follows, the security defaults and the error contract.
+Details behind the API lines of `AGENTS.md`: how to run it, the rules its code follows, the
+security defaults and the error contract.
+
+## Run it
+
+| Task                                    | Command                                                                              |
+| --------------------------------------- | ------------------------------------------------------------------------------------ |
+| Dev server (migrates first; reloads)    | `pnpm nx run api:dev` (GraphiQL at the printed URL), or `pnpm dev` with the web app  |
+| Change the schema                       | edit `apps/api/src/graphql/*`, then `pnpm nx run api:print-schema` (or `pnpm regen`) |
+| Production bundle (what the image runs) | `pnpm nx run api:build`, then run it as below                                        |
+
+GraphQL answers at `/graphql`, the health check at `/health` (an empty 200); `pnpm ports` prints
+the URL.
 
 ## Run the production bundle
 
