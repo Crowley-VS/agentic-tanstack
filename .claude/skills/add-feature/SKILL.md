@@ -150,7 +150,7 @@ it required in a later change.
 
 ## 8. Docs
 
-- Update `docs/web.md`, `docs/api.md` or `docs/e2e.md` when a rule changes (a field alone changes
+- Update `docs/web.md`, `docs/api.md`, `docs/e2e.md` or `docs/database.md` when a rule changes (a field alone changes
   none).
 - Touch `AGENTS.md` only for a new rule, and replace text rather than add: it is capped at 12,000
   bytes and 200 lines, and `pnpm check` fails above that.

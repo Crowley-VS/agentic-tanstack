@@ -22,7 +22,7 @@ Never claim "done" without these. If a check fails, fix the cause; never weaken 
 
 <!-- stack:start:done -->
 
-Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI or API changes also need `pnpm nx e2e web-e2e` (production builds, own ports and database). Browser tests (`*.browser.test.{ts,tsx}`) need Chromium, once per machine and after each Playwright bump: `pnpm exec playwright install chromium`.
+Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI or API changes also need `pnpm nx e2e web-e2e` (production builds, own ports and database: `docs/e2e.md`). Browser tests (`*.browser.test.{ts,tsx}`) need Chromium, once per machine and after each Playwright bump: `pnpm exec playwright install chromium`.
 
 <!-- stack:end -->
 
@@ -43,8 +43,8 @@ Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI 
 <!-- stack:start:commands -->
 
 - `pnpm ports`: this checkout's URLs, ports and database URLs (each git worktree gets its own).
-- `pnpm dev` in the background: web + API, reloading. Curl the web's `/api/health` and the API's `/health`; stop it when done.
-- Database: `pnpm db:up` (a no-op when it is up), `pnpm db:migrate`, `pnpm db:seed` (deterministic data), `pnpm db:reset` (wipes the data).
+- `pnpm dev` in the background: web + API, reloading. Curl the web's `/api/health` and the API's `/health`; stop it when done. Writes per IP are rate-limited, in dev too (`docs/web.md`).
+- Database: `pnpm db:up` (a no-op when it is up), `pnpm db:migrate`, `pnpm db:seed` (deterministic data), `pnpm db:reset` (wipes the data). Schema changes: Migrations, below.
 - `pnpm teardown` stops this checkout's Postgres and Nx daemon (data kept): run it before you leave or delete a worktree, after stopping the servers you started. `pnpm prune:orphans` removes what deleted worktrees left behind (`pnpm db:up` does the Docker part itself). Details: `docs/local-resources.md`.
 
 <!-- stack:end -->
@@ -62,7 +62,7 @@ Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI 
 
 <!-- stack:start:navigation -->
 
-- **API shape** → `packages/graphql/schema.graphql`, printed from `apps/api/src/graphql` by `pnpm nx run api:print-schema`.
+- **API shape** → `packages/graphql/schema.graphql`, printed from `apps/api/src/graphql` by `pnpm nx run api:print-schema` (run it after every schema edit).
 - **Pages and params** → `apps/web/src/routeTree.gen.ts`, generated from `apps/web/src/routes` by `pnpm nx run web:generate-routes` (after adding or renaming a route file).
 - **Operation types** → `apps/web/src/gql`, generated from the `graphql()` calls in `apps/web/src` by `pnpm nx run web:codegen` (`pnpm dev` runs it on save).
 
@@ -78,7 +78,7 @@ Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI 
 - `packages/core` (`scope:server`, `type:feature`, `needs-db`): business logic: writes and domain errors; takes a `Db`, never a request.
 - `packages/db` (`scope:server`, `type:data`, `needs-db`): Drizzle schema, migrations, seed, per-test-file databases (`testDb()`).
 - `packages/graphql` (`scope:shared`, `type:util`): `schema.graphql`, the generated API contract clients get their types from.
-- `packages/ui` (`scope:web`, `type:ui`): React components (shadcn/ui, radix-nova; add them with the pinned CLI: `docs/web.md`) and the Tailwind 4 theme.
+- `packages/ui` (`scope:web`, `type:ui`): React components (shadcn/ui, radix-nova) and the Tailwind 4 theme. Add one with `pnpm --filter @acme/ui exec shadcn add <name> --overwrite` (without `--overwrite` it writes nothing when no terminal is attached), then `pnpm format` and `git diff packages/ui` (`docs/web.md`).
 - `packages/validators` (`scope:shared`, `type:util`): Zod schemas and limits shared by api and web.
 - `tools` (`scope:tooling`, `type:tooling`): dev ports, Claude Code hooks, `pnpm check`, agent-config sync; plain `.mjs`, gated by lint, boundaries and tests (no `typecheck`).
 - `docker-compose.yml`: the local Postgres (dev, e2e and tests only).
@@ -100,12 +100,12 @@ Without Docker, `pnpm nx affected -t test --exclude=tag:needs-db` skips the `nee
 
 <!-- stack:start:invariants -->
 
-- Boundaries (`eslint.config.mjs`): `scope:shared` → shared; `scope:tooling` → tooling; `scope:web` → web, shared; `scope:api` → api, server, shared; `scope:server` → server, shared; `type:util` → util only, and no frameworks, Drizzle or `pg`.
+- Boundaries (full list in `eslint.config.mjs`): `scope:shared` → shared; `scope:tooling` → tooling; `scope:web` → web, shared; `scope:api` → api, server, shared; `scope:server` → server, shared; `type:util` → util only, and no frameworks, Drizzle or `pg`.
 - **Writes go through `packages/core`**, which validates again and throws domain errors (`NotFoundError`). Reads use Drizzle's relational queries (in the API: the Pothos Drizzle plugin), which load nested data in one statement.
 - **Migrations**: edit `packages/db/src/schema/*`, run `pnpm nx run db:db-generate --args="--name=<what>"` and commit the result. The guard hook blocks edits to a migration git tracks (staged or committed); only a new, untracked one may change.
-- **API**: the schema has no side effects at import; the API is private and locked down by default (tests pin each default); expected failures are data (union members, selected by `__typename`); its Vitest config aliases `graphql` to one copy.
+- **API** (`docs/api.md`): the schema has no side effects at import; the API is private and locked down by default (tests pin each default); expected failures are data (union members, selected by `__typename`); its Vitest config aliases `graphql` to one copy.
 - **Server-only code lives in `*.server.ts`** (env, API client, BFF): a client import of one fails the build, and so does server code in the client bundle. The browser reaches the API only through the same-origin `/api/graphql`.
-- **Web data**: only through `execute()` with a `graphql()` document. Loaders `await ensure…()` and return nothing; components `useSuspense…` the same query options. Forms copy `components/note-form.tsx`.
+- **Web data** (`docs/web.md`): only through `execute()` with a `graphql()` document. Loaders `await ensure…()` and return nothing; components `useSuspense…` the same query options. Forms copy `components/note-form.tsx`.
 - **Tests that touch the database** use `testDb()` from `@acme/db/testing`. Each test file gets its own database, shared by its tests: assume nothing about other tests' rows.
 
 <!-- stack:end -->
