@@ -16,8 +16,9 @@ it first (`db:db-migrate` depends on `db:db-up`, `db:db-seed` and `api:dev` on `
 | Browse data (the studio URL: `pnpm ports`) | `pnpm db:studio` · `pnpm nx run db:db-psql` (`-- -c "select …"` runs one query)           |
 | Stop it, data kept / remove leftovers      | `pnpm teardown` / `pnpm prune:orphans` (`docs/local-resources.md`)                        |
 
-`db-psql` and `db-studio` open the dev database, which exists only after `pnpm db:migrate` (or
-`pnpm db:seed`) has run once in this checkout: `pnpm check` creates only test databases.
+`db-psql` opens the dev database, which exists only after `pnpm db:migrate` (or `pnpm db:seed`) has
+run once in this checkout (`pnpm check` creates only test databases); `pnpm db:studio` migrates it
+itself.
 
 ## Migrations
 
