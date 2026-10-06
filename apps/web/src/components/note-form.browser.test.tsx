@@ -32,8 +32,8 @@ async function renderForm({ readOnly = false } = {}) {
       <Toaster />
     </QueryClientProvider>,
   );
-  const title = screen.getByRole('textbox', { name: 'Title' });
-  const body = screen.getByRole('textbox', { name: 'Body' });
+  const title = screen.getByRole('textbox', { name: 'Title', exact: true });
+  const body = screen.getByRole('textbox', { name: 'Body', exact: true });
   const submit = screen.getByRole('button', { name: /^(Create note|Creating…)$/ });
   return { screen, queryClient, title, body, submit };
 }

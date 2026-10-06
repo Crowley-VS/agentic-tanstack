@@ -178,5 +178,6 @@ and `git diff packages/ui` (`docs/web.md`).
 <!-- stack:start:workflow -->
 
 - Parallel work: each git worktree gets its own ports and database automatically (`pnpm ports`).
+- A new field or feature end to end (schema → core → API → UI → e2e): skill `add-feature`.
 
 <!-- stack:end -->

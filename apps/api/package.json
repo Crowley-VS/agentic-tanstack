@@ -111,7 +111,8 @@
         "inputs": [
           "default",
           "^production",
-          "dbServer"
+          "dbServer",
+          "{workspaceRoot}/packages/graphql/schema.graphql"
         ]
       }
     }

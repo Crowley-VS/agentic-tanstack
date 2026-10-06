@@ -98,4 +98,11 @@ describe('api entry points', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it('is re-run by Nx when the committed schema changes (a cached pass would hide its drift)', () => {
+    const pkg: { nx: { targets: { test: { inputs: unknown[] } } } } = JSON.parse(
+      readFileSync(join(API, 'package.json'), 'utf8'),
+    );
+    expect(pkg.nx.targets.test.inputs).toContain('{workspaceRoot}/packages/graphql/schema.graphql');
+  });
 });
