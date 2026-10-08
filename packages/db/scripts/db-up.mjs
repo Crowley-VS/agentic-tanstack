@@ -3,7 +3,10 @@
 // checkout/worktree with names and ports from tools/dev-ports.mjs.
 //
 //   node scripts/db-up.mjs          start it (~1 s cold; ~10 ms when it is already running: no Docker call)
-//   node scripts/db-up.mjs down     stop it (data kept)
+//   node scripts/db-up.mjs down     stop it (data kept); succeeds when Docker is not running
+//   node scripts/db-up.mjs prune    remove the containers, volumes and networks of this repository's
+//                                   deleted checkouts (scripts/orphans.mjs); `up` does it too
+//                                   whenever it has to start the server
 //   node scripts/db-up.mjs reset    delete it and its data, then start fresh
 //   node scripts/db-up.mjs psql     open psql on the dev database; arguments after `psql` go to
 //                                   psql (`-c "select …"` runs one query, also without a terminal)
@@ -16,6 +19,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { describePruned, pruneOrphans } from './orphans.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -54,6 +58,12 @@ export function resolveDb(cwd = HERE, env = process.env) {
     testTemplate: new URL(info.databaseUrls.dev).pathname.slice(1).replace(/^app/, 'test_template'),
     composeFile: join(info.root, 'docker-compose.yml'),
     primary: info.primary,
+    // the labels docker-compose.yml puts on the container and volume (scripts/orphans.mjs), put
+    // only on this checkout's own project: one named by COMPOSE_PROJECT_NAME may serve other
+    // checkouts too, and must outlive this one
+    root: info.root,
+    commonDir: info.commonDir,
+    ownsProject: info.ownsComposeProject === true,
   };
 }
 
@@ -85,12 +95,46 @@ function fail(message) {
   throw Object.assign(new Error(`[db-up] ${message}`), { dbUp: true });
 }
 
-function compose(cfg, args, { stdio = ['ignore', 'inherit', 'pipe'], env = process.env } = {}) {
+// stdout too is piped by default: `up` prints nothing useful there, only compose's question about a
+// volume made before docker-compose.yml labeled volumes, which takes its default (no: keep the
+// data) since stdin is no terminal
+function compose(cfg, args, { stdio = ['ignore', 'pipe', 'pipe'], env = process.env } = {}) {
   return spawnSync('docker', ['compose', '-p', cfg.project, '-f', cfg.composeFile, ...args], {
-    env: { ...env, DB_PORT: String(cfg.port), COMPOSE_PROJECT_NAME: cfg.project },
+    env: {
+      ...env,
+      DB_PORT: String(cfg.port),
+      COMPOSE_PROJECT_NAME: cfg.project,
+      DEV_CHECKOUT_ROOT: (cfg.ownsProject && cfg.root) || '',
+      DEV_CHECKOUT_GIT_COMMON_DIR: (cfg.ownsProject && cfg.commonDir) || '',
+    },
     encoding: 'utf8',
     stdio,
   });
+}
+
+/**
+ * Docker is missing or its daemon is not running (from a failed docker call's result); not when
+ * it runs but refuses this user, whose containers may be running.
+ */
+function noDocker(res) {
+  return (
+    res.error?.code === 'ENOENT' ||
+    /Cannot connect to the Docker daemon|Is the docker daemon running/i.test(res.stderr ?? '')
+  );
+}
+
+/**
+ * Remove the Docker leftovers of this repository's deleted checkouts, printing what went. Never
+ * fails: db-up runs it on its way to `compose up`, which reports a Docker that does not answer.
+ */
+function pruneQuietly(cfg, env) {
+  try {
+    const pruned = pruneOrphans(cfg, { env });
+    for (const line of describePruned(pruned)) console.log(`[db-up] ${line}`);
+    for (const line of pruned.failed) console.error(`[db-up] could not prune: ${line}`);
+  } catch {
+    // Docker is not installed or not running: `compose up` says so
+  }
 }
 
 /** Start this checkout's Postgres if it is not running, and wait until it accepts connections. */
@@ -100,6 +144,9 @@ export async function dbUp(cfg = resolveDb(), { env = process.env } = {}) {
   // DATABASE_URL / TEST_DATABASE_URL point elsewhere (CI, prod-like runs): not ours to start
   if (!ours(cfg.url) && !ours(cfg.adminUrl) && !env.DB_UP_FORCE) return cfg;
   if (await answers(cfg)) return cfg;
+  // Docker gets called anyway: clear deleted checkouts' leftovers first (their containers may hold
+  // a port the registry has since handed to a new worktree)
+  pruneQuietly(cfg, env);
   let res = compose(cfg, ['up', '-d', '--wait'], { env });
   // a concurrent `up` of this project (another Nx process or terminal) created it first: wait on it
   if (/is already in use by container|already exists/i.test(res.stderr ?? ''))
@@ -140,7 +187,28 @@ async function main([mode = 'up', ...args]) {
       `[db-up] ${cfg.project} ready on :${cfg.port} (${Math.round(performance.now() - t0)} ms)`,
     );
   } else if (mode === 'down') {
-    process.exitCode = compose(cfg, ['down'], { stdio: 'inherit' }).status ?? 1;
+    // `pnpm teardown` runs this in every checkout: nothing runs without Docker, so nothing to stop
+    const res = compose(cfg, ['down'], { stdio: ['ignore', 'inherit', 'pipe'] });
+    if (noDocker(res)) {
+      console.log(`[db-up] Docker is not running: nothing to stop for ${cfg.project}`);
+      return;
+    }
+    process.stderr.write(res.stderr ?? '');
+    process.exitCode = res.status ?? 1;
+  } else if (mode === 'prune') {
+    let pruned;
+    try {
+      pruned = pruneOrphans(cfg);
+    } catch (err) {
+      if (!err.docker) throw err;
+      console.log(`[db-up] ${err.message}: no containers or volumes to prune`);
+      return;
+    }
+    const lines = describePruned(pruned);
+    for (const line of lines.length ? lines : ['no leftovers of deleted checkouts'])
+      console.log(`[db-up] ${line}`);
+    for (const line of pruned.failed) console.error(`[db-up] could not prune: ${line}`);
+    if (pruned.failed.length) process.exitCode = 1;
   } else if (mode === 'reset') {
     compose(cfg, ['down', '-v'], { stdio: 'inherit' });
     await dbUp(cfg);
@@ -157,7 +225,7 @@ async function main([mode = 'up', ...args]) {
       spawnSync(process.execPath, studioArgs, { cwd: join(HERE, '..'), stdio: 'inherit' }).status ??
       1;
   } else {
-    console.error('usage: node scripts/db-up.mjs [up|down|reset|psql [psql args]|studio]');
+    console.error('usage: node scripts/db-up.mjs [up|down|prune|reset|psql [psql args]|studio]');
     process.exitCode = 1;
   }
 }

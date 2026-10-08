@@ -11,7 +11,7 @@
 //                        app_<hash> / e2e_<hash>, which stay apart even when an override
 //                        points several worktrees at one Postgres server
 //   env overrides     -> WEB_PORT, API_PORT, DB_PORT, DB_STUDIO_PORT, WEB_E2E_PORT, API_E2E_PORT,
-//                        COMPOSE_PROJECT_NAME
+//                        COMPOSE_PROJECT_NAME (then not this checkout's own: `ownsComposeProject`)
 //   test database URL -> the server's `postgres` maintenance database, for tests that create
 //                        databases of their own
 //
@@ -23,7 +23,15 @@
 //   node tools/dev-ports.mjs --exec -- <cmd>  run cmd with the env injected (existing env wins)
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,8 +61,10 @@ export function detectCheckout(cwd = process.cwd()) {
         stdio: ['ignore', 'pipe', 'ignore'],
       }).trim();
     const root = git('rev-parse', '--show-toplevel');
-    const gitDir = resolve(cwd, git('rev-parse', '--git-dir'));
-    const commonDir = resolve(cwd, git('rev-parse', '--git-common-dir'));
+    // real paths: every checkout of the repository spells its common dir the same way (it is how
+    // `prune` recognises this repository's Docker resources, see docker-compose.yml)
+    const gitDir = realpathSync(resolve(cwd, git('rev-parse', '--git-dir')));
+    const commonDir = realpathSync(resolve(cwd, git('rev-parse', '--git-common-dir')));
     return { root, primary: gitDir === commonDir, commonDir };
   } catch {
     return { root: resolve(cwd), primary: true };
@@ -136,8 +146,11 @@ export function worktreeBlock(root, commonDir, { exists = existsSync } = {}) {
   }
 }
 
-/** Pure: compute ports and names for a checkout (`block`: the worktree's registry block). */
-export function computePorts({ root, primary, block }, env = {}) {
+/**
+ * Pure: compute ports and names for a checkout (`block`: the worktree's registry block;
+ * `commonDir`: the directory all worktrees of the repository share, passed through).
+ */
+export function computePorts({ root, primary, block, commonDir }, env = {}) {
   const hash = pathHash(root);
   let ports;
   if (primary) {
@@ -154,13 +167,18 @@ export function computePorts({ root, primary, block }, env = {}) {
       .toLowerCase()
       .replace(/[^a-z0-9-]/g, '-')
       .replace(/^-+|-+$/g, '') || 'app';
-  const composeProject = env.COMPOSE_PROJECT_NAME || (primary ? slug : `${slug}-${hash}`);
+  const ownProject = primary ? slug : `${slug}-${hash}`;
+  const composeProject = env.COMPOSE_PROJECT_NAME || ownProject;
   const dbUrl = (db) => `postgres://postgres:postgres@127.0.0.1:${ports.db}/${db}`;
   const dbName = (name) => (primary ? name : `${name}_${hash}`);
   return {
     primary,
     root,
+    commonDir,
     composeProject,
+    // false when COMPOSE_PROJECT_NAME names another project (one server shared by several
+    // checkouts, say): db-up then labels nothing as this checkout's, so `prune` never removes it
+    ownsComposeProject: composeProject === ownProject,
     ports,
     urls: {
       web: `http://localhost:${ports.web}`,
