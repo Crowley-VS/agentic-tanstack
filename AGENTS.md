@@ -4,25 +4,25 @@
 
 Nx monorepo: **TanStack Start** web app → **GraphQL** API (Yoga + Pothos) → **Drizzle** → Postgres 18 (Docker).
 Business logic lives in `packages/core`; apps are thin wrappers around it.
+Before you work on an area, read its doc (how to run, build and test it; its rules): `docs/api.md`, `docs/web.md`, `docs/e2e.md`, `docs/database.md`.
+
 <!-- stack:end -->
 
 <!-- kit:start:done -->
 
 ## Done means
 
-1. `pnpm check` passes (lint, formatting, module boundaries, typecheck, tests, builds, generated-file drift, agent config).
+1. `pnpm check` passes (lint, formatting, module boundaries, typecheck, tests, builds, generated-file drift, agent config) on the affected projects; `--all` checks every project.
 2. The stack's extra checks below pass.
-3. If you changed runtime behavior: you ran it and verified the behavior yourself.
+3. If you changed runtime behavior, you ran it and saw it work.
 
-Never claim "done" without running these. If a check fails, fix the cause; never weaken a test or a rule to pass.
+Never claim "done" without these. If a check fails, fix the cause; never weaken a test or a rule.
+
 <!-- kit:end -->
 
 <!-- stack:start:done -->
 
-Stack checks: `pnpm check` also runs the database tests, which need **Docker** (each test file gets its own
-Postgres database). Route, UI or API changes also need `pnpm nx e2e web-e2e` (Playwright on the production
-builds, own ports and database: `docs/e2e.md`).
-Browser tests (`*.browser.test.{ts,tsx}`) need Chromium once per machine and after each Playwright bump (`pnpm exec playwright install chromium`); watch them with `HEADED=1 pnpm nx run web:test-browser --skip-nx-cache --watch`.
+Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI or API changes also need `pnpm nx e2e web-e2e` (production builds, own ports and database: `docs/e2e.md`). Browser tests (`*.browser.test.{ts,tsx}`) need Chromium, once per machine and after each Playwright bump: `pnpm exec playwright install chromium`.
 
 <!-- stack:end -->
 
@@ -30,52 +30,22 @@ Browser tests (`*.browser.test.{ts,tsx}`) need Chromium once per machine and aft
 
 ## Commands
 
-| Task                                             | Command                                                             |
-| ------------------------------------------------ | ------------------------------------------------------------------- |
-| All checks (definition of done)                  | `pnpm check` (`--all` for every project)                            |
-| Regenerate generated files                       | `pnpm regen`                                                        |
-| Format everything (hooks format what you edit)   | `pnpm format`                                                       |
-| One target                                       | `pnpm nx run <project>:<target>` (e.g. `pnpm nx run tools:test`)    |
-| Only what changed                                | `pnpm nx affected -t lint eslint typecheck test test-browser build` |
-| What exists / depends on what                    | `pnpm nx show projects`, `pnpm nx show project <name> --json`       |
-| Sync agent skills after editing `.agents/skills` | `pnpm agents:sync`                                                  |
-
-- **pnpm only**, never npm/yarn/npx. Add dependencies with `pnpm add <pkg> --filter <project>`; versions come from the catalog in `pnpm-workspace.yaml`.
-- Always run tools **through Nx** (`pnpm nx run …`), never `vitest`, `tsc`, `eslint` or `vite` directly — Nx provides the project graph, caching and the correct working directory.
-- Never run `nx configure-ai-agents` (it rewrites agent config; humans run it deliberately).
+- `pnpm regen`: regenerate every generated file.
+- `pnpm format`: format everything (hooks format the files you edit).
+- `pnpm nx run <project>:<target>`: one target (e.g. `pnpm nx run tools:test`).
+- `pnpm nx affected -t lint eslint typecheck test test-browser build`: only what changed.
+- **pnpm only**, never npm, yarn or npx. Add a dependency with `pnpm add <pkg> --filter <project>`; versions come from the catalog in `pnpm-workspace.yaml`.
+- Run tools **through Nx** (`pnpm nx run …`), never `vitest`, `tsc`, `eslint` or `vite` directly: Nx gives them the project graph, the cache and the right working directory.
+- Never run `nx configure-ai-agents`: it rewrites agent config; humans run it deliberately.
 
 <!-- kit:end -->
 
 <!-- stack:start:commands -->
 
-- **Where is the app running?** `pnpm ports` prints this checkout's URLs, ports and database URLs.
-
-**Database** (Postgres 18 in Docker, one per checkout/worktree; Docker must be running):
-
-| Task                                  | Command                                                                                   |
-| ------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Start it (fast no-op when running)    | `pnpm db:up`                                                                              |
-| Migrate / reseed (deterministic data) | `pnpm db:migrate` / `pnpm db:seed`                                                        |
-| Change the schema                     | edit `packages/db/src/schema/*`, then `pnpm nx run db:db-generate --args="--name=<what>"` |
-| Wipe and start fresh                  | `pnpm db:reset`                                                                           |
-| Browse data                           | `pnpm db:studio` · `pnpm nx run db:db-psql`                                               |
-
-**API** (`apps/api`, GraphQL at `/graphql`, health at `/health`):
-
-| Task                                    | Command                                                                              |
-| --------------------------------------- | ------------------------------------------------------------------------------------ |
-| Run it (migrates first; reloads)        | `pnpm nx run api:dev` (GraphiQL at the printed URL)                                  |
-| Change the schema                       | edit `apps/api/src/graphql/*`, then `pnpm nx run api:print-schema` (or `pnpm regen`) |
-| Production bundle (what the image runs) | `pnpm nx run api:build`, then run it as `docs/api.md` shows                          |
-
-**Web** (`apps/web`, health at `/api/health`; a production server needs `INTERNAL_API_SECRET`, `API_HOST`, `API_PORT`; writes per IP are rate-limited: `docs/web.md`):
-
-| Task                                  | Command                                                      |
-| ------------------------------------- | ------------------------------------------------------------ |
-| Run web + API (reloads)               | `pnpm dev` in background; curl `/api/health` + API `/health` |
-| Production build / run it             | `pnpm nx run web:build` / `pnpm nx run web:serve`            |
-| After adding or renaming a route file | `pnpm nx run web:generate-routes` (or `pnpm regen`)          |
-| After editing a `graphql()` operation | `pnpm nx run web:codegen` (`pnpm dev` does it on save)       |
+- `pnpm ports`: this checkout's URLs, ports and database URLs (each git worktree gets its own).
+- `pnpm dev` in the background: web + API, reloading. Curl the web's `/api/health` and the API's `/health`; stop it when done. Writes per IP are rate-limited, in dev too (`docs/web.md`).
+- Database: `pnpm db:up` (a no-op when it is up), `pnpm db:migrate`, `pnpm db:seed` (deterministic data), `pnpm db:reset` (wipes the data). Schema changes: Migrations, below.
+- `pnpm teardown` stops this checkout's Postgres and Nx daemon (data kept): run it before you leave or delete a worktree, after stopping the servers you started. `pnpm prune:orphans` removes what deleted worktrees left behind (`pnpm db:up` does the Docker part itself). Details: `docs/local-resources.md`.
 
 <!-- stack:end -->
 
@@ -83,7 +53,7 @@ Browser tests (`*.browser.test.{ts,tsx}`) need Chromium once per machine and aft
 
 ## How to navigate (use the right graph, grep last)
 
-- **Structure, ownership, impact** → Nx project graph: `pnpm nx show projects --affected`, `pnpm nx show project <p> --json`.
+- **Structure, ownership, impact** → the Nx project graph: `pnpm nx show projects` (`--affected`: what a change touches), `pnpm nx show project <name> --json` (its targets and tags).
 - **Definitions, callers, renames** → the TypeScript LSP (go to definition, find references, call hierarchy).
 - **Generated maps** (read-only) → the stack's list below.
 - **grep** only for strings, config values and comments.
@@ -92,9 +62,9 @@ Browser tests (`*.browser.test.{ts,tsx}`) need Chromium once per machine and aft
 
 <!-- stack:start:navigation -->
 
-- **API shape** → `packages/graphql/schema.graphql` (printed from `apps/api/src/graphql`; never edit it by hand).
-- **Pages and params** → `apps/web/src/routeTree.gen.ts` (generated from `apps/web/src/routes`).
-- **Operation types** → `apps/web/src/gql` (generated from the `graphql()` calls in `apps/web/src`).
+- **API shape** → `packages/graphql/schema.graphql`, printed from `apps/api/src/graphql` by `pnpm nx run api:print-schema` (run it after every schema edit).
+- **Pages and params** → `apps/web/src/routeTree.gen.ts`, generated from `apps/web/src/routes` by `pnpm nx run web:generate-routes` (after adding or renaming a route file).
+- **Operation types** → `apps/web/src/gql`, generated from the `graphql()` calls in `apps/web/src` by `pnpm nx run web:codegen` (`pnpm dev` runs it on save).
 
 <!-- stack:end -->
 
@@ -102,23 +72,18 @@ Browser tests (`*.browser.test.{ts,tsx}`) need Chromium once per machine and aft
 
 ## Repo map
 
-| Path                  | What                                                                        | Tags                                |
-| --------------------- | --------------------------------------------------------------------------- | ----------------------------------- |
-| `apps/api`            | GraphQL API (Yoga + Pothos): Notes queries, mutations, security defaults    | `scope:api`, `type:app`, `needs-db` |
-| `apps/web`            | TanStack Start (SSR on Nitro): pages, `/api/health`, the `/api/graphql` BFF | `scope:web`, `type:app`             |
-| `apps/web-e2e`        | Playwright e2e specs: production builds, e2e ports, a freshly seeded DB     | `scope:web`, `type:e2e`             |
-| `packages/core`       | business logic: writes and domain errors; takes a `Db`, never a request     | `scope:server`, `type:feature`      |
-| `packages/db`         | Drizzle schema, migrations, seed, per-test-file databases (`testDb()`)      | `scope:server`, `type:data`         |
-| `packages/graphql`    | `schema.graphql`: the API contract clients generate types from (generated)  | `scope:shared`, `type:util`         |
-| `packages/ui`         | React components (shadcn/ui, radix-nova) and the Tailwind 4 theme           | `scope:web`, `type:ui`              |
-| `packages/validators` | Zod schemas + limits shared by api and web                                  | `scope:shared`, `type:util`         |
-| `tools`               | dev ports, Claude Code hooks, `pnpm check`, agent-config sync               | `scope:tooling`, `type:tooling`     |
-| `docker-compose.yml`  | the local Postgres (dev, e2e, tests only)                                   |                                     |
+- `apps/api` (`scope:api`, `type:app`, `needs-db`): the GraphQL API: Notes queries, mutations, security defaults.
+- `apps/web` (`scope:web`, `type:app`): TanStack Start (SSR on Nitro): pages, `/api/health`, the `/api/graphql` BFF.
+- `apps/web-e2e` (`scope:web`, `type:e2e`): Playwright specs on the production builds, e2e ports and a freshly seeded database.
+- `packages/core` (`scope:server`, `type:feature`, `needs-db`): business logic: writes and domain errors; takes a `Db`, never a request.
+- `packages/db` (`scope:server`, `type:data`, `needs-db`): Drizzle schema, migrations, seed, per-test-file databases (`testDb()`).
+- `packages/graphql` (`scope:shared`, `type:util`): `schema.graphql`, the generated API contract clients get their types from.
+- `packages/ui` (`scope:web`, `type:ui`): React components (shadcn/ui, radix-nova) and the Tailwind 4 theme. Add one with `pnpm --filter @acme/ui exec shadcn add <name> --overwrite` (without `--overwrite` it writes nothing when no terminal is attached), then `pnpm format` and `git diff packages/ui` (`docs/web.md`).
+- `packages/validators` (`scope:shared`, `type:util`): Zod schemas and limits shared by api and web.
+- `tools` (`scope:tooling`, `type:tooling`): dev ports, Claude Code hooks, `pnpm check`, agent-config sync; plain `.mjs`, gated by lint, boundaries and tests (no `typecheck`).
+- `docker-compose.yml`: the local Postgres (dev, e2e and tests only).
 
-`tools` is plain `.mjs` with no `typecheck` target: its gates are lint, boundaries and tests. Projects tagged
-`needs-db` need Docker for their tests (`pnpm nx affected -t test --exclude=tag:needs-db` skips them).
-Add a UI component with the pinned CLI: `pnpm --filter @acme/ui exec shadcn add <name> --overwrite`, then `pnpm format`
-and `git diff packages/ui` (`docs/web.md`).
+Without Docker, `pnpm nx affected -t test --exclude=tag:needs-db` skips the `needs-db` projects.
 
 <!-- stack:end -->
 
@@ -126,29 +91,22 @@ and `git diff packages/ui` (`docs/web.md`).
 
 ## Invariants (enforced by lint, hooks or tests)
 
-- **Generated files are read-only.** They are listed in `.agents/generated.json`; edit the source and run the regen command it names (or `pnpm regen`).
-- **Module boundaries** (`eslint` target): a project's tags decide what it may import; the stack's rules are below.
+- **Generated files are read-only.** `.agents/generated.json` lists them and the command that regenerates each: edit the source, then run it (or `pnpm regen`).
+- **Module boundaries** (`eslint` target): a project's tags decide what it may import (the stack's rules are below).
 - **Skills**: edit `.agents/skills/<name>/SKILL.md`, then `pnpm agents:sync` (`.claude/skills` holds generated copies).
-- **Secrets**: never read or print `.env*` files; add new variables to `.env.example` and the app's env schema.
+- **Secrets**: never read or print `.env*` files; add a new variable to `.env.example` and the app's env schema.
 
 <!-- kit:end -->
 
 <!-- stack:start:invariants -->
 
-- Boundary rules (full list in `eslint.config.mjs`): `scope:shared` → shared only; `scope:tooling` → tooling only; `scope:web` → web/shared; `scope:api` → api/server/shared; `scope:server` → server/shared; `type:util` → util only, and imports no frameworks, Drizzle or `pg`.
-- **Writes go through `packages/core`** (validated again there, domain errors like `NotFoundError`); reads use
-  Drizzle's relational queries (in the API: the Pothos Drizzle plugin), which plan nested data as one statement.
-- **Migrations:** generate them from the schema and commit them. Once git tracks a migration (staged or
-  committed) the guard hook blocks edits to it; only a new, untracked one may still be edited.
-- **API rules** (details in `docs/api.md`): the schema has no side effects at import; the API is private and locked
-  down by default (tests pin each default); expected failures are data (union members, selected by `__typename`);
-  its Vitest config aliases `graphql` to one copy.
-- **Server-only code lives in `*.server.ts`** (env, API client, BFF): a client import of one fails the build, and so
-  does server code in the client bundle. The browser reaches the API only through the same-origin `/api/graphql`.
-- **Web data** (`docs/web.md`): only via `execute()` with a `graphql()` document; loaders `await ensure…()` and
-  return nothing; components `useSuspense…` the same query options. Forms copy `components/note-form.tsx`.
-- **Tests that touch the database** use `testDb()` from `@acme/db/testing` and assume nothing about other tests'
-  rows (tests in one file share its database; files never share).
+- Boundaries (full list in `eslint.config.mjs`): `scope:shared` → shared; `scope:tooling` → tooling; `scope:web` → web, shared; `scope:api` → api, server, shared; `scope:server` → server, shared; `type:util` → util only, and no frameworks, Drizzle or `pg`.
+- **Writes go through `packages/core`**, which validates again and throws domain errors (`NotFoundError`). Reads use Drizzle's relational queries (in the API: the Pothos Drizzle plugin), which load nested data in one statement.
+- **Migrations**: edit `packages/db/src/schema/*`, run `pnpm nx run db:db-generate --args="--name=<what>"` and commit the result. The guard hook blocks edits to a migration git tracks (staged or committed); only a new, untracked one may change.
+- **API** (`docs/api.md`): the schema has no side effects at import; the API is private and locked down by default (tests pin each default); expected failures are data (union members, selected by `__typename`); its Vitest config aliases `graphql` to one copy.
+- **Server-only code lives in `*.server.ts`** (env, API client, BFF): a client import of one fails the build, and so does server code in the client bundle. The browser reaches the API only through the same-origin `/api/graphql`.
+- **Web data** (`docs/web.md`): only through `execute()` with a `graphql()` document. Loaders `await ensure…()` and return nothing; components `useSuspense…` the same query options. Forms copy `components/note-form.tsx`.
+- **Tests that touch the database** use `testDb()` from `@acme/db/testing`. Each test file gets its own database, shared by its tests: assume nothing about other tests' rows.
 
 <!-- stack:end -->
 
@@ -156,12 +114,9 @@ and `git diff packages/ui` (`docs/web.md`).
 
 ## Pull requests (one per phase)
 
-1. Finish the phase; `pnpm check` must pass.
-2. Commit on a branch (never directly on `main`) and open a PR with a summary and a test plan.
-3. Run the **review loop** (skill `review-loop`): review → post findings → fix → check the fixes until no
-   blocker/major issue is open. When a PR is opened from Claude Code (drafts: on `gh pr ready`), the hook
-   `tools/agent-hooks/pr-opened.mjs` has Claude offer it and start it once the user agrees; `REVIEW_LOOP_AUTO=1`
-   (the user's opt-in) starts it without asking, `REVIEW_LOOP_AUTO=0` turns the hook off.
+1. Finish the phase; `pnpm check` passes.
+2. Commit on a branch (never on `main`); open a PR with a summary and a test plan.
+3. Run the **review loop** (skill `review-loop`): review → post findings → fix → check the fixes, until no blocker or major issue is open. In Claude Code, the hook `tools/agent-hooks/pr-opened.mjs` offers it when a PR opens (a draft: on `gh pr ready`) and starts it once the user agrees; `REVIEW_LOOP_AUTO=1` (the user's opt-in) starts it without asking, `REVIEW_LOOP_AUTO=0` turns the hook off.
 4. A human merges.
 
 <!-- kit:end -->
@@ -171,13 +126,12 @@ and `git diff packages/ui` (`docs/web.md`).
 ## Working style
 
 - Plans and scratch notes go in `.agents/ignore/plans/YYYY-MM-DD-topic.md` (gitignored).
-- Anything you verified by hand should become a test.
+- Turn anything you verified by hand into a test.
 
 <!-- kit:end -->
 
 <!-- stack:start:workflow -->
 
-- Parallel work: each git worktree gets its own ports and database automatically (`pnpm ports`).
 - A new field or feature end to end (schema → core → API → UI → e2e): skill `add-feature`.
 
 <!-- stack:end -->

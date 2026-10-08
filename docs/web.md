@@ -1,7 +1,22 @@
 # The web app (`apps/web`)
 
-Details behind the web lines of `AGENTS.md`: how pages get their data, how forms write it, how the
-BFF and the error page fail, how components are tested, and how UI components are added.
+Details behind the web lines of `AGENTS.md`: how to run it, how pages get their data, how forms
+write it, how the BFF and the error page fail, how components are tested, and how UI components
+are added.
+
+## Run it
+
+| Task                                  | Command                                                          |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| Web + API dev servers (reloading)     | `pnpm dev` in the background; curl `/api/health` + API `/health` |
+| Production build / run it             | `pnpm nx run web:build` / `pnpm nx run web:serve`                |
+| After adding or renaming a route file | `pnpm nx run web:generate-routes` (or `pnpm regen`)              |
+| After editing a `graphql()` operation | `pnpm nx run web:codegen` (`pnpm dev` does it on save)           |
+
+The health check is `/api/health`; `pnpm ports` prints the URLs. A production server needs
+`INTERNAL_API_SECRET`, `API_HOST` and `API_PORT` (`web:serve` takes the last two from this
+checkout's ports; see the BFF below). Writes are rate-limited per client IP, in `pnpm dev` too
+(below).
 
 ## Operations are typed by codegen
 
@@ -124,7 +139,9 @@ The forms use plain React state: two short forms, with every step visible to cop
 
 ## Browser tests
 
-Component tests run in real Chromium (`*.browser.test.tsx`, `pnpm nx run web:test-browser`):
+Component tests run in real Chromium (`*.browser.test.tsx`, `pnpm nx run web:test-browser`),
+installed once per machine and after each Playwright bump (`pnpm exec playwright install chromium`).
+Watch them in a visible browser: `HEADED=1 pnpm nx run web:test-browser --skip-nx-cache --watch`.
 
 - Mock `execute()`'s module with a plain `vi.mock` factory that returns `{ execute: vi.fn() }`:
   without Start's compiler it would take its server branch, and a factory that calls
