@@ -1,6 +1,15 @@
-import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { delimiter, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import {
   daemonPids,
@@ -95,10 +104,10 @@ describe('deletedWorkspace', () => {
 });
 
 /** A process running <workspace>/<START>, started in <workspace> as Nx starts its daemon. */
-function fakeDaemon(workspace) {
+function fakeDaemon(workspace, code = 'setInterval(() => {}, 1000);\n') {
   const script = join(workspace, START);
   mkdirSync(join(script, '..'), { recursive: true });
-  writeFileSync(script, 'setInterval(() => {}, 1000);\n');
+  writeFileSync(script, code);
   const child = spawn(process.execPath, [script], { cwd: workspace, stdio: 'ignore' });
   onTestFinished(() => child.kill('SIGKILL'));
   return child;
@@ -141,6 +150,56 @@ describe.runIf(['linux', 'darwin'].includes(process.platform))('on this machine'
     expect(live.exitCode).toBeNull();
     expect(live.signalCode).toBeNull();
   });
+
+  it('kills a daemon that ignores SIGTERM, and says it stopped one only once it has', async () => {
+    const parent = realpathSync(tempDir());
+    const ignoreTerm = "process.on('SIGTERM', () => {});\nsetInterval(() => {}, 1000);\n";
+    const workspace = join(parent, 'stuck');
+    const stuck = fakeDaemon(workspace, ignoreTerm);
+    // one whose parent (`sleep`) never reaps it: killed, it stays a zombie, which kill(pid, 0)
+    // still finds, like a daemon that outlives SIGKILL too
+    const undead = join(parent, 'undead');
+    mkdirSync(join(undead, START, '..'), { recursive: true });
+    writeFileSync(join(undead, START), ignoreTerm);
+    const sh = ['-c', '"$0" "$1" & echo $!; exec sleep 60', process.execPath, START];
+    const keeper = spawn('sh', sh, { cwd: undead, stdio: ['ignore', 'pipe', 'ignore'] });
+    onTestFinished(() => keeper.kill('SIGKILL')); // its zombie child goes with it
+    const zombie = Number(await new Promise((r) => keeper.stdout.once('data', r)));
+    onTestFinished(() => isAlive(zombie) && process.kill(zombie, 'SIGKILL'));
+    await new Promise((r) => setTimeout(r, 200));
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(undead, { recursive: true, force: true });
+    // the CLI's `ps` lists these two processes only; its temp-install sweep stays in `parent`
+    const bin = join(parent, 'bin');
+    mkdirSync(bin);
+    const listing = [
+      `${stuck.pid} ${process.getuid()} node ${join(workspace, START)}`,
+      `${zombie} ${process.getuid()} node ${join(undead, START)}`,
+    ];
+    writeFileSync(join(bin, 'ps'), `#!/bin/sh\necho '${listing.join('\n')}'\n`, { mode: 0o755 });
+    const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, TMPDIR: parent };
+    // asynchronously: this process reaps the killed child while the CLI waits for it to go
+    const res = await promisify(execFile)(process.execPath, [SCRIPT, 'prune'], { env }).then(
+      (done) => ({ ...done, code: 0 }),
+      (failed) => failed,
+    );
+    const exited = await Promise.race([
+      exitSignal(stuck),
+      new Promise((r) => setTimeout(() => r('still running'), 2000)),
+    ]);
+    expect(exited).toBe('SIGKILL');
+    expect(res.stdout).toContain(
+      `stopped the Nx daemon of deleted ${workspace} (pid ${stuck.pid})`,
+    );
+    // the one still there after SIGKILL (a zombie: it got the signal) is reported, never as stopped
+    const state = spawnSync('ps', ['-o', 'stat=', '-p', String(zombie)], { encoding: 'utf8' });
+    expect(state.stdout.trim()).toMatch(/^Z/);
+    expect(res.stdout).not.toContain(undead);
+    expect(res.stderr).toContain(
+      `could not stop the Nx daemon of deleted ${undead} (pid ${zombie}): still running after SIGTERM and SIGKILL`,
+    );
+    expect(res.code).toBe(1);
+  }, 30_000);
 });
 
 describe.runIf(process.platform === 'linux')('sameMounts', () => {
@@ -176,6 +235,35 @@ describe('staleTempInstalls', () => {
     expect(staleTempInstalls({ dir, alive: () => false, uid: process.getuid() + 1 })).toEqual([]);
   });
 
+  it('finds the temp npm directories Nx left with nothing installed, and nothing like them', () => {
+    const dir = tempDir();
+    // what Nx 23.2's createTempNpmDirectory() writes: `{}` and its copy of pnpm-workspace.yaml
+    const make = (name, files) => {
+      mkdirSync(join(dir, name));
+      for (const [file, text] of Object.entries(files)) writeFileSync(join(dir, name, file), text);
+    };
+    const empty = { 'package.json': '{}', 'pnpm-workspace.yaml': 'packages:\n  - .\n' };
+    make('tmp-111-AbCdEf123456', empty);
+    make('tmp-112-AbCdEf123456', { ...empty, '.npmrc': 'registry=https://example.com/\n' });
+    make('tmp-222-AbCdEf123456', empty); // its process still runs
+    make('tmp-113-AbCdEf123456', { ...empty, 'notes.txt': 'mine' }); // something else too
+    make('tmp-114-AbCdEf123456', { 'package.json': '{}' }); // no pnpm-workspace.yaml
+    make('tmp-115-AbCdEf123456', { ...empty, 'package.json': '{"name":"mine"}' }); // not empty
+    make('tmp-116-AbCdEf123456', { ...empty, 'package.json': '[]' });
+    make('tmp-117-AbCdEf123456', empty);
+    mkdirSync(join(dir, 'tmp-117-AbCdEf123456', 'node_modules')); // a directory in it
+    make('tmp-119-AbCdEf123456', empty);
+    make('tmp-119-AbCdEf123456/.npmrc', { keep: 'mine' }); // a directory, named like Nx's file
+    make('nx-118-AbCdEf123456', empty); // another naming
+    const stale = staleTempInstalls({ dir, alive: (pid) => pid === 222, uid: process.getuid() });
+    expect(stale.toSorted((a, b) => a.localeCompare(b))).toEqual([
+      join(dir, 'tmp-111-AbCdEf123456'),
+      join(dir, 'tmp-112-AbCdEf123456'),
+    ]);
+    // another user's are not ours to delete
+    expect(staleTempInstalls({ dir, alive: () => false, uid: process.getuid() + 1 })).toEqual([]);
+  });
+
   it('knows a running process from an exited one', () => {
     expect(isAlive(process.pid)).toBe(true);
     const done = spawnSync(process.execPath, ['-e', '']);
@@ -189,4 +277,45 @@ describe('CLI', () => {
     expect(res.status).toBe(1);
     expect(res.stderr).toContain('usage: node tools/nx-daemons.mjs prune');
   });
+
+  it.runIf(process.platform !== 'win32')('prune deletes the temp Nx directories it finds', () => {
+    const dir = tempDir();
+    // no daemons to stop: a `ps` that lists nothing
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'ps'), '#!/bin/sh\n', { mode: 0o755 });
+    const gone = join(dir, `tmp-${spawnSync(process.execPath, ['-e', '']).pid}-AbCdEf123456`);
+    mkdirSync(gone);
+    writeFileSync(join(gone, 'package.json'), '{}');
+    writeFileSync(join(gone, 'pnpm-workspace.yaml'), 'packages:\n  - .\n');
+    const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, TMPDIR: dir };
+    const res = spawnSync(process.execPath, [SCRIPT, 'prune'], { encoding: 'utf8', env });
+    expect(res.status, res.stderr).toBe(0);
+    expect(existsSync(gone)).toBe(false);
+    expect(res.stdout).toContain(`deleted 1 temp Nx directory of exited processes in ${dir}`);
+  });
+});
+
+describe.runIf(process.platform !== 'win32')('pnpm prune:orphans', () => {
+  it('runs the Docker part when the Nx-daemon part fails, and fails with it', () => {
+    const repo = resolve(import.meta.dirname, '../..');
+    const { scripts } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
+    // a machine without `ps` (a slim image) fails the Nx-daemon part; a fake docker logs its calls
+    const bin = tempDir();
+    const git = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    symlinkSync(process.execPath, join(bin, 'node'));
+    symlinkSync(git, join(bin, 'git'));
+    const log = join(bin, 'docker.log');
+    writeFileSync(join(bin, 'docker'), `#!/bin/sh\necho "$@" >> '${log}'\n`, { mode: 0o755 });
+    const res = spawnSync('/bin/sh', ['-c', scripts['prune:orphans']], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: bin, TMPDIR: bin },
+    });
+    expect(res.status).not.toBe(0);
+    expect(existsSync(log) && readFileSync(log, 'utf8'), res.stderr).toContain('container ls');
+    // the Docker part is the db project's script: a change there must rerun this cached test
+    const tools = JSON.parse(readFileSync(join(repo, 'tools/package.json'), 'utf8'));
+    expect(tools.nx.targets.test.inputs).toContain('{workspaceRoot}/packages/db/scripts/*.mjs');
+  }, 30_000);
 });

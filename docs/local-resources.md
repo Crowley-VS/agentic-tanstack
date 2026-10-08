@@ -20,26 +20,34 @@ takes well under a second when nothing runs, Docker stopped or missing included.
 
 Run it before you delete a worktree. Servers you started yourself (`pnpm dev`, a background
 `serve-e2e`) are yours to stop first. The review loop's agents do both as their last step, before
-they reset their worktree (`.claude/workflows/review-loop-run.js`).
+they reset their worktree (`.claude/workflows/review-loop-run.js`). Skip it while a server you did
+not start still runs in the checkout (the user's `pnpm dev`; the API's `/health` from `pnpm ports`
+answers): its API answers every query with an error until `pnpm db:up` brings the database back.
+A project `COMPOSE_PROJECT_NAME` names other than the checkout's own may serve other checkouts
+too, so `teardown` leaves it running.
 
 ## `pnpm prune:orphans`: remove what deleted checkouts left behind
 
-(`pnpm prune` is pnpm's own command, hence the name.) It removes:
+(`pnpm prune` is pnpm's own command, hence the name.) It removes the following, each part even when
+another fails (the command then exits non-zero):
 
 - **Nx daemons** of this user whose workspace directory was deleted (`tools/nx-daemons.mjs`).
   Nx 23.2's daemon exits by itself within moments of its checkout's deletion (it checks every
   20 ms that its pid file and the lock file are unchanged); this catches one that does not
   (another Nx version, a stuck process). A daemon's workspace is its working directory; it gets
-  SIGTERM, Nx's own clean shutdown. One for a deleted directory can serve no one, whichever
-  repository it was. On Linux "deleted" is the kernel's own mark on the directory, and only for a
-  daemon in this machine's mount namespace: a daemon in a container (a devcontainer's, often the
-  same uid) has paths that do not exist on the host and is alive, so it is never a candidate. A
-  daemon that refuses the signal (a sandbox or security module's denial) is reported, and the
-  command exits non-zero.
+  SIGTERM, Nx's own clean shutdown, then SIGKILL if it still runs 5 s later. One for a deleted
+  directory can serve no one, whichever repository it was. On Linux "deleted" is the kernel's own
+  mark on the directory, and only for a daemon in this machine's mount namespace: a daemon in a
+  container (a devcontainer's, often the same uid) has paths that do not exist on the host and is
+  alive, so it is never a candidate. A daemon that refuses the signals (a sandbox or security
+  module's denial) or outlives them is reported, and the command exits non-zero.
 - **Temp Nx installs** of processes that have exited: the `<tmp>/tmp-<pid>-*` copies of
   `nx@latest` (~4k files each) that every Nx daemon started without `NX_USE_LOCAL=true` leaves
   behind when it exits, however it exits (see below). Only this user's, holding a package.json
-  of Nx packages alone.
+  of Nx packages alone. And Nx's temp npm directories with nothing installed in them, named the
+  same way, of exited processes: package.json `{}` and Nx's copy of `pnpm-workspace.yaml` (and of
+  `.npmrc`, if the workspace has one), nothing else. Nx writes them before it installs a package
+  there; which command leaves them empty is not traced yet (one agent session left 16).
 - **This repository's Docker resources** whose checkout directory no longer exists: containers
   (running or not), volumes and networks (`packages/db/scripts/orphans.mjs`). It prints each
   compose project it removed and the directory it belonged to.
@@ -68,12 +76,15 @@ Pointing `COMPOSE_PROJECT_NAME` at another worktree's own project (`<dir>-<hash>
 database to that worktree: once its directory is gone, its project goes, unless your checkout
 recreated the container since.
 
-Never touched: other repositories' resources (another common dir, or no labels), anything of a
-checkout whose directory exists, and projects without the labels: those made by a bare
-`docker compose up` (no `db-up` to fill the labels in) or before the labels existed. A volume made
-before them keeps its data and stays unlabeled (Docker volumes cannot be relabeled; compose's
-"Recreate (data will be lost)?" defaults to no, and `db-up` runs compose without a terminal). To
-clear such leftovers once, by hand:
+Never touched: resources labeled with another repository's common dir, anything of a checkout
+whose directory exists, and projects with no resource labeled with this repository: those made by
+a bare `docker compose up` (no `db-up` to fill the labels in) or before the labels existed. An
+unlabeled resource goes only with an orphaned project. A volume made before the labels keeps its
+data and stays unlabeled (Docker volumes cannot be relabeled; compose's "Recreate (data will be
+lost)?" defaults to no, and `db-up` runs compose without a terminal, which a test pins). Once
+`db-up` has recreated its container with the labels, it goes with that container when the
+worktree is deleted; once `pnpm teardown` has removed the container, nothing names it any more.
+To clear the unlabeled leftovers once, by hand:
 
 ```bash
 docker ps -a --filter label=com.docker.compose.project --format '{{.Names}}\t{{.Label "com.docker.compose.project.working_dir"}}'

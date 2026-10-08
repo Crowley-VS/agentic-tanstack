@@ -8,7 +8,8 @@ services:
     # Which repository (its git common dir) and checkout this belongs to, set by db-up for the
     # checkout's own project: `pnpm prune:orphans` removes only this repository's resources whose
     # checkout directory is gone (docs/local-resources.md). Without them (a bare `docker compose
-    # up`, a project COMPOSE_PROJECT_NAME names) nothing is ever pruned.
+    # up`, a project COMPOSE_PROJECT_NAME names other than the checkout's own) nothing is ever
+    # pruned.
     labels: &checkout
       dev-checkout.git-common-dir: ${DEV_CHECKOUT_GIT_COMMON_DIR:-}
       dev-checkout.root: ${DEV_CHECKOUT_ROOT:-}

@@ -3,7 +3,8 @@
 // checkout/worktree with names and ports from tools/dev-ports.mjs.
 //
 //   node scripts/db-up.mjs          start it (~1 s cold; ~10 ms when it is already running: no Docker call)
-//   node scripts/db-up.mjs down     stop it (data kept); succeeds when Docker is not running
+//   node scripts/db-up.mjs down     stop it (data kept); succeeds when Docker is not running, and
+//                                   leaves a project that is not this checkout's own running
 //   node scripts/db-up.mjs prune    remove the containers, volumes and networks of this repository's
 //                                   deleted checkouts (scripts/orphans.mjs); `up` does it too
 //                                   whenever it has to start the server
@@ -67,9 +68,15 @@ export function resolveDb(cwd = HERE, env = process.env) {
   };
 }
 
-/** True for a database URL on this machine (127.0.0.1, localhost, ::1), never a remote host. */
+/**
+ * True for a database URL on this machine (127.0.0.1, localhost, ::1), never a remote host. pg
+ * connects to a `host` query parameter rather than the URL's host name: a URL with one (or with
+ * `hostaddr`) is never taken for local.
+ */
 export function isLocalUrl(url) {
-  return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(url).hostname);
+  const { hostname, searchParams } = new URL(url);
+  if (searchParams.has('host') || searchParams.has('hostaddr')) return false;
+  return ['127.0.0.1', 'localhost', '[::1]'].includes(hostname);
 }
 
 /** Postgres keeps the first 63 bytes of cluster_name (NAMEDATALEN - 1); project names are ASCII. */
@@ -187,7 +194,15 @@ async function main([mode = 'up', ...args]) {
       `[db-up] ${cfg.project} ready on :${cfg.port} (${Math.round(performance.now() - t0)} ms)`,
     );
   } else if (mode === 'down') {
-    // `pnpm teardown` runs this in every checkout: nothing runs without Docker, so nothing to stop
+    // `pnpm teardown` runs this in every checkout, but a project COMPOSE_PROJECT_NAME names may
+    // serve other checkouts too (resolveDb): it stays up
+    if (!cfg.ownsProject) {
+      console.log(
+        `[db-up] ${cfg.project} is not this checkout’s own (COMPOSE_PROJECT_NAME): other checkouts may use it, so it keeps running (\`docker compose -p ${cfg.project} down\` stops it)`,
+      );
+      return;
+    }
+    // nothing runs without Docker, so nothing to stop
     const res = compose(cfg, ['down'], { stdio: ['ignore', 'inherit', 'pipe'] });
     if (noDocker(res)) {
       console.log(`[db-up] Docker is not running: nothing to stop for ${cfg.project}`);

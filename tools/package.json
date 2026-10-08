@@ -25,6 +25,7 @@
           "{workspaceRoot}/lefthook.yml",
           "{workspaceRoot}/nx.json",
           "{workspaceRoot}/packages/graphql/schema.graphql",
+          "{workspaceRoot}/packages/db/scripts/*.mjs",
           "{workspaceRoot}/**/package.json",
           "{workspaceRoot}/**/project.json",
           "{workspaceRoot}/**/tsconfig*.json",

@@ -7,7 +7,9 @@ follow, and where the reports go.
 
 Playwright drives Chromium (headless) against the **production builds**: web's `.output` and api's
 `dist`, on this checkout's e2e ports (`pnpm ports`: "e2e web", "e2e api"), never the dev servers or
-the dev database. It needs Docker, like the database tests. Nx runs, in order:
+the dev database. It needs Docker, like the database tests, and Chromium, like the browser tests
+(`pnpm exec playwright install chromium`, once per machine and after each Playwright bump). Nx
+runs, in order:
 
 1. `api:build`, `web:build` (cached), and `db:db-seed-e2e`: this checkout's e2e database (`e2e`,
    or `e2e_<hash>` in a worktree; `E2E_DATABASE_URL` overrides it, `DATABASE_URL` never does)
@@ -19,26 +21,28 @@ the dev database. It needs Docker, like the database tests. Nx runs, in order:
 3. `web-e2e:e2e--wait-for-webserver`, until both health URLs answer;
 4. the specs; then Nx stops the servers.
 
-It works while `pnpm dev` runs (other ports, other database). When another Nx process is already
-running a `serve-e2e` task, Nx reuses that server instead of starting a second one (it may run
-older code: stop it to test new code).
+It works while `pnpm dev` runs (other ports, other database). **Stop any `serve-e2e` you started
+yourself before an e2e run.** Nx reuses a `serve-e2e` task that another Nx process runs instead of
+starting its own, and that server keeps the code it started with: after a web rebuild its pages
+ask for scripts the build deleted (nothing hydrates, the specs fail); after an api rebuild the
+specs pass against the old API, and Nx caches that pass for the new code.
 
 **One e2e run per checkout at a time.** Each run's `db:db-seed-e2e` drops the e2e database, so a
 second run (another terminal or agent in the same checkout) deletes it under the first run's
 servers and specs, which then fail or flake. Run e2e in parallel only from separate worktrees: each
 has its own ports and database.
 
-| Task                                     | Command                                                                           |
-| ---------------------------------------- | --------------------------------------------------------------------------------- |
-| Every spec, one Playwright run           | `pnpm nx e2e web-e2e` (cached: `--skip-nx-cache` reruns)                          |
-| One task per spec file, 3 at a time (CI) | `NX_SKIP_ATOMIZER_VALIDATION=true pnpm nx run web-e2e:e2e-ci --parallel=3`        |
-| One spec or test                         | `pnpm nx e2e web-e2e -- src/harness.spec.ts -g "health"`                          |
-| The servers alone (to poke at them)      | `pnpm nx run-many -t serve-e2e -p api web` in the background                      |
-| Watch it in a browser                    | `pnpm nx e2e web-e2e -- --headed` (needs `pnpm exec playwright install chromium`) |
+| Task                                     | Command                                                                       |
+| ---------------------------------------- | ----------------------------------------------------------------------------- |
+| Every spec, one Playwright run           | `pnpm nx e2e web-e2e` (cached: `--skip-nx-cache` reruns)                      |
+| One task per spec file, 3 at a time (CI) | `NX_SKIP_ATOMIZER_VALIDATION=true pnpm nx run web-e2e:e2e-ci --parallel=3`    |
+| One spec or test                         | `pnpm nx e2e web-e2e -- src/harness.spec.ts -g "health"`                      |
+| The servers alone (to poke at them)      | `pnpm nx run-many -t serve-e2e -p api web` in the background; stop before e2e |
+| Watch it in a browser                    | `pnpm nx e2e web-e2e -- --headed`                                             |
 
-The result is cached on the specs, web, api and what they use, `docker-compose.yml` and the ports
-(`dbServer`), but not on the installed Chromium: rerun with `--skip-nx-cache` after a browser
-install.
+The result is cached on the specs, web, api and what they use, and on `dbServer`
+(`docker-compose.yml` and `tools/dev-ports.mjs`: how ports are chosen, not their values), but not
+on the installed Chromium: rerun with `--skip-nx-cache` after a browser install.
 
 Nx refuses the per-spec `e2e-ci--*` tasks without Nx Cloud unless `NX_SKIP_ATOMIZER_VALIDATION=true`
 is set; they run fine on one machine, sharing one api and one web server. That variable is an
@@ -75,7 +79,7 @@ The test databases are dropped with a plain `DROP DATABASE` (`packages/db/src/te
 `57P01` error. `db:db-seed-e2e` deliberately does the opposite, for the e2e database only: a
 leftover e2e server (a crashed run, or one another Nx process still runs) holds connections to it,
 and a plain DROP would wait on them forever. FORCE terminates them; the API's pool absorbs the
-`57P01`. Nothing else uses `ensureDatabase(url, { fresh: true })`.
+`57P01`. Nothing else uses `ensureDatabase(url, { fresh: true })` but its own test.
 
 ## Reports and traces
 

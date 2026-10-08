@@ -6,9 +6,10 @@
 // Nx 23.2 (it checks every 20 ms that its pid file and lock file are unchanged), leaving that copy;
 // one that misses it (another Nx version, a stuck process) keeps running with its watchers.
 //
-//   node tools/nx-daemons.mjs prune   stop (SIGTERM, its own clean shutdown) every Nx daemon of
-//                                     this user whose workspace directory was deleted, then delete
-//                                     the temp Nx installs of processes that have exited
+//   node tools/nx-daemons.mjs prune   stop (SIGTERM, its own clean shutdown; SIGKILL if it still
+//                                     runs 5 s later) every Nx daemon of this user whose workspace
+//                                     directory was deleted, then delete the temp Nx installs (and
+//                                     empty temp npm directories) of processes that have exited
 //
 // A daemon's workspace is its working directory (Nx starts it in the workspace root). On Linux it
 // is gone only when the kernel marks that directory deleted, and only for a daemon in this mount
@@ -128,8 +129,22 @@ export function pruneDaemons({
 }
 
 /**
- * Nx's temp installs whose process has exited: `<dir>/tmp-<pid>-<random>` directories of this
- * user holding a package.json that depends on Nx packages only (`nx`, `@nx/*`), as Nx writes them.
+ * True for what Nx's createTempNpmDirectory() leaves when nothing got installed into it: plain
+ * files only, package.json `{}` and Nx's copy of the workspace's pnpm-workspace.yaml (and of its
+ * .npmrc, if it has one). `pkg` is the directory's parsed package.json.
+ */
+function emptyTempNpmDir(path, pkg) {
+  if (pkg === null || typeof pkg !== 'object' || Array.isArray(pkg)) return false;
+  const entries = readdirSync(path, { withFileTypes: true });
+  if (Object.keys(pkg).length > 0 || !entries.every((e) => e.isFile())) return false;
+  const names = entries.map((e) => e.name).filter((name) => name !== '.npmrc');
+  return names.toSorted().join() === 'package.json,pnpm-workspace.yaml';
+}
+
+/**
+ * Nx's temp directories whose process has exited: `<dir>/tmp-<pid>-<random>` directories of this
+ * user holding a package.json that depends on Nx packages only (`nx`, `@nx/*`), as Nx writes them,
+ * or Nx's temp npm setup with nothing installed (emptyTempNpmDir).
  */
 export function staleTempInstalls({
   dir = tmpdir(),
@@ -146,6 +161,7 @@ export function staleTempInstalls({
       const pkg = JSON.parse(readFileSync(join(path, 'package.json'), 'utf8'));
       const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies });
       if (deps.length && deps.every((d) => d === 'nx' || d.startsWith('@nx/'))) stale.push(path);
+      else if (emptyTempNpmDir(path, pkg)) stale.push(path);
     } catch {
       // not a directory, no package.json: not Nx's
     }
@@ -161,6 +177,24 @@ async function main([mode]) {
   }
   if (process.platform === 'win32') return;
   const { stopped, failed } = pruneDaemons();
+  const waitFor = async (ticks) => {
+    for (let i = 0; i < ticks && stopped.some(({ pid }) => isAlive(pid)); i++)
+      await new Promise((done) => setTimeout(done, 100));
+  };
+  // the daemons just signalled exit within moments; their temp installs are stale once they have
+  await waitFor(50);
+  // one that ignores SIGTERM (stuck, or paused) serves no one either: SIGKILL it
+  for (const { pid } of stopped.filter((d) => isAlive(d.pid)))
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // gone meanwhile, or refused: checked below
+    }
+  await waitFor(20);
+  for (const daemon of stopped.filter((d) => isAlive(d.pid))) {
+    stopped.splice(stopped.indexOf(daemon), 1);
+    failed.push({ ...daemon, error: 'still running after SIGTERM and SIGKILL' });
+  }
   if (stopped.length + failed.length === 0)
     console.log('[nx-daemons] no Nx daemons of deleted checkouts');
   for (const { pid, workspace } of stopped)
@@ -170,14 +204,11 @@ async function main([mode]) {
       `[nx-daemons] could not stop the Nx daemon of deleted ${workspace} (pid ${pid}): ${error}`,
     );
   if (failed.length) process.exitCode = 1;
-  // the daemons just stopped exit within moments; their temp installs are stale once they have
-  for (let i = 0; i < 50 && stopped.some(({ pid }) => isAlive(pid)); i++)
-    await new Promise((done) => setTimeout(done, 100));
   const stale = staleTempInstalls();
   for (const path of stale) rmSync(path, { recursive: true, force: true });
   if (stale.length)
     console.log(
-      `[nx-daemons] deleted ${stale.length} temp Nx install${stale.length === 1 ? '' : 's'} of exited processes in ${tmpdir()}`,
+      `[nx-daemons] deleted ${stale.length} temp Nx director${stale.length === 1 ? 'y' : 'ies'} of exited processes in ${tmpdir()}`,
     );
 }
 

@@ -2,7 +2,10 @@ import { sql } from 'drizzle-orm';
 import type { Db } from './client';
 import { comments, notes } from './schema';
 
-/** What the deterministic seed creates; e2e tests rely on these titles. */
+/**
+ * What the deterministic seed creates. e2e specs rely on what it writes (titles, bodies, times,
+ * comment counts, comment authors and bodies): apps/web-e2e/src/fixtures.ts copies it into SEED.
+ */
 export const SEED = {
   notes: 25,
   /** Oldest first: "Seed note 01" … "Seed note 25"; note n gets n % 4 comments. */

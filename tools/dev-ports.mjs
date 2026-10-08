@@ -11,7 +11,8 @@
 //                        app_<hash> / e2e_<hash>, which stay apart even when an override
 //                        points several worktrees at one Postgres server
 //   env overrides     -> WEB_PORT, API_PORT, DB_PORT, DB_STUDIO_PORT, WEB_E2E_PORT, API_E2E_PORT,
-//                        COMPOSE_PROJECT_NAME (then not this checkout's own: `ownsComposeProject`)
+//                        COMPOSE_PROJECT_NAME (`ownsComposeProject` is false when it names a
+//                        project other than the checkout's own)
 //   test database URL -> the server's `postgres` maintenance database, for tests that create
 //                        databases of their own
 //

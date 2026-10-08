@@ -8,8 +8,9 @@ export const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta
 
 /**
  * Create the database named in `url` if it does not exist (connects to the `postgres` database).
- * `fresh` (db:db-seed-e2e only): drop it first, so it starts empty. WITH (FORCE) closes the
- * connections still open on it (a leftover e2e server's pool), which a plain DROP would wait on.
+ * `fresh` (db:db-seed-e2e, and its own test): drop it first, so it starts empty. WITH (FORCE)
+ * closes the connections still open on it (a leftover e2e server's pool), which a plain DROP would
+ * wait on.
  */
 export async function ensureDatabase(url: string, { fresh = false } = {}): Promise<void> {
   const target = new URL(url);
