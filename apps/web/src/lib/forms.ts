@@ -41,7 +41,10 @@ export function writeErrorMessage(error: unknown): string {
   if (error instanceof GraphQLRequestError) {
     if (error.code === READ_ONLY) return 'The board is read-only right now: nothing was saved.';
     if (error.code === RATE_LIMITED || error.status === 429)
-      return `Too many writes: try again in ${error.retryAfter ?? 60} s.`;
+      // the BFF always sends Retry-After; a 429 from elsewhere may not, and gets no made-up wait
+      return error.retryAfter === undefined
+        ? 'Too many writes: try again in a moment.'
+        : `Too many writes: try again in ${error.retryAfter} s.`;
   }
   return 'Could not save. Check your connection and try again.';
 }
@@ -62,7 +65,12 @@ export function useWriteError(): (error: unknown) => string {
   );
 }
 
-/** The `default:` of a `__typename` switch: a union member nobody handles fails web:typecheck. */
-export function unreachable(value: never): never {
-  throw new Error(`Unhandled result: ${JSON.stringify(value)}`);
+/**
+ * The `default:` of a `__typename` switch: a union member nobody handles fails web:typecheck. At
+ * run time (an API deployed ahead of this web build) it logs the result and returns the generic
+ * message for the form: a throw here would be an unhandled rejection, and the form would say nothing.
+ */
+export function unreachable(value: never): string {
+  console.error('[web] unhandled write result', value);
+  return writeErrorMessage(value);
 }

@@ -55,9 +55,9 @@ describe('writeErrorMessage', () => {
     expect(writeErrorMessage(refused(429, RATE_LIMITED, 12))).toBe(
       'Too many writes: try again in 12 s.',
     );
-    // a 429 without the code or the header still gets the message
+    // a 429 without the code or the header (a proxy's, not the BFF's): no made-up wait
     expect(writeErrorMessage(new GraphQLRequestError(429))).toBe(
-      'Too many writes: try again in 60 s.',
+      'Too many writes: try again in a moment.',
     );
   });
 

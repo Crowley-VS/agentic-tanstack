@@ -2,15 +2,17 @@
 // where a failed page load surfaces, so it logs the error (with its cause) on the server.
 import { Button } from '@acme/ui/components/button';
 import { useQueryErrorResetBoundary } from '@tanstack/react-query';
-import { type ErrorComponentProps, useRouter } from '@tanstack/react-router';
+import { type ErrorComponentProps, useHydrated, useRouter } from '@tanstack/react-router';
 import { useEffect } from 'react';
 import { API_TIMED_OUT, API_UNAVAILABLE } from '../lib/graphql/errors';
 
 /**
  * What a failed page tells the visitor, decided by the error's message alone: an SSR error
  * reaches the browser as a plain Error with the same message, so a class check would render
- * differently there and break hydration. The message itself only in development: in production
- * it can carry server detail, and SSR serializes the page's text into the HTML.
+ * differently there and break hydration. The message itself only in development, for the
+ * visitor's sake: it is not secret, since the router serializes every failed match's message into
+ * the page (its dehydrated state) either way. Server detail belongs in `cause`, which stays on the
+ * server (execute() does this).
  */
 export function errorPageMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -24,6 +26,8 @@ export function errorPageMessage(error: unknown): string {
 export function ErrorPage({ error }: Pick<ErrorComponentProps, 'error'>) {
   const router = useRouter();
   const queryErrorResetBoundary = useQueryErrorResetBoundary();
+  // a click before hydration would be lost: the button waits for React (docs/web.md)
+  const hydrated = useHydrated();
   // render runs once per failed server render; the browser's console already shows its own
   if (router.isServer) console.error('[web] SSR: a page failed to load', error);
   // a query that failed while rendering may fetch again on the next render
@@ -31,7 +35,12 @@ export function ErrorPage({ error }: Pick<ErrorComponentProps, 'error'>) {
   return (
     <div role="alert" className="flex flex-col items-start gap-3 p-6">
       <p>{errorPageMessage(error)}</p>
-      <Button type="button" variant="outline" onClick={() => void router.invalidate()}>
+      <Button
+        type="button"
+        variant="outline"
+        disabled={!hydrated}
+        onClick={() => void router.invalidate()}
+      >
         Try again
       </Button>
     </div>

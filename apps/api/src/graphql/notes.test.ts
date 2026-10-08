@@ -260,6 +260,10 @@ describe('queries', () => {
     const everyComment = await gql(`{ notes(first: 20) { edges { node {
       comments { id authorName body createdAt } } } } }`);
     expect(everyComment.errors?.[0]?.message).toMatch(/complexity/i);
+    // without `first` it gets a default page (NOTE_LIMITS.pageSize), so it costs one too
+    const unsized = await gql(`{ notes { edges { node {
+      comments { id authorName body createdAt } } } } }`);
+    expect(unsized.errors?.[0]?.message).toMatch(/complexity/i);
     // 50 notes × 50 comments × their note × 50 comments: rejected before anything runs
     statements.length = 0;
     const nested = await gql(`{ notes(first: 50) { edges { node {

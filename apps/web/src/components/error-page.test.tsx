@@ -6,9 +6,9 @@ import { GraphQLRequestError } from '../lib/graphql/errors';
 import { getRouter } from '../router';
 import { ErrorPage, errorPageMessage } from './error-page';
 
-const render = (error: Error) =>
+const render = (error: Error, router = getRouter()) =>
   renderToStaticMarkup(
-    <RouterContextProvider router={getRouter()}>
+    <RouterContextProvider router={router}>
       <ErrorPage error={error} />
     </RouterContextProvider>,
   );
@@ -33,6 +33,13 @@ describe('ErrorPage', () => {
     expect(console.error).toHaveBeenCalledWith('[web] SSR: a page failed to load', secretDetail);
   });
 
+  it('logs nothing in the browser, whose console already shows the error', () => {
+    const router = getRouter();
+    router.isServer = false;
+    render(secretDetail, router);
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
   it('never shows the error message in production', () => {
     vi.stubEnv('DEV', false);
     const html = render(secretDetail);
@@ -51,6 +58,11 @@ describe('ErrorPage', () => {
     for (const message of ['API unavailable', 'API timed out'])
       expect(errorPageMessage(new Error(message))).toBe(API_DOWN);
     expect(errorPageMessage(new Error('API unavailable!'))).not.toBe(API_DOWN);
+  });
+
+  it('renders "Try again" disabled until hydration: a click before it would be lost', () => {
+    // docs/web.md: every button that needs JavaScript does, so e2e specs need no retries
+    expect(render(secretDetail)).toMatch(/<button[^>]* disabled=""[^>]*>Try again<\/button>/);
   });
 
   it('shows the message in development', () => {

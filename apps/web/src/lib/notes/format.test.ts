@@ -17,6 +17,16 @@ describe('excerpt', () => {
     expect(excerpt('x'.repeat(500), 10)).toBe(`${'x'.repeat(9)}…`);
   });
 
+  it('never cuts an emoji in half: the server would send U+FFFD, a hydration mismatch', () => {
+    // no space after position 80: the long-word path keeps the raw cut
+    for (const body of ['🎉'.repeat(100), `Party ${'🎉'.repeat(100)}`]) {
+      const result = excerpt(body);
+      // what React's SSR stream does to the text (TextEncoder turns a lone surrogate into U+FFFD)
+      expect(new TextDecoder().decode(new TextEncoder().encode(result))).toBe(result);
+      expect(result).toMatch(/🎉…$/u);
+    }
+  });
+
   it('returns text, never markup', () => {
     expect(excerpt('<img src=x onerror=alert(1)>')).toBe('<img src=x onerror=alert(1)>');
   });

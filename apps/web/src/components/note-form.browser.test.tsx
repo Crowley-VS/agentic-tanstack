@@ -3,6 +3,7 @@
 // network is not the seam here; execute.test.ts covers the transport itself.
 import { toast, Toaster } from '@acme/ui/components/sonner';
 import { RATE_LIMITED, READ_ONLY } from '@acme/validators/error-codes';
+import { NOTE_LIMITS } from '@acme/validators/notes';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-react';
@@ -50,7 +51,14 @@ describe('NoteForm (browser)', () => {
     await expect.element(screen.getByText('Title is required')).toBeVisible();
     await expect.element(screen.getByText('Body is required')).toBeVisible();
     await expect.element(title).toHaveAttribute('aria-invalid', 'true');
+    await expect.element(title).toHaveAccessibleDescription('Title is required');
     expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps its fields within the API limits', async () => {
+    const { title, body } = await renderForm();
+    await expect.element(title).toHaveAttribute('maxlength', String(NOTE_LIMITS.titleMax));
+    await expect.element(body).toHaveAttribute('maxlength', String(NOTE_LIMITS.bodyMax));
   });
 
   it('sends the trimmed input, then resets, refetches the board and toasts', async () => {
@@ -77,7 +85,8 @@ describe('NoteForm (browser)', () => {
         fieldErrors: [{ path: ['input', 'title'], message: 'Title is taken' }],
       },
     } satisfies CreateNoteMutation);
-    const { screen, title, body, submit } = await renderForm();
+    const { screen, queryClient, title, body, submit } = await renderForm();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
     await title.fill('Hello');
     await body.fill('World');
     await submit.click();
@@ -85,6 +94,26 @@ describe('NoteForm (browser)', () => {
     await expect.element(screen.getByText('Title is taken')).toBeVisible();
     await expect.element(title).toHaveAttribute('aria-invalid', 'true');
     await expect.element(title).toHaveValue('Hello'); // kept, so it can be fixed
+    expect(invalidate).not.toHaveBeenCalled(); // nothing was written: no refetch
+  });
+
+  it('says something when the API answers a result this build does not know', async () => {
+    // an API deployed ahead of this web build: a union member codegen has not seen yet
+    executeMock.mockResolvedValue({ createNote: { __typename: 'SomethingNew' } });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { screen, title, body, submit } = await renderForm();
+    await title.fill('Hello');
+    await body.fill('World');
+    await submit.click();
+
+    await expect
+      .element(screen.getByText('Could not save. Check your connection and try again.'))
+      .toBeVisible();
+    await expect.element(title).toHaveValue('Hello');
+    expect(logged).toHaveBeenCalledExactlyOnceWith('[web] unhandled write result', {
+      __typename: 'SomethingNew',
+    });
+    logged.mockRestore();
   });
 
   it('is disabled and busy until the note is created and the board refetched', async () => {

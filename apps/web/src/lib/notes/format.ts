@@ -5,7 +5,10 @@
 export function excerpt(body: string, max = 160): string {
   const text = body.replace(/\s+/g, ' ').trim();
   if (text.length <= max) return text;
-  const cut = text.slice(0, max - 1);
+  // never end on the first half of a surrogate pair (an emoji): SSR would send U+FFFD in its
+  // place, the browser the half, and hydration would find different text
+  const end = /[\uD800-\uDBFF]/.test(text.charAt(max - 2)) ? max - 2 : max - 1;
+  const cut = text.slice(0, end);
   const space = cut.lastIndexOf(' ');
   // a long unbroken word (a URL) is cut mid-word rather than dropped
   return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;

@@ -1,4 +1,5 @@
 import { RATE_LIMITED } from '@acme/validators/error-codes';
+import { MAX_TOKENS } from '@acme/validators/internal-api';
 import { describe, expect, it } from 'vitest';
 import {
   clientKey,
@@ -18,6 +19,13 @@ describe('writesIn', () => {
     expect(writesIn(body({ query: '{ apiVersion }', variables: null, operationName: null }))).toBe(
       0,
     );
+  });
+
+  it("counts a document over the API's token budget as a write, without walking it", () => {
+    // the API refuses it unparsed (graphql-armor maxTokens); parsing it whole here would cost
+    // the web server milliseconds per request, rate-limited or not
+    expect(writes(`{ ${'a '.repeat(MAX_TOKENS)}}`)).toBe(1);
+    expect(writes(`{ ${'a '.repeat(MAX_TOKENS - 10)}}`)).toBe(0);
   });
 
   it('honours operationName in a document with several operations', () => {
@@ -94,11 +102,12 @@ describe('createWriteLimiter', () => {
     const { now, advance } = clock();
     const limiter = createWriteLimiter({ limit: 2, windowMs: 60_000 }, { now });
     expect(limiter.hit('a')).toEqual({ ok: true });
-    advance(10_000);
+    advance(10_700);
     expect(limiter.hit('a')).toEqual({ ok: true });
+    // 49.3 s left: rounded up, or a client that waits as told is refused again
     expect(limiter.hit('a')).toEqual({ ok: false, retryAfterSeconds: 50 });
     expect(limiter.hit('b')).toEqual({ ok: true }); // per client
-    advance(49_500);
+    advance(48_800);
     expect(limiter.hit('a')).toEqual({ ok: false, retryAfterSeconds: 1 });
     advance(500); // the window opened by the first write closes
     expect(limiter.hit('a')).toEqual({ ok: true });
