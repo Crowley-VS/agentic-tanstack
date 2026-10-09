@@ -7,6 +7,7 @@
   "dependencies": {
     "@acme/core": "workspace:*",
     "@acme/db": "workspace:*",
+    "@acme/logger": "workspace:*",
     "@acme/validators": "workspace:*",
     "@escape.tech/graphql-armor": "catalog:",
     "@graphql-yoga/plugin-csrf-prevention": "catalog:",

@@ -78,6 +78,7 @@ Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI 
 - `packages/core` (`scope:server`, `type:feature`, `needs-db`): business logic: writes and domain errors; takes a `Db`, never a request.
 - `packages/db` (`scope:server`, `type:data`, `needs-db`): Drizzle schema, migrations, seed, per-test-file databases (`testDb()`).
 - `packages/graphql` (`scope:shared`, `type:util`): `schema.graphql`, the generated API contract clients get their types from.
+- `packages/logger` (`scope:shared`, `type:util`): one log line per event for the servers (JSON in production: `docs/production.md`); server code only.
 - `packages/ui` (`scope:web`, `type:ui`): React components (shadcn/ui, radix-nova) and the Tailwind 4 theme. Add one with `pnpm --filter @acme/ui exec shadcn add <name> --overwrite` (without `--overwrite` it writes nothing when no terminal is attached), then `pnpm format` and `git diff packages/ui` (`docs/web.md`).
 - `packages/validators` (`scope:shared`, `type:util`): Zod schemas and limits shared by api and web.
 - `tools` (`scope:tooling`, `type:tooling`): dev ports, Claude Code hooks, `pnpm check`, agent-config sync; plain `.mjs`, gated by lint, boundaries and tests (no `typecheck`).

@@ -249,6 +249,19 @@ jobs:
             });
           ' || { echo "::error::the api must answer 401 without the secret, 200 with it"; exit 1; }
 
+      # The api image baked in RAILWAY_GIT_COMMIT_SHA (the build above passes the commit, as Railway
+      # does): the browser's way to the API, the web server's BFF, must answer it as apiVersion.
+      - name: The API reports the commit as its version
+        if: steps.gate.outputs.run == 'true'
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          answer=$(curl --fail --silent --show-error --header 'content-type: application/json' \
+            --data '{"query":"{ apiVersion }"}' "http://$(docker compose port web 3000)/api/graphql")
+          echo "BFF: $answer"
+          [ "$answer" = "{\"data\":{\"apiVersion\":\"$SHA\"}}" ] ||
+            { echo "::error::apiVersion is not the commit $SHA"; exit 1; }
+
       # The deterministic seed, from here: dev-only code stays out of the images. The api migrated
       # this database itself; the seed only replaces its rows.
       - name: Seed the stack's database

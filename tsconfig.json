@@ -26,6 +26,9 @@
     },
     {
       "path": "./apps/web-e2e"
+    },
+    {
+      "path": "./packages/logger"
     }
   ]
 }

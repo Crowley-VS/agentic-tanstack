@@ -61,8 +61,14 @@ clients act on are shared constants (`@acme/validators/error-codes`).
 
 ## One log line per request
 
-`[api] <status> <method> <path> <ms>ms ip=<client> id=<request id>` (`plugins/request-log.ts`;
-health checks are not logged). A request may carry the browser's IP (`x-client-ip`) and a request
-id (`x-request-id`) from the web server; the API believes them only when its secret matches (in
-development too, when a secret is set), else it logs the socket's address and `id=-`. The header
-names and the secret's rules are shared with the web server (`@acme/validators/internal-api`).
+`plugins/request-log.ts`, through `@acme/logger`: a JSON object per line in production (`message`
+`<status> <method> <path> <ms>ms`, plus `requestId`, `status`, `ms`, `ip`, `version`…), and in
+development `[api] <status> <method> <path> <ms>ms ip=<client> id=<request id>`. Health checks
+and, in development, GraphiQL page loads are not logged: Yoga answers them before any plugin
+runs. A request whose `Host` is no valid URL authority gets a 400 and its line from `main.ts`,
+before Yoga. A request may carry the browser's IP (`x-client-ip`) and a request id
+(`x-request-id`) from the web server; the API believes them only when its secret matches (in
+development too, when a secret is set), else it logs the socket's address and no id (an empty
+value counts as none). An unexpected error is logged (stack and request id) before it is masked
+for the client. The header names and the secret's rules are shared with the web server
+(`@acme/validators/internal-api`). The fields, the version and shutdown: `docs/production.md`.
