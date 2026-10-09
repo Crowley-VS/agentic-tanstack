@@ -2,7 +2,7 @@
 // and the "Add a comment" form on a note's page. Each test works on a note it created (unique
 // title), never on a seed note, so workers, parallel e2e-ci tasks and retries never collide.
 import type { Page } from '@playwright/test';
-import { expect, test, uniqueTitle } from './fixtures';
+import { expect, showOnBoard, test, uniqueTitle } from './fixtures';
 
 const titleField = (page: Page) => page.getByRole('textbox', { name: 'Title', exact: true });
 const bodyField = (page: Page) => page.getByRole('textbox', { name: 'Body', exact: true });
@@ -12,16 +12,11 @@ const bodyField = (page: Page) => page.getByRole('textbox', { name: 'Body', exac
  * moved past the first page: load more until it shows.
  */
 async function boardCard(page: Page, title: string) {
-  const notes = page.getByRole('region', { name: 'All notes' });
-  const card = notes
+  const card = page
+    .getByRole('region', { name: 'All notes' })
     .getByRole('listitem')
     .filter({ has: page.getByRole('link', { name: title, exact: true }) });
-  await expect(notes).toBeVisible();
-  await expect(async () => {
-    if (await card.isVisible()) return;
-    await page.getByRole('button', { name: 'Load more' }).click({ timeout: 5000 });
-    expect(await card.isVisible()).toBe(true);
-  }).toPass();
+  await showOnBoard(page, card);
   return card;
 }
 

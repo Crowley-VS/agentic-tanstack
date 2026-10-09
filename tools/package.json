@@ -33,6 +33,7 @@
           "{workspaceRoot}/**/Dockerfile",
           "{workspaceRoot}/.dockerignore",
           "{workspaceRoot}/docker-compose*.yml",
+          "{workspaceRoot}/.github/workflows/*.yml",
           "{workspaceRoot}/**/.oxlintrc.json*"
         ]
       }

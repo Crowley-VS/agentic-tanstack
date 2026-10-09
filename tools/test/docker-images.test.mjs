@@ -1,7 +1,8 @@
-// The production images' Dockerfiles, build context and local stack, which no single project's
-// tests see: what a deploy needs from them (docs/deployment.md). The images themselves run in the
-// stack (`pnpm nx run web-e2e:stack-up`); these checks need no Docker. tools:test's inputs include
-// the Dockerfiles, .dockerignore and the compose files, so a change to one re-runs them.
+// The production images' Dockerfiles, build context, local stack and CI job, which no single
+// project's tests see: what a deploy needs from them (docs/deployment.md). The images themselves
+// run in the stack (`pnpm nx run web-e2e:e2e-stack`); these checks need no Docker. tools:test's
+// inputs include the Dockerfiles, .dockerignore, the compose files and the workflows, so a change
+// to one re-runs them.
 import { globSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -82,6 +83,38 @@ const IMAGES = {
   api: { copies: ['/repo/apps/api/dist ./dist', '/repo/apps/api/migrations ./migrations'] },
   web: { copies: ['/repo/apps/web/.output ./.output'] },
 };
+
+const unquote = (value) => value.trim().replace(/^(['"])(.*)\1$/, '$2');
+/**
+ * The services of docker-compose.stack.yml (two-space indents, as written): whether each builds
+ * its image, and the ports it publishes.
+ */
+function stackServices() {
+  const text = read('docker-compose.stack.yml');
+  const services = {};
+  let current;
+  let inPorts = false;
+  for (const line of text.slice(text.indexOf('\nservices:\n')).split(/\r?\n/)) {
+    const name = /^ {2}([\w-]+):\s*$/.exec(line)?.[1];
+    if (name) services[name] = current = { build: false, ports: [] };
+    if (!current || name) continue;
+    if (/^ {4}build:/.test(line)) current.build = true;
+    const inline = /^ {4}ports:\s*\[(.*)\]\s*$/.exec(line)?.[1];
+    if (inline !== undefined) current.ports.push(...inline.split(',').map(unquote));
+    if (/^ {4}\S/.test(line)) inPorts = /^ {4}ports:\s*$/.test(line);
+    else if (inPorts && /^ {6}- /.test(line)) current.ports.push(unquote(line.slice(8)));
+  }
+  return services;
+}
+
+/** The `docker` job of .github/workflows/ci.yml, as text: up to the next job or the end. */
+function dockerJob() {
+  const text = read('.github/workflows/ci.yml');
+  const start = text.indexOf('\n  docker:\n');
+  expect(start).toBeGreaterThan(0);
+  const next = text.slice(start + 1).search(/\n {2}[\w-]+:\n/);
+  return next < 0 ? text.slice(start) : text.slice(start, start + 1 + next);
+}
 
 describe('production images', () => {
   it('share the install stage line for line, so the two builds share its cached layers', () => {
@@ -202,6 +235,15 @@ describe('the local stack (docker-compose.stack.yml)', () => {
     expect(stack).toMatch(/^name: \$\{STACK_PROJECT:-[\w-]+\}$/m);
   });
 
+  it('keeps the API private, as a platform does: only web, and db for the seed, on loopback', () => {
+    const services = stackServices();
+    expect(Object.keys(services)).toEqual(['db', 'migrate', 'api', 'web']);
+    expect(services.api?.ports).toEqual([]); // the e2e 401 check runs from inside the network
+    expect(services.migrate?.ports).toEqual([]);
+    expect(services.db?.ports).toEqual(['127.0.0.1::5432']); // a port Docker picks
+    expect(services.web?.ports).toEqual(['127.0.0.1:${STACK_PORT:-3200}:3000']);
+  });
+
   it('re-runs these checks whenever one of the files they read changes', () => {
     const tools = JSON.parse(read('tools/package.json'));
     expect(tools.nx.targets.test.inputs).toEqual(
@@ -209,7 +251,46 @@ describe('the local stack (docker-compose.stack.yml)', () => {
         '{workspaceRoot}/**/Dockerfile',
         '{workspaceRoot}/.dockerignore',
         '{workspaceRoot}/docker-compose*.yml',
+        '{workspaceRoot}/.github/workflows/*.yml',
       ]),
     );
+  });
+});
+
+describe("CI's docker job (.github/workflows/ci.yml)", () => {
+  it('tags each image it builds with the name compose gives it, so `up --no-build` finds it', () => {
+    const job = dockerJob();
+    const project = /^ {6}STACK_PROJECT: (\S+)$/m.exec(job)?.[1];
+    expect(project).toBeTruthy();
+    // COMPOSE_PROJECT_NAME wins over the file's `name:`: the same project either way
+    expect(job).toMatch(new RegExp(`^ {6}COMPOSE_PROJECT_NAME: ${project}$`, 'm'));
+    const built = Object.entries(stackServices())
+      .filter(([, service]) => service.build)
+      .map(([name]) => name);
+    expect(built).toEqual(['migrate', 'api', 'web']);
+    expect(/^ {10}targets: (\S+)$/m.exec(job)?.[1]?.split(',').toSorted()).toEqual(
+      built.toSorted(),
+    );
+    for (const service of built)
+      expect(job).toMatch(new RegExp(`^ {12}${service}\\.tags=${project}-${service}$`, 'm'));
+  });
+
+  it('writes the build cache only on a push to main: pull requests read it', () => {
+    const job = dockerJob();
+    const writes = job.split('\n').filter((line) => line.includes('cache-to='));
+    expect(writes.length).toBeGreaterThan(0);
+    for (const line of writes)
+      expect(line).toMatch(/^ {12}\$\{\{ github\.event_name == 'push' && /);
+    expect(read('.github/workflows/ci.yml')).toMatch(/^on:\n {2}push:\n {4}branches: \[main\]\n/m);
+  });
+
+  it('runs the steps of web-e2e:e2e-stack, with no spec skipping for want of the seed', () => {
+    const job = dockerJob();
+    expect(job).toContain('pnpm nx run db:db-seed --excludeTaskDependencies');
+    expect(job).toContain('run: docker compose run --rm -T migrate');
+    expect(job).toMatch(
+      /E2E_SEEDED=1 E2E_REQUIRE_STACK=1 \\\n\s+pnpm nx run web-e2e:e2e-base-url /,
+    );
+    expect(job).not.toMatch(/\bAPI_URL=/); // the API is private: a step checks its 401 instead
   });
 });

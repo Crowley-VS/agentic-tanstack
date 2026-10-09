@@ -1,10 +1,12 @@
 # The production images, run like production on this machine: Postgres 18, the API's migrations
-# as a one-off, the private API, and the web server, the only service with a port (127.0.0.1 and
-# this checkout's stack port, `pnpm ports`). Not the dev database (docker-compose.yml): its own
-# Postgres, from empty and in memory, like a first deploy. Run it through Nx, which names the
-# project after this checkout (`<compose project>-stack`, or STACK_PROJECT) and builds the images:
+# as a one-off, the private API (no port), and the web server on 127.0.0.1 and this checkout's
+# stack port (`pnpm ports`). Not the dev database (docker-compose.yml): its own Postgres, from
+# empty and in memory, like a first deploy, on a loopback port Docker picks, for the e2e seed only.
+# Run it through Nx, which names the project after this checkout (`<compose project>-stack`, or
+# STACK_PROJECT) and builds the images:
 #
 #   pnpm nx run web-e2e:stack-up      build, start, wait until every service is healthy
+#   pnpm nx run web-e2e:e2e-stack     the same, then every e2e spec against it, then stack-down
 #   pnpm nx run web-e2e:stack-down    remove it all: containers, data, network and its images
 #                                     (`pnpm teardown` runs it too)
 #
@@ -50,6 +52,9 @@ services:
     # Throwaway data, in memory: no volume to leave behind (without a mount at this path the
     # image makes an anonymous one). PG18 keeps data in /var/lib/postgresql/18/docker.
     tmpfs: [/var/lib/postgresql]
+    # Only for the e2e seed from this machine (`docker compose port db 5432` names it): a
+    # platform's database is private, as here the API is.
+    ports: ['127.0.0.1::5432']
     healthcheck:
       # -h 127.0.0.1: during init a temporary server answers on the unix socket only.
       test: ['CMD', 'pg_isready', '-h', '127.0.0.1', '-U', 'app', '-d', 'app']
@@ -95,6 +100,8 @@ services:
       API_PORT: '4000'
       # No proxy in front sets X-Real-IP here: count writes per socket address.
       REAL_IP_HEADER: ''
+      # The app's default; the e2e specs write far more (e2e-stack and CI turn it off).
+      WRITE_RATE_LIMIT: ${STACK_WRITE_RATE_LIMIT:-10/60s}
     ports:
       - '127.0.0.1:${STACK_PORT:-3200}:3000'
     depends_on:

@@ -80,10 +80,10 @@
       "inputs": ["default", "^production"]
     },
     "e2e": {
-      "inputs": ["...", "dbServer"]
+      "inputs": ["...", "dbServer", { "env": "BASE_URL" }]
     },
-    "e2e-ci--**/*": {
-      "inputs": ["...", "dbServer"]
+    "e2e-ci--*/**": {
+      "inputs": ["...", "dbServer", { "env": "BASE_URL" }]
     }
   }
 }

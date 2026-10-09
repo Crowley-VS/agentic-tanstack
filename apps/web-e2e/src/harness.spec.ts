@@ -59,9 +59,10 @@ test('an invalid note comes back as a ValidationError, not an error', async ({ r
 
 test('the API refuses a caller without the internal secret (production mode)', async ({
   request,
-}, testInfo) => {
-  const apiURL: unknown = testInfo.config.metadata.apiURL; // playwright.config.mts
-  if (typeof apiURL !== 'string') throw new Error('playwright.config.mts sets metadata.apiURL');
+  apiURL,
+}) => {
+  // against the production images, CI checks it from inside their network (docs/deployment.md)
+  test.skip(!apiURL, 'the private API is out of reach: BASE_URL mode without API_URL');
   expect((await request.get(`${apiURL}/health`)).status()).toBe(200);
   const response = await request.post(`${apiURL}/graphql`, {
     data: { query: '{ apiVersion }' },

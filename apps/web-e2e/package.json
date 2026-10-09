@@ -20,6 +20,29 @@
       "api"
     ],
     "targets": {
+      "e2e-base-url": {
+        "command": "playwright test",
+        "options": {
+          "cwd": "{projectRoot}"
+        },
+        "cache": false
+      },
+      "e2e-stack": {
+        "command": "node tools/e2e-stack.mjs",
+        "options": {
+          "cwd": "{workspaceRoot}"
+        },
+        "cache": false,
+        "dependsOn": [
+          {
+            "projects": [
+              "api",
+              "web"
+            ],
+            "target": "docker-build"
+          }
+        ]
+      },
       "stack-up": {
         "command": "node tools/dev-ports.mjs --exec -- sh -c 'docker compose -p \"$STACK_PROJECT\" -f docker-compose.stack.yml up --detach --wait && echo \"stack: web on http://127.0.0.1:$STACK_PORT\"'",
         "options": {
