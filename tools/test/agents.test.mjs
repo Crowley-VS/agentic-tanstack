@@ -30,6 +30,7 @@ import { formatCheck, looseFiles, steps } from '../check.mjs';
 import {
   catalogVersions,
   collectVersions,
+  dockerfiles,
   LOCKSTEP,
   lockstepMismatches,
   mismatches,
@@ -956,7 +957,79 @@ describe('check-versions', () => {
     const problems = mismatches(collectVersions(bad)).join('\n');
     expect(problems).toContain('node versions disagree');
     expect(problems).toContain('pnpm versions disagree');
-    expect(problems).toContain('apps/api/Dockerfile=11.27.1');
+    expect(problems).toContain('apps/api/Dockerfile:2=11.27.1');
+  });
+
+  it('reads the node image tags and pnpm installs of every Dockerfile, wherever it lives', () => {
+    const pins = {
+      '.prototools': 'node = "24.21.0"\npnpm = "11.27.1"\n',
+      'package.json': { packageManager: 'pnpm@11.27.1+sha512.abc' },
+    };
+    const agree = makeRepo({
+      ...pins,
+      'apps/api/Dockerfile': [
+        '# was node:22.0.0 and pnpm@10.0.0 (comments are skipped)',
+        'FROM node:24.21.0-trixie-slim AS build',
+        'RUN npm install --global pnpm@11.27.1 && pnpm --version',
+        'FROM docker.io/library/node:24.21.0@sha256:0123 AS runtime',
+      ].join('\n'),
+      'docker/web.Dockerfile': 'ARG NODE_IMAGE=node:24.21.0-slim\nFROM ${NODE_IMAGE}\n',
+      '.devcontainer/Dockerfile': 'FROM mcr.microsoft.com/devcontainers/node:24.21.0\n',
+      'tools/Containerfile':
+        'FROM node:${NODE_VERSION}\nRUN corepack prepare pnpm@11.27.1+sha512.abc\n',
+    });
+    const found = collectVersions(agree);
+    expect(found.node).toEqual([
+      ['.prototools', '24.21.0'],
+      ['.devcontainer/Dockerfile:1', '24.21.0'],
+      ['apps/api/Dockerfile:2', '24.21.0'],
+      ['apps/api/Dockerfile:4', '24.21.0'],
+      ['docker/web.Dockerfile:1', '24.21.0'],
+    ]);
+    expect(found.pnpm.map(([file]) => file)).toEqual([
+      '.prototools',
+      'package.json#packageManager',
+      'apps/api/Dockerfile:3',
+      'tools/Containerfile:2',
+    ]);
+    expect(mismatches(found)).toEqual([]);
+
+    // a runtime stage left behind on an older Node, a major-only tag, an older pnpm
+    const drift = makeRepo({
+      ...pins,
+      'apps/api/Dockerfile': 'FROM node:24.21.0-slim AS build\nFROM node:24.20.0-slim\n',
+      'apps/web/Dockerfile.prod': 'FROM node:24-slim\nRUN npm i -g pnpm@11.26.0\n',
+    });
+    expect(mismatches(collectVersions(drift))).toEqual([
+      'node versions disagree: .prototools=24.21.0, apps/api/Dockerfile:1=24.21.0, apps/api/Dockerfile:2=24.20.0, apps/web/Dockerfile.prod:1=24',
+      'pnpm versions disagree: .prototools=11.27.1, package.json#packageManager=11.27.1, apps/web/Dockerfile.prod:2=11.26.0',
+    ]);
+  });
+
+  it('skips ignored Dockerfiles (dependencies, worktrees) and finds new ones before a commit', () => {
+    const root = makeRepo({
+      '.gitignore': 'node_modules/\n.claude/worktrees\n',
+      'node_modules/some-dep/Dockerfile': 'FROM node:18\n',
+      '.claude/worktrees/agent-1/apps/api/Dockerfile': 'FROM node:20.0.0\n',
+      'apps/api/Dockerfile': 'FROM node:24.21.0\n',
+    });
+    expect(dockerfiles(root)).toEqual(['apps/api/Dockerfile']);
+    commitAll(root);
+    writeFile(root, 'apps/web/Dockerfile', 'FROM node:24.21.0\n');
+    expect(dockerfiles(root)).toEqual(['apps/api/Dockerfile', 'apps/web/Dockerfile']);
+  });
+
+  it('looks in apps/<name>/ and packages/<name>/ outside a git repository', () => {
+    const root = tempDir();
+    writeFile(root, 'apps/api/Dockerfile', 'FROM node:24.21.0\n');
+    writeFile(root, 'apps/README.md', 'not a project\n');
+    writeFile(root, 'packages/db/db.Dockerfile', 'FROM postgres:18\n');
+    writeFile(root, 'docker/Dockerfile', 'FROM node:1\n'); // not looked at without git
+    expect(dockerfiles(root)).toEqual(['apps/api/Dockerfile', 'packages/db/db.Dockerfile']);
+  });
+
+  it("holds for this repo's pins", () => {
+    expect(mismatches(collectVersions(REPO))).toEqual([]);
   });
 
   it('reports lockstep catalog entries that disagree, and skips entries not in the catalog', () => {

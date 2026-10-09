@@ -218,6 +218,19 @@
           "{projectRoot}/.output"
         ]
       },
+      "docker-build": {
+        "command": "node tools/dev-ports.mjs --exec -- sh -c 'docker compose -p \"$STACK_PROJECT\" -f docker-compose.stack.yml build web'",
+        "options": {
+          "cwd": "{workspaceRoot}"
+        },
+        "inputs": [
+          "production",
+          "^production",
+          "{projectRoot}/Dockerfile",
+          "{workspaceRoot}/.dockerignore",
+          "{workspaceRoot}/docker-compose.stack.yml"
+        ]
+      },
       "serve": {
         "command": "node ../../tools/dev-ports.mjs --exec -- sh -c 'PORT=$WEB_PORT NITRO_HOST=${NITRO_HOST:-127.0.0.1} exec node .output/server/index.mjs'",
         "options": {

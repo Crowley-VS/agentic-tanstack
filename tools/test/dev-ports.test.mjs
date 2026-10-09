@@ -28,7 +28,9 @@ const CLEAN_ENV = Object.fromEntries(
         'DB_STUDIO_PORT',
         'WEB_E2E_PORT',
         'API_E2E_PORT',
+        'STACK_PORT',
         'COMPOSE_PROJECT_NAME',
+        'STACK_PROJECT',
       ].includes(k),
   ),
 );
@@ -54,9 +56,12 @@ describe('computePorts', () => {
       studio: 4983, // drizzle-kit studio's own default
       webE2e: 3100,
       apiE2e: 4100,
+      stack: 3200,
     });
     expect(info.composeProject).toBe('my-app');
+    expect(info.stackProject).toBe('my-app-stack');
     expect(info.urls.web).toBe('http://localhost:3000');
+    expect(info.urls.stack).toBe('http://127.0.0.1:3200');
     expect(info.databaseUrls.dev).toBe('postgres://postgres:postgres@127.0.0.1:5432/app');
   });
 
@@ -69,6 +74,8 @@ describe('computePorts', () => {
     expect(a.ports.apiE2e).toBeLessThan(60000);
     expect(a.ports.api).toBe(a.ports.web + 1);
     expect(a.ports.studio).toBe(a.ports.web + 3); // never drizzle-kit's default 4983
+    expect(a.ports.stack).toBe(a.ports.web + 20);
+    expect(a.ports.stack).toBeLessThan(a.ports.web + 100); // inside the worktree's block
     expect(a.composeProject).toBe(`a-${pathHash('/work/my-app/.claude/worktrees/a')}`);
     expect(a.ownsComposeProject).toBe(true);
     expect(b.composeProject).not.toBe(a.composeProject);
@@ -83,8 +90,33 @@ describe('computePorts', () => {
     expect(info.ports.db).toBe(6543);
     expect(info.ports.studio).toBe(5983);
     expect(info.composeProject).toBe('ci');
+    expect(info.stackProject).toBe('ci-stack');
     expect(info.ownsComposeProject).toBe(false); // db-up labels nothing as this checkout's
+    expect(info.ownsStackProject).toBe(false); // nor does stack-down remove its stack
     expect(info.databaseUrls.e2e).toBe('postgres://postgres:postgres@127.0.0.1:6543/e2e');
+  });
+
+  it("owns only the checkout's own stack project, or in CI the one STACK_PROJECT names", () => {
+    const checkout = { root: '/work/my-app', primary: true };
+    const owns = (env) => computePorts(checkout, env).ownsStackProject;
+    expect(owns({})).toBe(true);
+    expect(owns({ STACK_PROJECT: 'my-app-stack' })).toBe(true);
+    expect(owns({ COMPOSE_PROJECT_NAME: 'my-app' })).toBe(true);
+    // named elsewhere: maybe another checkout's stack, which `pnpm teardown` here must not remove
+    expect(computePorts(checkout, { STACK_PROJECT: 'theirs' }).stackProject).toBe('theirs');
+    expect(owns({ STACK_PROJECT: 'theirs' })).toBe(false);
+    expect(owns({ COMPOSE_PROJECT_NAME: 'shared' })).toBe(false);
+    // a CI runner holds one checkout: the project its workflow names is the run's own
+    expect(owns({ CI: 'true', STACK_PROJECT: 'acme-app-stack' })).toBe(true);
+    expect(owns({ CI: 'false', STACK_PROJECT: 'acme-app-stack' })).toBe(false);
+    expect(owns({ CI: '0', STACK_PROJECT: 'acme-app-stack' })).toBe(false);
+    expect(owns({ CI: 'true', COMPOSE_PROJECT_NAME: 'shared' })).toBe(false);
+    const worktree = { root: '/work/my-app/.claude/worktrees/a', primary: false };
+    const own = computePorts(worktree);
+    expect(own.stackProject).toBe(`${own.composeProject}-stack`);
+    expect(own.ownsStackProject).toBe(true);
+    // the primary checkout's stack, named from a worktree, is not the worktree's
+    expect(computePorts(worktree, { STACK_PROJECT: 'my-app-stack' }).ownsStackProject).toBe(false);
   });
 
   it('gives every worktree its own database names, even on one shared Postgres server', () => {
@@ -265,9 +297,26 @@ describe('toEnv', () => {
       API_PORT: '4000',
       DB_PORT: '5432',
       DB_STUDIO_PORT: '4983',
+      STACK_PORT: '3200',
       API_HOST: 'localhost',
       COMPOSE_PROJECT_NAME: 'my-app',
+      STACK_PROJECT: 'my-app-stack',
     });
     expect(Object.values(env).every((v) => typeof v === 'string')).toBe(true);
+  });
+
+  it("labels the stack with this checkout only when it is the checkout's own", () => {
+    const checkout = { root: '/work/my-app', primary: true, commonDir: '/work/my-app/.git' };
+    expect(toEnv(computePorts(checkout))).toMatchObject({
+      DEV_CHECKOUT_ROOT: '/work/my-app',
+      DEV_CHECKOUT_GIT_COMMON_DIR: '/work/my-app/.git',
+    });
+    // a project STACK_PROJECT or COMPOSE_PROJECT_NAME names may be another checkout's: never
+    // pruned with this one
+    for (const env of [{ COMPOSE_PROJECT_NAME: 'shared' }, { STACK_PROJECT: 'theirs' }])
+      expect(toEnv(computePorts(checkout, env))).toMatchObject({
+        DEV_CHECKOUT_ROOT: '',
+        DEV_CHECKOUT_GIT_COMMON_DIR: '',
+      });
   });
 });

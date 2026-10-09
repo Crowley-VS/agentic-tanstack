@@ -3,7 +3,7 @@
 // running in them) never fight over ports or share a database.
 //
 //   primary checkout  -> fixed, memorable defaults (web 3000, api 4000, db 5432, Drizzle Studio
-//                        4983) and databases app / e2e
+//                        4983, the production images' stack 3200) and databases app / e2e
 //   linked worktree   -> its own block of 100 ports in 20000-59999, recorded in
 //                        <git common dir>/dev-ports.json: the block its path hashes to, or the
 //                        next free one, so no two worktrees of this repository share a block;
@@ -11,8 +11,9 @@
 //                        app_<hash> / e2e_<hash>, which stay apart even when an override
 //                        points several worktrees at one Postgres server
 //   env overrides     -> WEB_PORT, API_PORT, DB_PORT, DB_STUDIO_PORT, WEB_E2E_PORT, API_E2E_PORT,
-//                        COMPOSE_PROJECT_NAME (`ownsComposeProject` is false when it names a
-//                        project other than the checkout's own)
+//                        STACK_PORT, COMPOSE_PROJECT_NAME, STACK_PROJECT (`ownsComposeProject` /
+//                        `ownsStackProject` are false when they name a project other than the
+//                        checkout's own)
 //   test database URL -> the server's `postgres` maintenance database, for tests that create
 //                        databases of their own
 //
@@ -38,8 +39,17 @@ import { fileURLToPath } from 'node:url';
 
 const BLOCKS = 400; // blocks of 100 ports in 20000-59999
 const REGISTRY = 'dev-ports.json';
-const PRIMARY = { web: 3000, api: 4000, db: 5432, studio: 4983, webE2e: 3100, apiE2e: 4100 };
-const OFFSETS = { web: 0, api: 1, db: 2, studio: 3, webE2e: 10, apiE2e: 11 };
+// stack: the web server of the production images' local stack (docker-compose.stack.yml)
+const PRIMARY = {
+  web: 3000,
+  api: 4000,
+  db: 5432,
+  studio: 4983,
+  webE2e: 3100,
+  apiE2e: 4100,
+  stack: 3200,
+};
+const OFFSETS = { web: 0, api: 1, db: 2, studio: 3, webE2e: 10, apiE2e: 11, stack: 20 };
 const ENV_KEYS = {
   web: 'WEB_PORT',
   api: 'API_PORT',
@@ -47,7 +57,11 @@ const ENV_KEYS = {
   studio: 'DB_STUDIO_PORT',
   webE2e: 'WEB_E2E_PORT',
   apiE2e: 'API_E2E_PORT',
+  stack: 'STACK_PORT',
 };
+
+/** An env flag that is on: set, and neither `0` nor `false`. */
+const enabled = (value) => Boolean(value) && value !== '0' && value !== 'false';
 
 /**
  * Detect the checkout root, whether it is the primary checkout (not a linked worktree), and the
@@ -170,6 +184,7 @@ export function computePorts({ root, primary, block, commonDir }, env = {}) {
       .replace(/^-+|-+$/g, '') || 'app';
   const ownProject = primary ? slug : `${slug}-${hash}`;
   const composeProject = env.COMPOSE_PROJECT_NAME || ownProject;
+  const stackProject = env.STACK_PROJECT || `${composeProject}-stack`;
   const dbUrl = (db) => `postgres://postgres:postgres@127.0.0.1:${ports.db}/${db}`;
   const dbName = (name) => (primary ? name : `${name}_${hash}`);
   return {
@@ -180,12 +195,22 @@ export function computePorts({ root, primary, block, commonDir }, env = {}) {
     // false when COMPOSE_PROJECT_NAME names another project (one server shared by several
     // checkouts, say): db-up then labels nothing as this checkout's, so `prune` never removes it
     ownsComposeProject: composeProject === ownProject,
+    // the compose project of the production images' stack (docker-compose.stack.yml)
+    stackProject,
+    // false when STACK_PROJECT or COMPOSE_PROJECT_NAME names a project other than the checkout's
+    // own, which may be another checkout's: stack-down then leaves it, and nothing labels it as
+    // this checkout's. In CI the project STACK_PROJECT names is the run's own (one checkout per
+    // runner)
+    ownsStackProject:
+      stackProject === `${ownProject}-stack` || (enabled(env.CI) && Boolean(env.STACK_PROJECT)),
     ports,
     urls: {
       web: `http://localhost:${ports.web}`,
       api: `http://localhost:${ports.api}/graphql`,
       webE2e: `http://localhost:${ports.webE2e}`,
       apiE2e: `http://localhost:${ports.apiE2e}/graphql`,
+      // published on 127.0.0.1 only: `localhost` may try ::1 first
+      stack: `http://127.0.0.1:${ports.stack}`,
     },
     databaseUrls: {
       dev: dbUrl(dbName('app')),
@@ -197,6 +222,9 @@ export function computePorts({ root, primary, block, commonDir }, env = {}) {
 
 /** Environment variables handed to dev/e2e processes. */
 export function toEnv(info) {
+  // the labels docker-compose.stack.yml puts on what it creates (packages/db/scripts/orphans.mjs
+  // reads them), only for this checkout's own stack (db-up labels docker-compose.yml's itself)
+  const own = info.ownsStackProject === true;
   return {
     WEB_PORT: String(info.ports.web),
     API_PORT: String(info.ports.api),
@@ -204,8 +232,12 @@ export function toEnv(info) {
     DB_STUDIO_PORT: String(info.ports.studio),
     WEB_E2E_PORT: String(info.ports.webE2e),
     API_E2E_PORT: String(info.ports.apiE2e),
+    STACK_PORT: String(info.ports.stack),
     API_HOST: 'localhost',
     COMPOSE_PROJECT_NAME: info.composeProject,
+    STACK_PROJECT: info.stackProject,
+    DEV_CHECKOUT_ROOT: (own && info.root) || '',
+    DEV_CHECKOUT_GIT_COMMON_DIR: (own && info.commonDir) || '',
     DATABASE_URL: info.databaseUrls.dev,
     E2E_DATABASE_URL: info.databaseUrls.e2e,
     TEST_DATABASE_URL: info.databaseUrls.test,
@@ -269,6 +301,9 @@ function main(argv) {
       console.log(`  db studio  https://local.drizzle.studio?port=${info.ports.studio}`);
       console.log(`  e2e web    ${info.urls.webE2e}`);
       console.log(`  e2e api    ${info.urls.apiE2e}`);
+      console.log(
+        `  stack web  ${info.urls.stack} (production images: pnpm nx run web-e2e:stack-up)`,
+      );
     }
   }
 }

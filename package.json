@@ -9,7 +9,7 @@
     "dev": "nx run-many -t dev -p api web",
     "format": "oxfmt",
     "ports": "node tools/dev-ports.mjs --print",
-    "teardown": "nx daemon --stop && node packages/db/scripts/db-up.mjs down",
+    "teardown": "node tools/stack-down.mjs; s=$?; nx daemon --stop && node packages/db/scripts/db-up.mjs down && exit $s",
     "prune:orphans": "node tools/nx-daemons.mjs prune; s=$?; node packages/db/scripts/db-up.mjs prune && exit $s",
     "regen": "node tools/agents.mjs regen",
     "agents:sync": "node tools/agents.mjs sync",

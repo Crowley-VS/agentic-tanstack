@@ -1,0 +1,40 @@
+# The images' build context is the repository root (apps/*/Dockerfile). Send only what a build
+# reads: never this machine's dependencies, builds, caches or secrets. A file listed here also
+# cannot invalidate the layers that copy the sources. Keep it in step with .gitignore, and keep
+# every workspace package's package.json (the frozen install needs them all).
+
+# Dependencies and builds: the image installs and builds its own.
+**/node_modules
+**/dist
+**/.output
+**/.nitro
+**/.tanstack
+**/.vite
+**/out-tsc
+**/coverage
+**/test-output
+**/tmp
+**/*.tsbuildinfo
+apps/api/migrations
+
+# Secrets: only .env.example is committed.
+**/.env
+**/.env.*
+
+# Git, Nx's cache, agents' worktrees and local files, and what no build reads. Not all of
+# .agents: Nx evaluates every project's configs, and eslint.config.mjs reads
+# .agents/generated.json.
+.git
+.nx
+.claude
+.agents/*
+!.agents/generated.json
+.github
+.playwright-cli
+docs
+**/*.md
+
+# The image definitions: editing one must not invalidate the copied sources.
+**/Dockerfile
+.dockerignore
+docker-compose*.yml

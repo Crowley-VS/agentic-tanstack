@@ -84,6 +84,10 @@
       "Bash(pnpm nx run web-e2e:eslint)",
       "Bash(pnpm nx run web-e2e:typecheck)",
       "Bash(pnpm nx e2e web-e2e)",
+      "Bash(pnpm nx run api:docker-build)",
+      "Bash(pnpm nx run web:docker-build)",
+      "Bash(pnpm nx run web-e2e:stack-up)",
+      "Bash(pnpm nx run web-e2e:stack-down)",
       "Bash(pnpm dev)"
     ],
     "ask": [

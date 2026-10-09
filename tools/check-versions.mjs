@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // The Node and pnpm versions are pinned in several places (.prototools, .node-version,
-// package.json#packageManager, the ARGs of apps/*/Dockerfile and packages/*/Dockerfile).
-// They must agree, or pnpm silently downloads a different version (breaking offline Docker
-// installs) and "works on my machine" bugs appear. Bump them together; this check fails when
-// they disagree. It also checks the catalog packages that must share one version (LOCKSTEP).
+// package.json#packageManager, and every Dockerfile: its `node:<version>` images, its
+// `pnpm@<version>` installs, its NODE_VERSION / PNPM_VERSION ARGs). They must agree, or pnpm
+// silently downloads a different version (breaking offline Docker installs) and "works on my
+// machine" bugs appear. Bump them together; this check fails when they disagree. It also checks
+// the catalog packages that must share one version (LOCKSTEP).
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -57,6 +59,59 @@ export function lockstepMismatches(catalog, lockstep = LOCKSTEP) {
   return problems;
 }
 
+/** `Dockerfile`, `Dockerfile.<x>`, `<x>.Dockerfile`, and the same for `Containerfile`. */
+const DOCKERFILE = /^(?:Dockerfile|Containerfile)(?:\..+)?$|\.(?:Dockerfile|Containerfile)$/i;
+
+/**
+ * The repository's Dockerfiles, tracked or new (not ignored: no dependency's or worktree's), as
+ * paths relative to `root`. Outside a git repository: apps/<name>/ and packages/<name>/ only.
+ */
+export function dockerfiles(root = ROOT) {
+  let candidates;
+  try {
+    candidates = execFileSync(
+      'git',
+      ['ls-files', '-co', '--exclude-standard', '-z', '--', '*ockerfile*', '*ontainerfile*'],
+      { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).split('\0');
+  } catch {
+    const subdirs = (dir) =>
+      existsSync(join(root, dir))
+        ? readdirSync(join(root, dir), { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => `${dir}/${entry.name}`)
+        : [];
+    candidates = ['apps', 'packages']
+      .flatMap(subdirs)
+      .flatMap((dir) => readdirSync(join(root, dir)).map((name) => `${dir}/${name}`));
+  }
+  return [...new Set(candidates)]
+    .filter((file) => DOCKERFILE.test(basename(file)) && existsSync(join(root, file)))
+    .toSorted((a, b) => a.localeCompare(b));
+}
+
+/**
+ * The Node and pnpm versions a Dockerfile pins, as { node: [[line, version]], pnpm: [...] }:
+ * `node:<version>` image tags (FROM lines, ARG defaults; the version is the tag up to its variant,
+ * `24.21.0` of `node:24.21.0-trixie-slim`), `pnpm@<version>` (npm install -g, corepack), and the
+ * NODE_VERSION / PNPM_VERSION ARGs. Comment lines and `${…}` references are skipped.
+ */
+export function dockerfileVersions(text) {
+  const found = { node: [], pnpm: [] };
+  const patterns = {
+    node: [/(?:^|[\s=/])node:(\d[\w.]*?)(?=[-@\s]|$)/g, /^\s*ARG\s+NODE_VERSION=(\d\S*)/g],
+    // not `+`: `pnpm@11.27.1+sha512.…` (corepack) pins 11.27.1, like package.json#packageManager
+    pnpm: [/(?:^|[\s=/])pnpm@(\d[\w.-]*)/g, /^\s*ARG\s+PNPM_VERSION=(\d\S*)/g],
+  };
+  text.split(/\r?\n/).forEach((line, i) => {
+    if (/^\s*#/.test(line)) return;
+    for (const [tool, regexes] of Object.entries(patterns))
+      for (const regex of regexes)
+        for (const match of line.matchAll(regex)) found[tool].push([i + 1, match[1]]);
+  });
+  return found;
+}
+
 export function collectVersions(root = ROOT) {
   const found = { node: [], pnpm: [] };
   const read = (p) => readFileSync(join(root, p), 'utf8');
@@ -74,17 +129,10 @@ export function collectVersions(root = ROOT) {
   const pm = pkg.packageManager?.match(/^pnpm@([^+]+)/)?.[1];
   if (pm) found.pnpm.push(['package.json#packageManager', pm]);
 
-  for (const dir of ['apps', 'packages']) {
-    if (!existsSync(join(root, dir))) continue;
-    for (const name of readdirSync(join(root, dir))) {
-      const file = join(dir, name, 'Dockerfile');
-      if (!existsSync(join(root, file))) continue;
-      const text = read(file);
-      const node = text.match(/^ARG NODE_VERSION=(\S+)/m)?.[1];
-      const pnpm = text.match(/^ARG PNPM_VERSION=(\S+)/m)?.[1];
-      if (node) found.node.push([file, node]);
-      if (pnpm) found.pnpm.push([file, pnpm]);
-    }
+  for (const file of dockerfiles(root)) {
+    const pins = dockerfileVersions(read(file));
+    for (const tool of ['node', 'pnpm'])
+      for (const [line, version] of pins[tool]) found[tool].push([`${file}:${line}`, version]);
   }
   return found;
 }

@@ -25,7 +25,8 @@ const tmp = mkdtempSync(join(tmpdir(), 'db-up-test-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 // FAKE_DOCKER_UP: the replies to successive `compose up` calls, [{ stderr, status }] (default: ok)
-// FAKE_DOCKER_LS: what `docker <kind> ls` prints, { container, volume, network } (default: nothing)
+// FAKE_DOCKER_LS: what `docker <kind> ls` prints, { container, volume, network, image }, and
+//   `docker image inspect`, { inspect } (default: nothing)
 // FAKE_DOCKER_FAIL: stderr of a failure for every call (e.g. the Docker daemon is not running)
 // FAKE_DOCKER_RM_FAIL: the same for removals only
 // FAKE_DOCKER_ENV: a file each `compose` call appends the checkout labels' values to
@@ -50,6 +51,7 @@ if (args[0] === 'compose' && process.env.FAKE_DOCKER_ENV) {
   appendFileSync(process.env.FAKE_DOCKER_ENV, JSON.stringify({ root, commonDir }) + '\\n');
 }
 if (args[1] === 'ls') process.stdout.write(JSON.parse(ls)[args[0]] ?? '');
+if (args[0] === 'image' && args[1] === 'inspect') process.stdout.write(JSON.parse(ls).inspect ?? '[]');
 if (args.includes('up')) {
   const n = readFileSync(log, 'utf8').split('\\n').filter((l) => l.split(' ').includes('up')).length;
   const { stderr = '', status = 0 } = JSON.parse(up)[n - 1] ?? {};
@@ -67,10 +69,11 @@ chmodSync(join(BIN, 'docker'), 0o755);
 const COMPOSE = `compose -p fake-project -f ${join(tmp, 'docker-compose.yml')}`;
 const UP = `${COMPOSE} up -d --wait`;
 /**
- * The listings db-up reads before it starts a server: this repository's labeled containers and
- * volumes (leftovers of deleted checkouts?), and, when some are, everything of their projects.
+ * The listings db-up reads before it starts a server: this repository's labeled containers,
+ * volumes and images (leftovers of deleted checkouts?), and, when some are, everything of their
+ * projects.
  */
-const LISTS = ['container ls', 'volume ls'];
+const LISTS = ['container ls', 'volume ls', 'image ls'];
 const ORPHAN_LISTS = ['container ls', 'volume ls', 'network ls'];
 const REPO = join(tmp, 'fake-repo', '.git'); // the fake checkout's git common dir
 
@@ -219,9 +222,9 @@ describe('dbUp', () => {
     });
     expect(error).toMatch(/does not reach it/); // the fake server never answers
     // Docker picks this repository's labeled resources first, then lists the candidates' projects
-    for (const call of raw.slice(0, 2))
-      expect(call).toContain(` --filter label=dev-checkout.git-common-dir=${REPO} `);
-    for (const call of raw.slice(2, 5))
+    for (const call of raw.slice(0, 3))
+      expect(call).toMatch(new RegExp(` --filter label=dev-checkout.git-common-dir=${REPO}( |$)`));
+    for (const call of raw.slice(3, 6))
       expect(call).toContain(' --filter label=com.docker.compose.project ');
     expect(calls).toEqual([
       ...LISTS,
@@ -394,6 +397,30 @@ describe('down and prune', () => {
     expect(off.status, off.stderr).toBe(0);
     expect(off.stdout).toContain('Cannot connect to the Docker daemon');
     expect(off.stdout).toContain(': no containers or volumes to prune');
+  }, 30_000);
+
+  it('prune removes the images of a deleted checkout’s stack, by name, and an untagged one by id', () => {
+    const { commonDir } = resolveDb();
+    const gone = join(tmp, 'deleted-worktree');
+    const labels = (root: string) => ({
+      'dev-checkout.git-common-dir': commonDir,
+      'dev-checkout.root': root,
+      'com.docker.compose.project': 'gone-stack',
+    });
+    const inspect = [
+      { Id: 'sha256:aaa', RepoTags: ['gone-stack-api:latest'], Config: { Labels: labels(gone) } },
+      { Id: 'sha256:bbb', RepoTags: [], Config: { Labels: labels(gone) } }, // an earlier build
+      // this checkout's own (it exists): never a leftover
+      { Id: 'sha256:ccc', RepoTags: ['live-stack-web:latest'], Config: { Labels: labels(tmp) } },
+    ];
+    const ls = { image: 'sha256:aaa\nsha256:bbb\nsha256:ccc\n', inspect: JSON.stringify(inspect) };
+    const res = cli('prune', { FAKE_DOCKER_LS: JSON.stringify(ls) });
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.calls).toContain('image inspect sha256:aaa sha256:bbb sha256:ccc');
+    expect(res.calls.at(-1)).toBe('image rm gone-stack-api:latest sha256:bbb');
+    expect(res.stdout).toBe(
+      `[db-up] removed 2 images of deleted checkouts:\n[db-up]   gone-stack (${gone})\n`,
+    );
   }, 30_000);
 
   it('prune counts what another prune removed first as removed, and reports a real refusal', () => {

@@ -15,8 +15,10 @@ are added.
 
 The health check is `/api/health`; `pnpm ports` prints the URLs. A production server needs
 `INTERNAL_API_SECRET`, `API_HOST` and `API_PORT` (`web:serve` takes the last two from this
-checkout's ports; see the BFF below). Writes are rate-limited per client IP, in `pnpm dev` too
-(below).
+checkout's ports; see the BFF below). `web:serve` listens on 127.0.0.1 unless `NITRO_HOST` says
+otherwise (`NITRO_HOST=0.0.0.0` to reach it from another device; `HOST` is ignored there); in a
+container (`docs/deployment.md`) Nitro listens on every interface. Writes are rate-limited per
+client IP, in `pnpm dev` too (below).
 
 ## Operations are typed by codegen
 
