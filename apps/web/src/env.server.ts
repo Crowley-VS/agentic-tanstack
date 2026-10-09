@@ -35,6 +35,18 @@ const RateLimit = z
 /** A write rate limit in force: `limit` writes per client per window of `windowMs`. */
 export type RateLimit = NonNullable<z.infer<typeof RateLimit>>;
 
+/**
+ * A request header's name (in lower case), or empty for none. Only an HTTP token: Headers.get()
+ * throws on anything else, so a typo (`X-Real-IP:`) would fail every request that reads it while
+ * the healthcheck stayed green; refused here, it fails /api/health (503) instead.
+ */
+const headerName = (variable: string) =>
+  z
+    .string()
+    .trim()
+    .toLowerCase()
+    .regex(/^[\w!#$%&'*+.^`|~-]*$/, `${variable} must be a header name, or empty`);
+
 const ServerEnv = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -54,7 +66,17 @@ const ServerEnv = z
      * The request header in which the proxy in front of this server names the browser's IP
      * (server/client-ip.server.ts). Empty: no proxy in front, the socket's address is the client's.
      */
-    REAL_IP_HEADER: z.string().trim().toLowerCase().default('x-real-ip'),
+    REAL_IP_HEADER: headerName('REAL_IP_HEADER').default('x-real-ip'),
+    /**
+     * The request header in which the proxy in front names its id for the request (Railway's edge:
+     * x-railway-request-id, the `requestId` of its HTTP logs), used as this request's id in the
+     * logs of both servers (server/request-context.server.ts). Empty: none.
+     */
+    EDGE_REQUEST_ID_HEADER: headerName('EDGE_REQUEST_ID_HEADER').default('x-railway-request-id'),
+    /** The deploy's version (the image bakes it in): in /api/health and every JSON log line. */
+    APP_VERSION: z.string().trim().min(1).optional(),
+    /** `json` or `text`; by default JSON in production, text elsewhere (server/log.server.ts). */
+    LOG_FORMAT: z.enum(['json', 'text']).optional(),
     /**
      * Writes (root mutation fields) per client through the BFF (server/rate-limit.server.ts), on
      * by default. `prefault`, not `default`: the default value goes through the transform too.

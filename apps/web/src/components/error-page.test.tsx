@@ -28,9 +28,11 @@ describe('ErrorPage', () => {
     expect(getRouter().options.defaultErrorComponent).toBe(ErrorPage);
   });
 
-  it('logs the error on the server, with its cause', () => {
+  it('logs the error on the server, with its stack', () => {
     render(secretDetail);
-    expect(console.error).toHaveBeenCalledWith('[web] SSR: a page failed to load', secretDetail);
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[web\] SSR: a page failed to load\nError: connect ECONNREFUSED/),
+    );
   });
 
   it('logs nothing in the browser, whose console already shows the error', () => {

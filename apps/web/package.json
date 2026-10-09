@@ -5,6 +5,7 @@
   "description": "The web app: TanStack Start (SSR) on Nitro, with a same-origin BFF proxy to the private GraphQL API.",
   "type": "module",
   "dependencies": {
+    "@acme/logger": "workspace:*",
     "@acme/ui": "workspace:*",
     "@acme/validators": "workspace:*",
     "@tanstack/react-query": "catalog:",

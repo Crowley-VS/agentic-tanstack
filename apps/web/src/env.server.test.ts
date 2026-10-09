@@ -22,6 +22,7 @@ describe('serverEnv', () => {
       API_PORT: 4000,
       INTERNAL_API_SECRET: undefined,
       REAL_IP_HEADER: 'x-real-ip',
+      EDGE_REQUEST_ID_HEADER: 'x-railway-request-id',
       writeRateLimit: { limit: 10, windowMs: 60_000 },
     });
   });
@@ -110,6 +111,25 @@ describe('serverEnv', () => {
     );
     expect(serverEnv({ REAL_IP_HEADER: '' }).REAL_IP_HEADER).toBe('');
   });
+
+  it("reads the edge's request id header in lower case; empty means none", () => {
+    expect(serverEnv({ EDGE_REQUEST_ID_HEADER: ' X-Amzn-Trace-Id ' }).EDGE_REQUEST_ID_HEADER).toBe(
+      'x-amzn-trace-id',
+    );
+    expect(serverEnv({ EDGE_REQUEST_ID_HEADER: '' }).EDGE_REQUEST_ID_HEADER).toBe('');
+  });
+
+  it.each(['REAL_IP_HEADER', 'EDGE_REQUEST_ID_HEADER'])(
+    'refuses a %s that is no header name: /api/health answers 503, not every request 500',
+    (variable) => {
+      // Headers.get() throws on these: they would fail every request that reads the header
+      for (const value of ['X-Real-IP:', 'x real ip', 'x-réal-ip', 'x-real-ip\u0000'])
+        expect(() => serverEnv({ [variable]: value })).toThrow(
+          `${variable}: ${variable} must be a header name, or empty`,
+        );
+      expect(() => serverEnv({ [variable]: "x-a_b.c!#$%&'*+^`|~1" })).not.toThrow();
+    },
+  );
 });
 
 const url = (API_HOST: string) => internalApiUrl(serverEnv({ API_HOST, API_PORT: '4100' }));

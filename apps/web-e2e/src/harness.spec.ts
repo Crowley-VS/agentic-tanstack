@@ -1,12 +1,31 @@
-// The harness itself: the production web server's health check answers, and the BFF carries a
-// write and a read to the API, which runs in production mode (it refuses a caller without the
-// internal secret). The pages: board.spec.ts.
+// The harness itself: the production web server's health check answers with its version, every
+// answer carries a request id, and the BFF carries a write and a read to the API, which runs in
+// production mode (it refuses a caller without the internal secret). The pages: board.spec.ts.
 import { expect, gql, test, uniqueTitle } from './fixtures';
 
-test('the web health check answers ok', async ({ request }) => {
+/** A request id the web server takes or makes (apps/web/src/server/request-context.server.ts). */
+const REQUEST_ID = /^[\w.:-]{1,128}$/;
+const UUID = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/;
+
+test('the web health check answers ok, with the deployed version', async ({ request }) => {
   const response = await request.get('/api/health');
   expect(response.status()).toBe(200);
-  expect(await response.json()).toEqual({ status: 'ok' });
+  expect(await response.json()).toEqual({ status: 'ok', version: expect.any(String) });
+});
+
+test("every answer carries its request id: the edge's when it sent one", async ({
+  request,
+  apiURL,
+}) => {
+  // Railway's edge names each request in x-railway-request-id; the web server's and the API's log
+  // lines for it carry that id. Without API_URL the stack may be a deploy behind such an edge,
+  // which may put its own id in that header: then any id will do.
+  const behindNoEdge = apiURL !== undefined;
+  const page = await request.get('/', { headers: { 'x-railway-request-id': 'e2e-edge-1' } });
+  expect(page.status()).toBe(200);
+  expect(page.headers()['x-request-id']).toMatch(behindNoEdge ? /^e2e-edge-1$/ : REQUEST_ID);
+  const bff = await request.post('/api/graphql', { data: { query: '{ readOnly }' } });
+  expect(bff.headers()['x-request-id']).toMatch(behindNoEdge ? UUID : REQUEST_ID);
 });
 
 test('a note created through the BFF reads back by id', async ({ request, createNote }) => {

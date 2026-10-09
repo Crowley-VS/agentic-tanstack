@@ -5,6 +5,7 @@ import { useQueryErrorResetBoundary } from '@tanstack/react-query';
 import { type ErrorComponentProps, useHydrated, useRouter } from '@tanstack/react-router';
 import { useEffect } from 'react';
 import { API_TIMED_OUT, API_UNAVAILABLE } from '../lib/graphql/errors';
+import { logServerError } from '../lib/log';
 
 /**
  * What a failed page tells the visitor, decided by the error's message alone: an SSR error
@@ -28,8 +29,9 @@ export function ErrorPage({ error }: Pick<ErrorComponentProps, 'error'>) {
   const queryErrorResetBoundary = useQueryErrorResetBoundary();
   // a click before hydration would be lost: the button waits for React (docs/web.md)
   const hydrated = useHydrated();
-  // render runs once per failed server render; the browser's console already shows its own
-  if (router.isServer) console.error('[web] SSR: a page failed to load', error);
+  // render runs once per failed server render (logged with the request id); the browser's console
+  // already shows its own
+  if (router.isServer) logServerError('SSR: a page failed to load', error);
   // a query that failed while rendering may fetch again on the next render
   useEffect(() => queryErrorResetBoundary.reset(), [queryErrorResetBoundary]);
   return (

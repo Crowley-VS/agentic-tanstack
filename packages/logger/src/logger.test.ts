@@ -26,6 +26,17 @@ const request = {
   requestId: 'req-1',
 };
 
+/** The messages down a JSON line's `err`, cause by cause. */
+function causeChain(line: unknown): unknown[] {
+  const messages: unknown[] = [];
+  let at: unknown = Reflect.get(Object(line), 'err');
+  while (at instanceof Object) {
+    messages.push(Reflect.get(at, 'message'));
+    at = Reflect.get(at, 'cause');
+  }
+  return messages;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -98,6 +109,45 @@ describe('JSON lines (production)', () => {
         stack: expect.stringContaining('TypeError: fetch failed\n    at '),
         cause: { name: 'Error', message: 'connect ECONNREFUSED 127.0.0.1:4000' },
       },
+    });
+  });
+
+  it("follows a GraphQLError's originalError to the root cause, writing the shared stack once", () => {
+    const { log, parsed } = collect('json');
+    const driver = new Error('connect ECONNREFUSED 127.0.0.1:5432');
+    const query = new Error('Failed query: select 1', { cause: driver });
+    query.name = 'DrizzleQueryError';
+    // as graphql-js wraps a resolver's error: on a non-enumerable originalError, its stack copied
+    const wrapper = new Error(query.message);
+    wrapper.name = 'GraphQLError';
+    Object.defineProperty(wrapper, 'originalError', { value: query, enumerable: false });
+    wrapper.stack = query.stack;
+    log.error(wrapper.message, { err: wrapper });
+    expect(parsed()[0]).toHaveProperty('err', {
+      name: 'GraphQLError',
+      message: 'Failed query: select 1',
+      cause: {
+        name: 'DrizzleQueryError',
+        message: 'Failed query: select 1',
+        stack: query.stack,
+        cause: { name: 'Error', message: driver.message, stack: driver.stack },
+      },
+    });
+  });
+
+  it('writes at most three causes, and an error that wraps no Error without one', () => {
+    const { log, parsed } = collect('json');
+    let err = new Error('5');
+    for (const n of [4, 3, 2, 1]) err = new Error(String(n), { cause: err });
+    const odd = new Error('odd');
+    Object.defineProperty(odd, 'originalError', { value: 'not an error' });
+    log.error('deep', { err });
+    log.error('odd', { err: odd });
+    expect(causeChain(parsed()[0])).toEqual(['1', '2', '3', '4']);
+    expect(parsed()[1]).toHaveProperty('err', {
+      name: 'Error',
+      message: 'odd',
+      stack: expect.any(String),
     });
   });
 
