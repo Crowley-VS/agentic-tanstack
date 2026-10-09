@@ -14,13 +14,16 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * Catalog entries (pnpm-workspace.yaml) that must name the same version as the first of their
  * pair, because one depends on, or exactly peers, the other. `@playwright/test` brings its own
  * `playwright`: apart, two playwright-cores need two browser revisions, and the one
- * `playwright install` fetches is not the one Vitest Browser Mode launches. Nx plugins (`@nx/*`)
- * are released with `nx` and must match it. `<scope>/*` stands for every catalog entry of that
- * scope. Entries missing from the catalog are skipped.
+ * `playwright install` fetches is not the one Vitest Browser Mode launches. `@tailwindcss/vite`
+ * depends on its exact `tailwindcss`: apart, the plugin compiles with one and the theme's
+ * `@import 'tailwindcss'` loads the other. Nx plugins (`@nx/*`) are released with `nx` and must
+ * match it. `<scope>/*` stands for every catalog entry of that scope. Entries missing from the
+ * catalog are skipped.
  */
 export const LOCKSTEP = [
   ['@playwright/test', 'playwright'],
   ['vitest', '@vitest/browser-playwright'],
+  ['tailwindcss', '@tailwindcss/vite'],
   ['nx', '@nx/*'],
 ];
 
@@ -28,8 +31,11 @@ export const LOCKSTEP = [
 export function catalogVersions(root = ROOT) {
   const file = join(root, 'pnpm-workspace.yaml');
   if (!existsSync(file)) return {};
-  const text = readFileSync(file, 'utf8').replaceAll('\r\n', '\n');
-  const block = text.match(/^catalog:\n((?:[ \t]+.*\n|[ \t]*\n)*)/m)?.[1] ?? '';
+  // a final newline, so the last entry ends like the others
+  const text = `${readFileSync(file, 'utf8').replaceAll('\r\n', '\n')}\n`;
+  // the block runs over indented lines, blank lines and comment lines (a comment may start at
+  // column 0 inside a YAML mapping)
+  const block = text.match(/^catalog:\n((?:[ \t]+.*\n|[ \t]*(?:#.*)?\n)*)/m)?.[1] ?? '';
   const entries = block.matchAll(/^[ \t]+(['"]?)([^\s'"#:]+)\1:[ \t]*(['"]?)([^\s'"#]+)\3/gm);
   return Object.fromEntries([...entries].map((m) => [m[2], m[4]]));
 }

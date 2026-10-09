@@ -30,6 +30,7 @@ import { formatCheck, looseFiles, steps } from '../check.mjs';
 import {
   catalogVersions,
   collectVersions,
+  LOCKSTEP,
   lockstepMismatches,
   mismatches,
 } from '../check-versions.mjs';
@@ -998,11 +999,40 @@ describe('check-versions', () => {
     expect(lockstepMismatches({ '@nx/js': '1.0.0', playwright: '2.0.0' })).toEqual([]);
   });
 
+  it('reads the whole catalog: a comment at column 0 or no final newline ends nothing', () => {
+    const root = makeRepo({
+      'pnpm-workspace.yaml': [
+        'catalog:',
+        "  '@playwright/test': 1.64.0",
+        '# browsers',
+        '  playwright: 1.63.0',
+        '',
+        '  nx: 23.2.1',
+      ].join('\n'),
+    });
+    expect(catalogVersions(root)).toEqual({
+      '@playwright/test': '1.64.0',
+      playwright: '1.63.0',
+      nx: '23.2.1',
+    });
+  });
+
   it("holds for this repo's catalog", () => {
     const catalog = catalogVersions(REPO);
     expect(catalog.playwright).toBeDefined();
     expect(catalog.nx).toBeDefined();
     expect(lockstepMismatches(catalog)).toEqual([]);
+  });
+
+  it('pairs every catalog entry its comment marks "exact, with <name>"', () => {
+    const text = readFileSync(join(REPO, 'pnpm-workspace.yaml'), 'utf8');
+    const marked = [...text.matchAll(/^[ \t]*# exact, with ([^\s:(]+).*\n[ \t]+'?([^\s':]+)'?:/gm)];
+    expect(marked.length).toBeGreaterThan(0);
+    for (const [, partner, name] of marked)
+      expect(
+        LOCKSTEP.some((pair) => pair.includes(partner) && pair.includes(name)),
+        `${name} with ${partner}`,
+      ).toBe(true);
   });
 });
 

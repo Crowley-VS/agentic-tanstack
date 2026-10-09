@@ -42,6 +42,12 @@ describe('ensureDatabase', () => {
   });
 
   it('fresh: drops and recreates it, closing the connections still open on it', async () => {
+    // its own setup: a database with a table in it, which the drop must take away
+    await ensureDatabase(url);
+    const setup = new pg.Client({ connectionString: url });
+    await setup.connect();
+    await setup.query('create table if not exists dropped (id int)');
+    await setup.end();
     const leftover = new pg.Client({ connectionString: url });
     const terminated = new Promise<Error>((resolve) => leftover.on('error', resolve));
     await leftover.connect();

@@ -10,7 +10,7 @@
     "format": "oxfmt",
     "ports": "node tools/dev-ports.mjs --print",
     "teardown": "nx daemon --stop && node packages/db/scripts/db-up.mjs down",
-    "prune:orphans": "node tools/nx-daemons.mjs prune && node packages/db/scripts/db-up.mjs prune",
+    "prune:orphans": "node tools/nx-daemons.mjs prune; s=$?; node packages/db/scripts/db-up.mjs prune && exit $s",
     "regen": "node tools/agents.mjs regen",
     "agents:sync": "node tools/agents.mjs sync",
     "agents:check": "node tools/agents.mjs check",

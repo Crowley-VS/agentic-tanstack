@@ -2,6 +2,7 @@
 // arguments and answers `compose up` and the listings as each test scripts it, and the server's
 // port is closed, so nothing ever answers.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
   copyFileSync,
@@ -287,6 +288,39 @@ describe('dbUp', () => {
   });
 });
 
+// A volume made before docker-compose.yml labeled it (or with other label values: a moved
+// checkout) no longer matches the file, and Docker cannot relabel it. Compose asks "Recreate (data
+// will be lost)?" and, with no terminal, takes its default, no: db-up must keep it so (no `--yes`).
+const dockerRuns = spawnSync('docker', ['info', '--format', '{{.ID}}']).status === 0;
+describe.runIf(dockerRuns)('a volume made before the labels', () => {
+  it('keeps its data when db-up starts the labeled server on it', async () => {
+    const composeFile = join(DB, '../../docker-compose.yml');
+    const text = readFileSync(composeFile, 'utf8');
+    const image = text.match(/^ {4}image: (\S+)$/m)?.[1] ?? '';
+    const before = text
+      .replace(/\n {4}labels: &checkout\n(?: {6}.*\n)+/, '\n')
+      .replace(/\n {4}labels: \*checkout\n/, '\n');
+    expect(before).not.toContain('dev-checkout.');
+    const beforeFile = join(tmp, 'compose-before-labels.yml');
+    writeFileSync(beforeFile, before);
+    const project = `db-up-test-${randomBytes(4).toString('hex')}`;
+    const cfg = { ...local(await closedPort()), project, composeFile };
+    const env = { ...process.env, DB_PORT: String(cfg.port), COMPOSE_PROJECT_NAME: project };
+    const docker = (...args: string[]) => spawnSync('docker', args, { encoding: 'utf8', env });
+    const marker = (cmd: string) =>
+      docker('run', '--rm', '-v', `${project}_pgdata:/v`, '--entrypoint', 'sh', image, '-c', cmd);
+    try {
+      const old = docker('compose', '-p', project, '-f', beforeFile, 'create');
+      expect(old.status, old.stderr).toBe(0);
+      expect(marker('echo kept > /v/marker').status).toBe(0);
+      await dbUp(cfg);
+      expect(marker('cat /v/marker').stdout).toBe('kept\n');
+    } finally {
+      docker('compose', '-p', project, '-f', composeFile, 'down', '-v');
+    }
+  }, 60_000);
+});
+
 /**
  * FAKE_DOCKER_LS for `docker <kind> ls`: [kind, id, project, workingDir, root, commonDir = REPO]
  * per resource, as orphans.mjs formats them (id, then its LABELS' values).
@@ -336,6 +370,13 @@ describe('down and prune', () => {
     const failed = cli('down', { FAKE_DOCKER_FAIL: denied });
     expect(failed.status).toBe(1);
     expect(failed.stderr).toContain('permission denied');
+  }, 30_000);
+
+  it('down leaves a project COMPOSE_PROJECT_NAME names running: other checkouts may use it', () => {
+    const shared = cli('down', { COMPOSE_PROJECT_NAME: 'shared-pg' });
+    expect(shared.status, shared.stderr).toBe(0);
+    expect(shared.calls).toEqual([]);
+    expect(shared.stdout).toContain('[db-up] shared-pg is not this checkout’s own');
   }, 30_000);
 
   it('prune removes this repository’s leftovers and prints them, or says there were none', () => {
@@ -395,6 +436,17 @@ describe('isLocalUrl', () => {
       expect(isLocalUrl(`postgres://u:p@${host}:5432/app`), host).toBe(true);
     for (const host of ['localhost.example.com', '127.0.0.1.nip.io', 'db-localhost.corp.net'])
       expect(isLocalUrl(`postgres://u:p@${host}:5432/app`), host).toBe(false);
+  });
+
+  it('refuses a URL whose host parameter sends pg elsewhere', () => {
+    // pg connects to `?host=` rather than the URL's host name (db-seed-e2e would drop it there)
+    for (const query of [
+      'host=db.example.com',
+      'sslmode=disable&host=10.0.0.5',
+      'hostaddr=10.0.0.5',
+    ])
+      expect(isLocalUrl(`postgres://u:p@127.0.0.1:5432/e2e?${query}`), query).toBe(false);
+    expect(isLocalUrl('postgres://u:p@127.0.0.1:5432/e2e?sslmode=disable')).toBe(true);
   });
 
   it('makes db-migrate refuse a remote database, naming the opt-in', () => {

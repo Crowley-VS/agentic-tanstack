@@ -5,7 +5,8 @@ databases.
 
 Postgres 18 runs in Docker, one server per checkout: each git worktree gets its own port and
 databases (`pnpm ports`). Docker must be running. Targets that need the database start and migrate
-it first (`db:db-migrate` depends on `db:db-up`, `db:db-seed` and `api:dev` on `db:db-migrate`).
+it first (`db:db-migrate` depends on `db:db-up`; `db:db-seed`, `db:db-studio` and `api:dev` on
+`db:db-migrate`); `db:db-psql` only starts the server.
 
 | Task                                       | Command                                                                                   |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------- |
@@ -16,9 +17,9 @@ it first (`db:db-migrate` depends on `db:db-up`, `db:db-seed` and `api:dev` on `
 | Browse data (the studio URL: `pnpm ports`) | `pnpm db:studio` · `pnpm nx run db:db-psql` (`-- -c "select …"` runs one query)           |
 | Stop it, data kept / remove leftovers      | `pnpm teardown` / `pnpm prune:orphans` (`docs/local-resources.md`)                        |
 
-`db-psql` opens the dev database, which exists only after `pnpm db:migrate` (or `pnpm db:seed`) has
-run once in this checkout (`pnpm check` creates only test databases); `pnpm db:studio` migrates it
-itself.
+`db-psql` opens the dev database, which exists once something has migrated it in this checkout
+(`pnpm db:migrate`, `pnpm db:seed`, `pnpm db:studio` or `pnpm dev`; `pnpm check` creates only test
+databases).
 
 ## Migrations
 
