@@ -4,14 +4,14 @@ Every checkout (the primary one and each git worktree) starts things of its own 
 unless something stops them: agents work in throwaway worktrees, so on a busy machine these pile
 up. Details behind `pnpm teardown` and `pnpm prune:orphans`.
 
-| What                                                     | Per                  | Started by                                    | Released by                                       |
-| -------------------------------------------------------- | -------------------- | --------------------------------------------- | ------------------------------------------------- |
-| Postgres container                                       | checkout             | `pnpm db:up`, db tests, `pnpm dev`, e2e       | `pnpm teardown` (keeps the data)                  |
-| its volume (the data)                                    | checkout             | the first `pnpm db:up`                        | `pnpm db:reset`, `pnpm prune:orphans`             |
-| Nx daemon                                                | checkout (workspace) | the first `pnpm nx …` command                 | `pnpm teardown`, deleting the checkout            |
-| dev / e2e servers                                        | whoever started them | `pnpm dev`, `serve-e2e`, a background task    | whoever started them                              |
-| production-image stack (containers, network, its images) | checkout             | `web-e2e:stack-up`, `docker-build`            | `web-e2e:stack-down`, `teardown`, `prune:orphans` |
-| Docker's build cache                                     | machine (shared)     | every image build, of any checkout or project | `docker builder prune`, by hand (below)           |
+| What                                                     | Per                  | Started by                                      | Released by                                                             |
+| -------------------------------------------------------- | -------------------- | ----------------------------------------------- | ----------------------------------------------------------------------- |
+| Postgres container                                       | checkout             | `pnpm db:up`, db tests, `pnpm dev`, e2e         | `pnpm teardown` (keeps the data)                                        |
+| its volume (the data)                                    | checkout             | the first `pnpm db:up`                          | `pnpm db:reset`, `pnpm prune:orphans`                                   |
+| Nx daemon                                                | checkout (workspace) | the first `pnpm nx …` command                   | `pnpm teardown`, deleting the checkout                                  |
+| dev / e2e servers                                        | whoever started them | `pnpm dev`, `serve-e2e`, a background task      | whoever started them                                                    |
+| production-image stack (containers, network, its images) | checkout             | `web-e2e:stack-up`, `e2e-stack`, `docker-build` | `web-e2e:stack-down` (`e2e-stack` runs it), `teardown`, `prune:orphans` |
+| Docker's build cache                                     | machine (shared)     | every image build, of any checkout or project   | `docker builder prune`, by hand (below)                                 |
 
 ## `pnpm teardown`: release what this checkout started
 

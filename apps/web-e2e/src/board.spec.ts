@@ -3,7 +3,7 @@
 // found by title, never by position; tests that need a fresh note create their own.
 import { randomUUID } from 'node:crypto';
 import type { APIRequestContext } from '@playwright/test';
-import { expect, gql, SEED, test, uniqueTitle } from './fixtures';
+import { expect, gql, NEEDS_SEED, SEED, showOnBoard, test, uniqueTitle } from './fixtures';
 
 /** Notes per board page (NOTE_LIMITS.pageSize in @acme/validators). */
 const PAGE_SIZE = 20;
@@ -34,7 +34,11 @@ async function seedNoteId(request: APIRequestContext, n: number) {
 test.describe('server-rendered (JavaScript off)', () => {
   test.use({ javaScriptEnabled: false });
 
-  test('the board: a page of notes, and Load more disabled until hydration', async ({ page }) => {
+  test('the board: a page of notes, and Load more disabled until hydration', async ({
+    page,
+    seeded,
+  }) => {
+    test.skip(!seeded, NEEDS_SEED); // a full page: at least PAGE_SIZE notes
     const response = await page.goto('/');
     expect(response?.status()).toBe(200);
     await expect(page).toHaveTitle('Notes · acme-app');
@@ -45,10 +49,16 @@ test.describe('server-rendered (JavaScript off)', () => {
   });
 
   test('unknown pages and notes answer 404 with the not-found page', async ({ page }) => {
-    for (const path of [`/notes/${randomUUID()}`, '/notes/nope', '/nowhere']) {
+    // the note route's own message, not only the router's default page
+    for (const [path, message] of [
+      [`/notes/${randomUUID()}`, 'No note has this address.'],
+      ['/notes/nope', 'No note has this address.'],
+      ['/nowhere', 'This page does not exist.'],
+    ] as const) {
       const response = await page.goto(path);
       expect(response?.status(), path).toBe(404);
       await expect(page.getByRole('heading', { name: 'Not found' })).toBeVisible();
+      await expect(page.getByText(message), path).toBeVisible();
     }
   });
 });
@@ -57,7 +67,9 @@ test('Load more pages through the board, down to the oldest note', async ({
   page,
   request,
   createNote,
+  seeded,
 }) => {
+  test.skip(!seeded, NEEDS_SEED); // the oldest note is the seed's first
   // at least three pages, so the loop below must load more than once (other specs only add notes)
   const { notes: firstNotes } = await gql<{ notes: { edges: unknown[] } }>(
     request,
@@ -75,25 +87,14 @@ test('Load more pages through the board, down to the oldest note', async ({
   for (let count = firstNotes.edges.length; count <= 2 * PAGE_SIZE; count++) await createNote();
 
   await page.goto('/');
-  const notes = page.getByRole('region', { name: 'All notes' }).getByRole('listitem');
-  const loadMore = page.getByRole('button', { name: 'Load more' });
-  const oldest = page.getByRole('link', { name: SEED.title(1), exact: true });
-  // a page at a time until the oldest shows: other specs add notes meanwhile, so the number of
-  // pages is not fixed
-  await expect(async () => {
-    if (await oldest.isVisible()) return;
-    const shown = await notes.count();
-    await loadMore.click({ timeout: 5000 }); // enabled once hydrated and the last page is in
-    await expect.poll(() => notes.count()).toBeGreaterThan(shown);
-    // checks once: an expect timeout of 0 would wait forever, so toPass would never load another page
-    expect(await oldest.isVisible()).toBe(true);
-  }).toPass();
-  await expect(loadMore).toBeHidden();
+  await showOnBoard(page, page.getByRole('link', { name: SEED.title(1), exact: true }));
+  await expect(page.getByRole('button', { name: 'Load more' })).toBeHidden();
 });
 
 test.describe('a browser far from UTC', () => {
   // a timestamp formatted in local time would differ from the server's: a hydration mismatch
   test.use({ timezoneId: 'Pacific/Kiritimati' });
+  test.skip(({ seeded }) => !seeded, NEEDS_SEED);
 
   test('a seed note: title, body, UTC time, and its newest comments with the count', async ({
     page,

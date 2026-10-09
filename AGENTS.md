@@ -22,7 +22,7 @@ Never claim "done" without these. If a check fails, fix the cause; never weaken 
 
 <!-- stack:start:done -->
 
-Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI or API changes also need `pnpm nx e2e web-e2e` (production builds, own ports and database: `docs/e2e.md`). Dockerfile, `.dockerignore` or `docker-compose.stack.yml` changes need `pnpm nx run web-e2e:stack-up`, then `stack-down` (`docs/deployment.md`). Browser tests (`*.browser.test.{ts,tsx}`) need Chromium, once per machine and after each Playwright bump: `pnpm exec playwright install chromium`.
+Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI or API changes also need `pnpm nx e2e web-e2e` (production builds, own ports and database: `docs/e2e.md`). Dockerfile, `.dockerignore` or `docker-compose.stack.yml` changes need `pnpm nx run web-e2e:e2e-stack`: the specs against the images (`docs/deployment.md`). Browser tests (`*.browser.test.{ts,tsx}`) need Chromium, once per machine and after each Playwright bump: `pnpm exec playwright install chromium`.
 
 <!-- stack:end -->
 

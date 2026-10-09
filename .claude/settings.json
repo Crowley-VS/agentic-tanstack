@@ -88,6 +88,8 @@
       "Bash(pnpm nx run web:docker-build)",
       "Bash(pnpm nx run web-e2e:stack-up)",
       "Bash(pnpm nx run web-e2e:stack-down)",
+      "Bash(pnpm nx run web-e2e:e2e-stack)",
+      "Bash(pnpm nx run web-e2e:e2e-base-url)",
       "Bash(pnpm dev)"
     ],
     "ask": [

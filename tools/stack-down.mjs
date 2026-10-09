@@ -9,6 +9,7 @@
 // in tools/dev-ports.mjs), the way `db-up down` leaves such a dev database: another checkout may
 // use it, and `pnpm teardown` runs in every checkout.
 import { spawnSync } from 'node:child_process';
+import { existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveInfo, toEnv } from './dev-ports.mjs';
@@ -78,4 +79,36 @@ function main() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+/** Whether process `pid` still runs (EPERM: it does, as another user's). */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+/**
+ * `--after <pid> --unless <file>`: wait until process `pid` has exited, then remove the stack,
+ * unless `file` exists (that process removed the stack itself and left the file; it is deleted
+ * here). tools/e2e-stack.mjs starts this outside its own process tree: Ctrl-C on
+ * `pnpm nx run web-e2e:e2e-stack` makes Nx kill the whole task tree before the script's own last
+ * step, and the stack would keep running.
+ */
+async function after(pid, marker) {
+  const deadline = Date.now() + 24 * 60 * 60 * 1000;
+  while (alive(pid) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 500));
+  if (existsSync(marker)) {
+    rmSync(marker, { force: true });
+    return;
+  }
+  main();
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [flag, pid, unless, marker] = process.argv.slice(2);
+  if (flag === '--after' && unless === '--unless' && pid && marker)
+    await after(Number(pid), marker);
+  else main();
+}

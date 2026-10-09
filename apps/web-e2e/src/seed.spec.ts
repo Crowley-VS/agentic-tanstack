@@ -1,7 +1,9 @@
 // The e2e database starts from the deterministic seed (db:db-seed-e2e runs before api:serve-e2e).
 // Other specs add notes at the same time, and the list is newest first, so the seed is found from
 // the oldest end (`last`), never assumed to be the first page.
-import { expect, gql, SEED, test } from './fixtures';
+import { expect, gql, NEEDS_SEED, SEED, test } from './fixtures';
+
+test.skip(({ seeded }) => !seeded, NEEDS_SEED);
 
 type SeedNote = { title: string; commentCount: number };
 

@@ -39,6 +39,8 @@ has its own ports and database.
 | One spec or test                         | `pnpm nx e2e web-e2e -- src/harness.spec.ts -g "health"`                      |
 | The servers alone (to poke at them)      | `pnpm nx run-many -t serve-e2e -p api web` in the background; stop before e2e |
 | Watch it in a browser                    | `pnpm nx e2e web-e2e -- --headed`                                             |
+| Against the production images            | `pnpm nx run web-e2e:e2e-stack` (`docs/deployment.md`)                        |
+| Against a stack already running          | `BASE_URL=<web origin> pnpm nx run web-e2e:e2e-base-url` (below)              |
 
 The result is cached on the specs, web, api and what they use, and on `dbServer`
 (`docker-compose.yml` and `tools/dev-ports.mjs`: how ports are chosen, not their values), but not
@@ -48,6 +50,31 @@ Nx refuses the per-spec `e2e-ci--*` tasks without Nx Cloud unless `NX_SKIP_ATOMI
 is set; they run fine on one machine, sharing one api and one web server. That variable is an
 internal Nx escape hatch, not a documented option: if an Nx upgrade removes it, use
 `pnpm nx affected -t e2e` (one Playwright run for every spec) locally and in CI instead.
+
+## Against a running stack: BASE_URL mode
+
+`BASE_URL=<web origin> pnpm nx run web-e2e:e2e-base-url` runs every spec, in one Playwright run,
+against a stack that is already up: the production images (`web-e2e:e2e-stack` and CI's `docker`
+job start them and run this, `docs/deployment.md`), or a deploy. It builds, seeds and starts
+nothing, and is never cached (the stack can change without a commit). Two more variables say what
+that stack offers; a spec that needs what is missing skips, saying why:
+
+| Variable       | Set it when                                                      | Without it, skips                                   |
+| -------------- | ---------------------------------------------------------------- | --------------------------------------------------- |
+| `API_URL`      | the API's own address is reachable from here (it is private)     | the API's 401 check (`harness.spec.ts`)             |
+| `E2E_SEEDED=1` | its database holds the seed (`db:db-seed`, local databases only) | `seed.spec.ts` and the 3 seed tests of `board.spec` |
+
+`E2E_REQUIRE_STACK=1` (set by `e2e-stack` and CI) refuses to run without `E2E_SEEDED=1`, so a
+mistyped variable fails the run instead of skipping the seed's specs. The images' stack publishes
+no API port, as a platform does: there the 401 spec skips, and CI's `docker` job checks the 401
+from inside the stack's network instead.
+
+The specs write (dozens of notes per run, and they stay): point BASE_URL only at a stack you can
+throw away, with `READ_ONLY` off and `WRITE_RATE_LIMIT=off` on the web server (else 429s).
+
+BASE_URL is for `e2e-base-url` only, which in turn refuses to run without it (Playwright would
+start the e2e servers itself, outside Nx). `e2e` and `e2e-ci` start their own servers: with
+BASE_URL set they fail at once (nx.json hashes it, so no cached result is replayed instead).
 
 ## Writing specs
 
@@ -65,8 +92,12 @@ internal Nx escape hatch, not a documented option: if an Nx upgrade removes it, 
   (`getByRole('textbox', { name: 'Comment', exact: true })`).
 - Buttons that need JavaScript (Load more, a form's submit) render disabled until hydration
   (`docs/web.md`), and Playwright waits for them to be enabled: no hydration retries. `toPass()`
-  is only for loops, such as paging through the board until a note shows.
+  is only for loops, such as `showOnBoard()` in `fixtures.ts`, which pages through the board
+  until a note shows: use it rather than a loop of your own.
 - Data setup goes through the BFF (`gql()`), as the browser does: never through the API port.
+- A test that reads the seed skips without it (`test.skip(!seeded, NEEDS_SEED)`; a whole file or
+  group: `test.skip(({ seeded }) => !seeded, NEEDS_SEED)`), and one that calls the API directly
+  skips without `apiURL`: both can be missing in BASE_URL mode.
 - Keep the two `webServer` entries in `playwright.config.mts` exactly as they are: a command that
   is not `pnpm nx run <project>:<target>`, an `env` or `wait` key, or `reuseExistingServer: false`
   makes `@nx/playwright` infer no server dependency, and Nx then runs `e2e-ci` tasks one at a time
@@ -86,7 +117,8 @@ and a plain DROP would wait on them forever. FORCE terminates them; the API's po
 Under `apps/web-e2e/test-output/playwright/` (gitignored): `report/` (HTML), `output/` (each failed
 attempt's `trace.zip`, screenshot and error context), and on CI `blob-report/`, which
 `pnpm nx run web-e2e:e2e-ci--merge-reports` merges into one HTML report. CI uploads the folder
-when a step fails. The HTML report never opens by itself (its server would keep a failed task
+when a step fails (artifact `test-output`; the `docker` job's single run, with its own `report/`:
+`docker-test-output`). The HTML report never opens by itself (its server would keep a failed task
 running): open it with `pnpm exec playwright show-report <dir>`, a trace with
 `pnpm exec playwright show-trace <trace.zip>`.
 
