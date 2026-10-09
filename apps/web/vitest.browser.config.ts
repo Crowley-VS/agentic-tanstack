@@ -24,6 +24,11 @@ export default defineConfig({
       '@acme/ui > cn',
       '@acme/ui > class-variance-authority',
     ],
+    // server code only: execute()'s server branch reads the page request through it (tests mock
+    // execute), and it needs Start's Vite plugin, which tests do not load. Pre-bundled, it fails
+    // the run; left out, Vite only logs two harmless "Pre-transform error" lines for it
+    // (#tanstack-router-entry, tanstack-start-manifest:v), since no test runs it.
+    exclude: ['@tanstack/react-start/server'],
   },
   test: {
     name: 'web-browser',

@@ -118,8 +118,9 @@ passes with a notice. It runs the steps of `e2e-stack`, as `acme-app-stack` with
    `RAILWAY_GIT_COMMIT_SHA` (the commit), the build argument Railway gives its builds.
 2. Starts the stack, then checks the running images: the API logs `(production)`; PID 1 of api
    and web is not root; from inside the stack's network (the API has no port), the API answers
-   401 without the secret and 200 with the web server's; through the web server's BFF, the API's
-   `apiVersion` is the commit (the build argument above).
+   401 without the secret and 200 with the web server's; both servers report the commit (the
+   build argument above) as their version: the web server's `/api/health` and, through its BFF,
+   the API's `apiVersion`.
 3. Seeds the database, runs the migrations again, and runs every spec through BASE_URL mode with
    `E2E_SEEDED=1` and `E2E_REQUIRE_STACK=1` (3 workers): only the API's 401 spec skips.
 4. Stops web, then api, with SIGTERM: each must exit 0 within 10 s. It runs after failed specs too.
@@ -139,9 +140,10 @@ artifact holds the Playwright report and traces (`docs/e2e.md`). To reproduce a 
 | `LISTEN_HOST`                        | default `::` (IPv4 and IPv6)                           | (`NITRO_HOST`; default every interface)        |
 | `READ_ONLY`, `DB_POOL_MAX`           | optional (`docs/api.md`)                               | -                                              |
 | `REAL_IP_HEADER`, `WRITE_RATE_LIMIT` | -                                                      | optional (`docs/web.md`)                       |
+| `EDGE_REQUEST_ID_HEADER`             | -                                                      | optional (`docs/production.md`)                |
 | `NODE_OPTIONS=--enable-source-maps`  | optional: stack traces point at `src/` (about +20 MiB) | -                                              |
-| `APP_VERSION`                        | baked in (build arg; `docs/production.md`), else `dev` | -                                              |
-| `LOG_FORMAT` (`json`, `text`)        | optional: default `json` in production                 | -                                              |
+| `APP_VERSION`                        | baked in (build arg; `docs/production.md`), else `dev` | the same                                       |
+| `LOG_FORMAT` (`json`, `text`)        | optional: default `json` in production                 | the same                                       |
 
 - **Interfaces:** in a container both listen on every interface, as a platform's private network
   needs: the API in production mode (`::`), Nitro unless `NITRO_HOST` says otherwise (the image
@@ -152,9 +154,10 @@ artifact holds the Playwright report and traces (`docs/e2e.md`). To reproduce a 
 - **Migrations:** `node dist/migrate.mjs` in the api image, before the new API starts; it applies
   only the migrations not yet applied, so it is safe to run on every deploy.
 - **Users and signals:** both run as `node` (uid 1000) and cannot change their own files (owned by
-  root). The `CMD` is exec form, so Node is PID 1 and gets SIGTERM itself: the API lets its
-  requests in flight finish, then closes its pool (about 0.1 s when idle; `docs/production.md`),
-  Nitro its server (about 1.1 s); `docker stop` never waits for the 10 s kill.
+  root). The `CMD` is exec form, so Node is PID 1 and gets SIGTERM itself: each server lets its
+  requests in flight finish and then exits; the API closes its pool (about 0.1 s when idle), Nitro
+  its server (about 1.1 s idle: srvx checks once a second; `docs/production.md`); `docker stop`
+  never waits for the 10 s kill.
 
 Measured on one machine (Docker 29, 16 cores): each image is about 83 MB compressed, nearly all of
 it the Node base image (the API adds 6.5 MB unpacked, 4.2 MB of it source maps; the web server

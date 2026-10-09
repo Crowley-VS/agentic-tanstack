@@ -10,7 +10,12 @@ import { Route as HealthRoute } from './routes/api/health';
 
 // getRequestIP() reads the request Start is serving (its AsyncLocalStorage), which a direct call
 // has none of: stand in for the socket's address
-vi.mock('@tanstack/react-start/server', () => ({ getRequestIP: () => '203.0.113.9' }));
+vi.mock('@tanstack/react-start/server', () => ({
+  getRequestIP: () => '203.0.113.9',
+  getRequest: () => {
+    throw new Error('no request: called outside Start');
+  },
+}));
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -42,7 +47,7 @@ describe('server routes', () => {
   it('GET /api/health answers the health check', async () => {
     const res = await call(HealthRoute, 'GET');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: 'ok' });
+    expect(await res.json()).toEqual({ status: 'ok', version: 'dev' });
   });
 
   it('/api/health answers 405 to every method but GET (and HEAD), instead of the HTML page', async () => {

@@ -230,7 +230,20 @@ describe('request log', () => {
         app: 'api',
         message: expect.stringContaining('Failed query'),
         requestId: 'req-1',
-        err: expect.objectContaining({ stack: expect.any(String) }),
+        // Yoga's GraphQLError, then what the resolver threw (graphql-js's originalError), then why
+        // the query failed: the driver's error
+        err: {
+          name: 'GraphQLError',
+          message: expect.stringContaining('Failed query'),
+          cause: {
+            name: 'DrizzleQueryError',
+            message: expect.stringContaining('Failed query'),
+            stack: expect.any(String),
+            cause: expect.objectContaining({
+              message: expect.stringContaining('ECONNREFUSED 127.0.0.1:1'),
+            }),
+          },
+        },
       }),
       expect.objectContaining({
         level: 'info',

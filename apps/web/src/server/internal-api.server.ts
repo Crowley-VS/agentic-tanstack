@@ -8,21 +8,12 @@ import { API_TIMED_OUT, API_UNAVAILABLE } from '../lib/graphql/errors';
 
 export const TIMEOUT_MS = 10_000;
 
-/** What a request id may look like: short, and safe to print in a log line. */
-const REQUEST_ID = /^[\w.:-]{1,128}$/;
-
-/** The id the browser or the edge proxy gave the request (x-request-id) when sane, else a new one. */
-export function requestIdOf(headers: Headers): string {
-  const given = headers.get(REQUEST_ID_HEADER);
-  return given !== null && REQUEST_ID.test(given) ? given : randomUUID();
-}
-
 type CallOptions = {
   /** Aborts the call, e.g. when the browser goes away. */
   signal?: AbortSignal;
   /** The browser's IP, for the API's log (it trusts it only with the secret). */
   clientIp?: string;
-  /** Correlates the web and API log lines; a new one when not given. */
+  /** Ties the web and API log lines together; a new one when not given. */
   requestId?: string;
   timeoutMs?: number;
 };

@@ -342,6 +342,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@acme/logger':
+        specifier: workspace:*
+        version: link:../../packages/logger
       '@acme/ui':
         specifier: workspace:*
         version: link:../../packages/ui

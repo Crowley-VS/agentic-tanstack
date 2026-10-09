@@ -151,10 +151,10 @@ export function writeLimiter(limit: RateLimit): WriteLimiter {
 
 /**
  * 429 in GraphQL's shape: execute() rejects with it (GraphQLRequestError: `code` RATE_LIMITED,
- * `retryAfter`), and the UI shows the same wording.
+ * `retryAfter`), and the UI shows the same wording. `headers`: the answer's others (its request id).
  */
-export const rateLimited = (retryAfterSeconds: number) =>
+export const rateLimited = (retryAfterSeconds: number, headers: Record<string, string> = {}) =>
   errorResponse(429, `Too many writes: try again in ${retryAfterSeconds} s.`, {
-    headers: { 'retry-after': String(retryAfterSeconds) },
+    headers: { ...headers, 'retry-after': String(retryAfterSeconds) },
     extensions: { code: RATE_LIMITED, retryAfter: retryAfterSeconds },
   });

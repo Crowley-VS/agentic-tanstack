@@ -129,6 +129,14 @@ describe('proxyGraphql', () => {
     }
   });
 
+  it("prefers the edge's own id (EDGE_REQUEST_ID_HEADER: Railway's by default)", async () => {
+    const headers = { 'x-railway-request-id': 'rw-7', [REQUEST_ID_HEADER]: 'client-1' };
+    await proxyGraphql(post(QUERY, headers), env());
+    expect(received?.headers[REQUEST_ID_HEADER]).toBe('rw-7');
+    await proxyGraphql(post(QUERY, headers), env({ EDGE_REQUEST_ID_HEADER: '' }));
+    expect(received?.headers[REQUEST_ID_HEADER]).toBe('client-1');
+  });
+
   it('refuses a body over 64 KB, declared or streamed, without calling the API', async () => {
     // the declared length alone decides: the body is never read
     const declared = post('{}', { 'content-length': String(MAX_BODY_BYTES + 1) });
@@ -154,14 +162,18 @@ describe('proxyGraphql', () => {
     expect(received).toBeUndefined();
   });
 
-  it('answers 502 when the API is down, and logs it with the request id', async () => {
+  it('answers 502 when the API is down, with the request id its log line names', async () => {
     const res = await proxyGraphql(post('{}'), env({ API_PORT: '1' }));
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ errors: [{ message: 'API unavailable' }] });
+    const id = res.headers.get(REQUEST_ID_HEADER) ?? '';
+    expect(id).toMatch(UUID);
     expect(console.error).toHaveBeenCalledExactlyOnceWith(
-      expect.stringMatching(/^\[web\] \/api\/graphql: API unavailable \(request [\da-f-]{36}\)$/),
-      expect.objectContaining({ message: 'fetch failed' }),
+      expect.stringMatching(
+        /^\[web\] \/api\/graphql: API unavailable requestId=\S+\n\[?TypeError: fetch failed/,
+      ),
     );
+    expect(vi.mocked(console.error).mock.calls[0]?.[0]).toContain(` requestId=${id}\n`);
   });
 
   it('answers 504 when the API does not answer in time, and logs it', async () => {
@@ -170,9 +182,11 @@ describe('proxyGraphql', () => {
     });
     expect(res.status).toBe(504);
     expect(await res.json()).toEqual({ errors: [{ message: 'API timed out' }] });
+    expect(res.headers.get(REQUEST_ID_HEADER)).toBe('slow-1');
     expect(console.error).toHaveBeenCalledExactlyOnceWith(
-      '[web] /api/graphql: API timed out (request slow-1)',
-      expect.objectContaining({ name: 'TimeoutError' }),
+      expect.stringMatching(
+        /^\[web\] \/api\/graphql: API timed out requestId=slow-1\n.*TimeoutError/,
+      ),
     );
   });
 
@@ -205,6 +219,7 @@ describe('the write rate limit', () => {
     received = undefined;
     const res = await proxyGraphql(post(MUTATION), limited(), { socketIp });
     expect(res.status).toBe(429);
+    expect(res.headers.get(REQUEST_ID_HEADER)).toMatch(UUID); // a visitor's report finds the line
     const retryAfter = Number(res.headers.get('retry-after'));
     expect([59, 60]).toContain(retryAfter);
     expect(await res.json()).toEqual({

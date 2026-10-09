@@ -13,12 +13,14 @@ are added.
 | After adding or renaming a route file | `pnpm nx run web:generate-routes` (or `pnpm regen`)              |
 | After editing a `graphql()` operation | `pnpm nx run web:codegen` (`pnpm dev` does it on save)           |
 
-The health check is `/api/health`; `pnpm ports` prints the URLs. A production server needs
-`INTERNAL_API_SECRET`, `API_HOST` and `API_PORT` (`web:serve` takes the last two from this
-checkout's ports; see the BFF below). `web:serve` listens on 127.0.0.1 unless `NITRO_HOST` says
-otherwise (`NITRO_HOST=0.0.0.0` to reach it from another device; `HOST` is ignored there); in a
-container (`docs/deployment.md`) Nitro listens on every interface. Writes are rate-limited per
-client IP, in `pnpm dev` too (below).
+The health check is `/api/health` (it also answers the deployed `version`); `pnpm ports` prints
+the URLs. Every request Start handles gets one log line (`src/start.ts`; JSON in production:
+`docs/production.md`). A production server needs `INTERNAL_API_SECRET`, `API_HOST` and
+`API_PORT` (`web:serve` takes the last two from this checkout's ports; see the BFF below).
+`web:serve` listens on 127.0.0.1 unless `NITRO_HOST` says otherwise (`NITRO_HOST=0.0.0.0` to
+reach it from another device; `HOST` is ignored there); in a container (`docs/deployment.md`)
+Nitro listens on every interface. Writes are rate-limited per client IP, in `pnpm dev` too
+(below).
 
 ## Operations are typed by codegen
 
@@ -192,13 +194,17 @@ without one, Start answers it with the page renderer's 200 HTML. In production t
 - **Client IP.** What the write rate limit counts by, and sent to the API as `x-client-ip` for
   its log: the address in `REAL_IP_HEADER` (default `x-real-ip`) when it holds an IP, else the
   socket's address; never `X-Forwarded-For`. Name the header the proxy in front overwrites; with
-  no proxy in front, set it empty, or clients can claim any address (and dodge the limit).
-- **Request id.** The browser's or the edge's `x-request-id` when it is short and plain, else a
-  new UUID. It goes to the API (`x-request-id`), back to the browser, and into the web server's
-  error lines. SSR calls get a new one each.
+  no proxy in front, set it empty, or clients can claim any address (and dodge the limit). A value
+  that is no header name fails `/api/health` (503), not every request.
+- **Request id.** The edge's id for the request (`EDGE_REQUEST_ID_HEADER`, default Railway's
+  `x-railway-request-id`), else a short, plain `x-request-id`, else a new UUID; worked out once
+  per request (`src/server/request-context.server.ts`), so a page's SSR calls to the API carry the
+  page request's id and client IP too. It goes to the API (`x-request-id`), back to the browser
+  (on every answer: relayed ones and the BFF's own 429, 502 and 504), and into the web server's
+  lines (`docs/production.md`).
 - **Failures.** API unreachable: 502 `API unavailable`; no answer within 10 s: 504
   `API timed out` (both logged with the request id). A browser that leaves gets a 499 nobody
-  reads and no log line; Start itself still logs the request's `AbortError` once.
+  reads (its request line says 499); Start itself still logs the request's `AbortError` once.
 
 ## UI components come from the shadcn CLI
 

@@ -10,6 +10,17 @@ import { GraphQLRequestError } from './errors';
 import { BFF_PATH, execute, postToBff, shouldRetry } from './execute';
 
 const SECRET = 's'.repeat(32);
+
+// The page request Start is handling (getRequest(), its AsyncLocalStorage): none unless a test
+// sets one, as in a direct call
+const page = vi.hoisted(() => ({ request: undefined as Request | undefined }));
+vi.mock('@tanstack/react-start/server', () => ({
+  getRequest: () => {
+    if (!page.request) throw new Error('no request: called outside Start');
+    return page.request;
+  },
+  getRequestIP: () => '10.0.0.3', // the proxy in front
+}));
 // Operations typed by hand, as codegen types them: tests stay out of codegen, and the app's own
 // operations change with its pages.
 /** An operation without variables. */
@@ -95,6 +106,39 @@ describe('execute on the server', () => {
     expect(sentBody()).toEqual({ query: NoteDocument.toString(), variables: { id: 'n1' } });
   });
 
+  it("tags the API call with the page request's id and client IP (one id in both logs)", async () => {
+    page.request = new Request('http://web.test/notes/1', {
+      headers: { 'x-real-ip': '203.0.113.20', 'x-railway-request-id': 'edge-ssr-1' },
+    });
+    try {
+      await execute(ApiVersionDocument);
+      expect(received?.headers['x-request-id']).toBe('edge-ssr-1');
+      expect(received?.headers['x-client-ip']).toBe('203.0.113.20');
+      await execute(ApiVersionDocument); // every call of the same page: the same id
+      expect(received?.headers['x-request-id']).toBe('edge-ssr-1');
+    } finally {
+      page.request = undefined;
+    }
+    // outside a request: a new id per call, and no client IP
+    await execute(ApiVersionDocument);
+    expect(received?.headers['x-request-id']).toMatch(/^[\da-f-]{36}$/);
+    expect(received?.headers).not.toHaveProperty('x-client-ip');
+  });
+
+  it('makes up one id for a page request that brings none, the same in each of its calls', async () => {
+    page.request = new Request('http://web.test/');
+    try {
+      await execute(ApiVersionDocument);
+      const made = received?.headers['x-request-id'];
+      expect(made).toMatch(/^[\da-f-]{36}$/);
+      await execute(ApiVersionDocument);
+      expect(received?.headers['x-request-id']).toBe(made);
+      expect(received?.headers['x-client-ip']).toBe('10.0.0.3'); // the socket's: no proxy header
+    } finally {
+      page.request = undefined;
+    }
+  });
+
   it('reads the API address from the environment on each call', async () => {
     vi.stubEnv('API_PORT', '1'); // nothing listens there
     await expect(execute(ApiVersionDocument)).rejects.toThrow();
@@ -134,6 +178,20 @@ describe('execute on the server', () => {
     expect(error).toBeInstanceOf(GraphQLRequestError);
     expect(error).toMatchObject({ status: 502, message: 'API unavailable' });
     expect(error).toHaveProperty('cause', expect.objectContaining({ message: 'fetch failed' }));
+  });
+
+  it('rejects like the BFF when the API does not answer in time: 504, the cause kept', async () => {
+    // what fetch rejects with once callInternalApi's 10 s deadline passes (no 10 s wait here)
+    const timeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(timeout));
+    try {
+      const error: unknown = await execute(ApiVersionDocument).catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(GraphQLRequestError);
+      expect(error).toMatchObject({ status: 504, message: 'API timed out' });
+      expect(error).toHaveProperty('cause', timeout);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('keeps server detail, such as an invalid environment, out of the message', async () => {

@@ -70,12 +70,25 @@ function consoleWriter(format: LogFormat) {
   };
 }
 
-/** An error as JSON: name, message, stack, and its causes (three deep). */
+/**
+ * What an error wraps: its `cause`, else the error a GraphQLError wraps. graphql-js keeps what a
+ * resolver threw on `originalError` (not enumerable, not `cause`): for a failed query a
+ * DrizzleQueryError, whose own cause is the driver's error (ECONNREFUSED, a Postgres error).
+ */
+function wrappedBy(err: Error): unknown {
+  if (err.cause !== undefined) return err.cause;
+  const original: unknown = Reflect.get(err, 'originalError');
+  return original instanceof Error ? original : undefined;
+}
+
+/** An error as JSON: name, message, stack, and what it wraps (three deep). */
 function serializeError(err: unknown, depth = 0): unknown {
   if (!(err instanceof Error)) return typeof err === 'string' ? err : inspect(err);
-  const cause =
-    err.cause === undefined || depth >= 3 ? {} : { cause: serializeError(err.cause, depth + 1) };
-  return { name: err.name, message: err.message, stack: err.stack, ...cause };
+  const inner = depth < 3 ? wrappedBy(err) : undefined;
+  // a GraphQLError takes the stack of the error it wraps: written once, there
+  const stack = inner instanceof Error && inner.stack === err.stack ? undefined : err.stack;
+  const cause = inner === undefined ? {} : { cause: serializeError(inner, depth + 1) };
+  return { name: err.name, message: err.message, stack, ...cause };
 }
 
 /** `key=value`, quoted when the value has spaces or quotes; nothing for an undefined value. */

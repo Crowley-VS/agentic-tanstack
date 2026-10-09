@@ -8,6 +8,7 @@ import { createIsomorphicFn } from '@tanstack/react-start';
 import { serverEnv } from '../../env.server';
 import { TypedDocumentString } from '../../gql/graphql';
 import { callInternalApi, transportFailure } from '../../server/internal-api.server';
+import { currentRequestContext } from '../../server/request-context.server';
 import { type GraphQLErrorEntry, GraphQLRequestError, parseRetryAfter } from './errors';
 
 /** The BFF route (routes/api/graphql.ts). */
@@ -33,12 +34,13 @@ export const postToBff = (body: string, signal?: AbortSignal) =>
 // Untyped transport: createIsomorphicFn fixes its argument types (no generics), so the typed
 // execute() below wraps it.
 const post = createIsomorphicFn()
-  // A call that gets no answer fails like the BFF's: 502 'API unavailable' or 504 'API timed
-  // out'. The cause (a host name, an invalid environment) stays on the server, out of the SSR
-  // payload; the error page logs it. The caller's abort passes through as it is.
+  // The call carries the page request's id and client IP, so the API's log line for it matches
+  // the web server's line for the page. A call that gets no answer fails like the BFF's: 502 'API
+  // unavailable' or 504 'API timed out'. The cause (a host name, an invalid environment) stays on
+  // the server, out of the SSR payload; the error page logs it. The caller's abort passes through.
   .server(async (body: string, signal?: AbortSignal) => {
     try {
-      return await callInternalApi(serverEnv(), body, { signal });
+      return await callInternalApi(serverEnv(), body, { signal, ...currentRequestContext() });
     } catch (err) {
       if (signal?.aborted) throw err;
       const { status, message } = transportFailure(err);

@@ -115,9 +115,10 @@ jobs:
   # (docker-compose.stack.yml): Postgres 18, the api image's migration on an empty database, the
   # private api, then the web server. The steps of `pnpm nx run web-e2e:e2e-stack`
   # (docs/deployment.md), plus checks of the running images: production mode, not root, the API's
-  # secret checked from inside the stack's network, and a clean exit within 10 s of SIGTERM. Only
-  # when web-e2e is affected (web, api or anything they use) or a file only this job reads changed;
-  # a skipped run passes. Its own runner, so it runs beside `pnpm check`.
+  # secret checked from inside the stack's network, the commit as both servers' version, and a
+  # clean exit within 10 s of SIGTERM. Only when web-e2e is affected (web, api or anything they
+  # use) or a file only this job reads changed; a skipped run passes. Its own runner, so it runs
+  # beside `pnpm check`.
   docker:
     name: Docker images
     runs-on: ubuntu-latest
@@ -249,15 +250,21 @@ jobs:
             });
           ' || { echo "::error::the api must answer 401 without the secret, 200 with it"; exit 1; }
 
-      # The api image baked in RAILWAY_GIT_COMMIT_SHA (the build above passes the commit, as Railway
-      # does): the browser's way to the API, the web server's BFF, must answer it as apiVersion.
-      - name: The API reports the commit as its version
+      # Both images baked in RAILWAY_GIT_COMMIT_SHA (the build above passes the commit, as Railway
+      # does): the web server's /api/health must answer it as its version, and the browser's way to
+      # the API, the web server's BFF, as apiVersion.
+      - name: Both servers report the commit as their version
         if: steps.gate.outputs.run == 'true'
         env:
           SHA: ${{ github.sha }}
         run: |
+          web="http://$(docker compose port web 3000)"
+          health=$(curl --fail --silent --show-error "$web/api/health")
+          echo "web: $health"
+          [ "$health" = "{\"status\":\"ok\",\"version\":\"$SHA\"}" ] ||
+            { echo "::error::the web server's version is not the commit $SHA"; exit 1; }
           answer=$(curl --fail --silent --show-error --header 'content-type: application/json' \
-            --data '{"query":"{ apiVersion }"}' "http://$(docker compose port web 3000)/api/graphql")
+            --data '{"query":"{ apiVersion }"}' "$web/api/graphql")
           echo "BFF: $answer"
           [ "$answer" = "{\"data\":{\"apiVersion\":\"$SHA\"}}" ] ||
             { echo "::error::apiVersion is not the commit $SHA"; exit 1; }

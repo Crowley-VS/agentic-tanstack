@@ -164,23 +164,23 @@ describe('production images', () => {
       // the build stage sets CI: the runtime stage starts from a fresh FROM, never from it
       expect(envNames(instructions(path))).toContain('CI');
     });
-  }
 
-  it('api: bakes in its version, by default the commit Railway builds (RAILWAY_GIT_COMMIT_SHA)', () => {
-    const stage = runtime('apps/api/Dockerfile');
-    const version = [
-      'ARG RAILWAY_GIT_COMMIT_SHA',
-      'ARG APP_VERSION=${RAILWAY_GIT_COMMIT_SHA:-dev}',
-      'ENV APP_VERSION=${APP_VERSION}',
-    ].map((line) => stage.indexOf(line));
-    expect(version.every((at) => at > 0)).toBe(true);
-    // in this order, after the app's files (a new version rebuilds nothing before them), before
-    // the switch to the node user; the CMD stays last
-    expect(version).toEqual(version.toSorted((a, b) => a - b));
-    expect(version[0]).toBeGreaterThan(stage.findLastIndex((line) => line.startsWith('COPY ')));
-    expect(version[2]).toBeLessThan(stage.indexOf('USER node'));
-    expect(stage.at(-1)).toMatch(/^CMD /);
-  });
+    it(`${app}: bakes in its version, by default the commit Railway builds (RAILWAY_GIT_COMMIT_SHA)`, () => {
+      const stage = runtime(path);
+      const version = [
+        'ARG RAILWAY_GIT_COMMIT_SHA',
+        'ARG APP_VERSION=${RAILWAY_GIT_COMMIT_SHA:-dev}',
+        'ENV APP_VERSION=${APP_VERSION}',
+      ].map((line) => stage.indexOf(line));
+      expect(version.every((at) => at > 0)).toBe(true);
+      // in this order, after the app's files (a new version rebuilds nothing before them), before
+      // the switch to the node user; the CMD stays last
+      expect(version).toEqual(version.toSorted((a, b) => a - b));
+      expect(version[0]).toBeGreaterThan(stage.findLastIndex((line) => line.startsWith('COPY ')));
+      expect(version[2]).toBeLessThan(stage.indexOf('USER node'));
+      expect(stage.at(-1)).toMatch(/^CMD /);
+    });
+  }
 
   it('sends no dependencies, builds, secrets, git data or agent worktrees to the build', () => {
     const lines = read('.dockerignore')
@@ -291,17 +291,19 @@ describe("CI's docker job (.github/workflows/ci.yml)", () => {
       expect(job).toMatch(new RegExp(`^ {12}${service}\\.tags=${project}-${service}$`, 'm'));
   });
 
-  it('builds the commit in as the version, and checks the BFF answers it as apiVersion', () => {
+  it("builds the commit in as the version, and checks web's health and the BFF's apiVersion say it", () => {
     const job = dockerJob();
     // the build argument Railway gives its builds, so CI tests the Dockerfile's default path
     expect(job).toMatch(/^ {12}\*\.args\.RAILWAY_GIT_COMMIT_SHA=\$\{\{ github\.sha \}\}$/m);
-    const start = job.indexOf('- name: The API reports the commit as its version');
+    const start = job.indexOf('- name: Both servers report the commit as their version');
     expect(start).toBeGreaterThan(0);
     const end = job.indexOf('\n      - ', start);
     const step = job.slice(start, end < 0 ? undefined : end);
     expect(step).toMatch(/^ {10}SHA: \$\{\{ github\.sha \}\}$/m);
-    expect(step).toContain(`--data '{"query":"{ apiVersion }"}'`);
-    expect(step).toContain('"http://$(docker compose port web 3000)/api/graphql"');
+    expect(step).toContain('web="http://$(docker compose port web 3000)"');
+    expect(step).toContain('curl --fail --silent --show-error "$web/api/health"');
+    expect(step).toContain('[ "$health" = "{\\"status\\":\\"ok\\",\\"version\\":\\"$SHA\\"}" ]');
+    expect(step).toContain(`--data '{"query":"{ apiVersion }"}' "$web/api/graphql"`);
     expect(step).toContain('[ "$answer" = "{\\"data\\":{\\"apiVersion\\":\\"$SHA\\"}}" ]');
   });
 

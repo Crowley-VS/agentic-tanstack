@@ -24,8 +24,15 @@ describe('GET /api/health', () => {
       const res = health(env);
       expect(res.status).toBe(200);
       expect(res.headers.get('cache-control')).toBe('no-store');
-      expect(await res.json()).toEqual({ status: 'ok' });
+      expect(await res.json()).toEqual({ status: 'ok', version: 'dev' });
     }
+  });
+
+  it('says which version is deployed (APP_VERSION)', async () => {
+    expect(await health({ ...production, APP_VERSION: '9f2c1ab' }).json()).toEqual({
+      status: 'ok',
+      version: '9f2c1ab',
+    });
   });
 
   it('answers 503 with a generic body when production has no secret, logging why', async () => {
@@ -34,8 +41,9 @@ describe('GET /api/health', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(await res.json()).toEqual({ status: 'unavailable' });
     expect(console.error).toHaveBeenCalledWith(
-      '[web] /api/health:',
-      expect.stringContaining('INTERNAL_API_SECRET is required in production'),
+      expect.stringMatching(
+        /^\[web\] \/api\/health: invalid web environment:\n.*INTERNAL_API_SECRET is required in production/,
+      ),
     );
   });
 
@@ -43,9 +51,13 @@ describe('GET /api/health', () => {
     const { API_HOST: _, ...noHost } = production;
     expect(health(noHost).status).toBe(503);
     expect(console.error).toHaveBeenCalledWith(
-      '[web] /api/health:',
       expect.stringContaining('API_HOST is required in production'),
     );
+  });
+
+  it('answers 503 for a proxy header setting that names no header (else every BFF call fails)', () => {
+    for (const variable of ['REAL_IP_HEADER', 'EDGE_REQUEST_ID_HEADER'])
+      expect(health({ ...production, [variable]: 'X-Real-IP:' }).status).toBe(503);
   });
 
   it('answers 503 for a production build started without NODE_ENV or a secret', () => {
