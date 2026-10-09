@@ -72,7 +72,7 @@
         ]
       },
       "docker-build": {
-        "command": "node tools/dev-ports.mjs --exec -- sh -c 'docker compose -p \"$STACK_PROJECT\" -f docker-compose.stack.yml build api migrate'",
+        "command": "node tools/stack-guard.mjs && node tools/dev-ports.mjs --exec -- sh -c 'docker compose -p \"$STACK_PROJECT\" -f docker-compose.stack.yml build api migrate'",
         "options": {
           "cwd": "{workspaceRoot}"
         },

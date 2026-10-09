@@ -87,6 +87,10 @@ migrations again, as every deploy does (they must exit 0 and keep the rows, whic
 then reads); runs every spec in BASE_URL mode (`docs/e2e.md`) with `E2E_SEEDED=1` and
 `E2E_REQUIRE_STACK=1`; and runs `stack-down`, whatever failed before. Arguments after `--` go to
 Playwright (`-- -g "board"`). Only the API's 401 spec skips: the API has no port here.
+Interrupted (Ctrl-C, or Nx killing the task), it still leaves no stack behind: a watcher it starts
+outside the task's process tree runs `stack-down` once the run is gone. The image builds and
+`stack-up` refuse a stack project this checkout does not own (`tools/stack-guard.mjs`), so nothing
+gets built or tagged under another checkout's stack names.
 
 To keep the stack up between runs, do the same by hand:
 

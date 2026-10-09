@@ -15,13 +15,18 @@
 //
 // CI's `docker` job runs the same steps (.github/workflows/ci.yml) and checks the running images
 // on top. Like stack-down, it refuses a stack project that is not this checkout's own.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveInfo, toEnv } from './dev-ports.mjs';
 import { SHELL_ON_WINDOWS } from './lib/bin.mjs';
 
 const log = (message) => console.log(`[e2e-stack] ${message}`);
+
+/** The exit code a shell reports for a process a signal ended. */
+const SIGNAL_CODES = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
 
 /**
  * Run the steps above for `info` (dev-ports) with `run(command, args, env, capture)`, which
@@ -50,7 +55,8 @@ export function e2eStack(info, baseEnv, run, playwrightArgs = []) {
     if (code !== 0) return undefined;
     log(name);
     const result = run(command, args, stepEnv, capture);
-    code = result.status ?? 1;
+    // a step a signal ended (Ctrl-C reaches the whole process group) exits like a shell reports it
+    code = result.status ?? SIGNAL_CODES[result.signal] ?? 1;
     if (code !== 0) log(`${name}: failed (exit code ${code})`);
     return result;
   };
@@ -84,10 +90,40 @@ function spawnStep(command, args, env, capture) {
   });
 }
 
+/**
+ * Start `node tools/stack-down.mjs --after <this pid> --unless <marker>` outside this process tree:
+ * through a shell that exits at once, so the watcher is reparented and in a session of its own.
+ * When Nx kills the task tree (Ctrl-C), the watcher still removes the stack; after a normal end
+ * this script writes `marker` and the watcher does nothing.
+ */
+function startWatcher(info, marker) {
+  const stackDown = join(info.root, 'tools', 'stack-down.mjs');
+  const args = [stackDown, '--after', String(process.pid), '--unless', marker];
+  const child =
+    process.platform === 'win32'
+      ? spawn(process.execPath, args, { detached: true, stdio: 'ignore', cwd: info.root })
+      : spawn(
+          '/bin/sh',
+          ['-c', '"$@" >/dev/null 2>&1 &', 'stack-watch', process.execPath, ...args],
+          { detached: true, stdio: 'ignore', cwd: info.root },
+        );
+  child.unref();
+}
+
 function main(argv) {
   // Nx passes the target's extra arguments on as they are, after a `--` or not
   const args = argv[0] === '--' ? argv.slice(1) : argv;
-  process.exitCode = e2eStack(resolveInfo(), process.env, spawnStep, args);
+  // Ctrl-C (or a SIGTERM) must not end this process before step 5: by default Node exits on the
+  // spot, mid-step, and leaves the stack running. With a handler installed the signal only ends
+  // the step that is running (Ctrl-C reaches its process too), the later steps are skipped as
+  // after any failure, the stack is still removed, and the exit code reports the signal.
+  for (const signal of Object.keys(SIGNAL_CODES)) process.on(signal, () => {});
+  const info = resolveInfo();
+  const marker = join(tmpdir(), `e2e-stack-${process.pid}-removed`);
+  if (info.ownsStackProject) startWatcher(info, marker);
+  process.exitCode = e2eStack(info, process.env, spawnStep, args);
+  // this process removed the stack itself: the watcher has nothing to do
+  if (info.ownsStackProject) writeFileSync(marker, '');
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

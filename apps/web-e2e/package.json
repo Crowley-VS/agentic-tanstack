@@ -44,7 +44,7 @@
         ]
       },
       "stack-up": {
-        "command": "node tools/dev-ports.mjs --exec -- sh -c 'docker compose -p \"$STACK_PROJECT\" -f docker-compose.stack.yml up --detach --wait && echo \"stack: web on http://127.0.0.1:$STACK_PORT\"'",
+        "command": "node tools/stack-guard.mjs && node tools/dev-ports.mjs --exec -- sh -c 'docker compose -p \"$STACK_PROJECT\" -f docker-compose.stack.yml up --detach --wait && echo \"stack: web on http://127.0.0.1:$STACK_PORT\"'",
         "options": {
           "cwd": "{workspaceRoot}"
         },
