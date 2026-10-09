@@ -210,14 +210,16 @@ describe('production images', () => {
 
   it("keeps every file the frozen install reads: each workspace package's package.json", () => {
     const workspace = read('pnpm-workspace.yaml');
+    // the `packages:` list runs to the next top-level key: comment and blank lines do not end it
     const globs = [
-      ...(workspace.match(/^packages:\r?\n((?:[ \t]+-.*\r?\n?)+)/m)?.[1] ?? '').matchAll(
+      ...(workspace.match(/^packages:\r?\n((?:(?:[ \t].*)?\r?\n)+)/m)?.[1] ?? '').matchAll(
         /^[ \t]+-[ \t]*['"]?([^'"\s#]+)/gm,
       ),
     ].map((m) => m[1]);
     expect(globs.length).toBeGreaterThan(0);
     const manifests = globs.flatMap((glob) => globSync(`${glob}/package.json`, { cwd: REPO }));
     expect(manifests).toContain('apps/api/package.json');
+    expect(manifests).toContain('.railway/package.json'); // a dot directory, listed after a comment
     const rules = dockerignoreRules(read('.dockerignore'));
     for (const file of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', ...manifests])
       expect(ignored(file, rules), `${file} is left out of the build context`).toBe(false);

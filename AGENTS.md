@@ -82,6 +82,7 @@ Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI 
 - `packages/ui` (`scope:web`, `type:ui`): React components (shadcn/ui, radix-nova) and the Tailwind 4 theme. Add one with `pnpm --filter @acme/ui exec shadcn add <name> --overwrite` (without `--overwrite` it writes nothing when no terminal is attached), then `pnpm format` and `git diff packages/ui` (`docs/web.md`).
 - `packages/validators` (`scope:shared`, `type:util`): Zod schemas and limits shared by api and web.
 - `tools` (`scope:tooling`, `type:tooling`): dev ports, Claude Code hooks, `pnpm check`, agent-config sync; plain `.mjs`, gated by lint, boundaries and tests (no `typecheck`).
+- `.railway` (`railway-iac`, `scope:tooling`, `type:tooling`): Railway infrastructure as code (experimental, `docs/deployment-railway.md`); every `railway` command asks first; agents never log in.
 - `docker-compose.yml`: the local Postgres (dev, e2e and tests only); `docker-compose.stack.yml`: the production images (`apps/*/Dockerfile`) run together locally.
 
 Without Docker, `pnpm nx affected -t test --exclude=tag:needs-db` skips the `needs-db` projects.

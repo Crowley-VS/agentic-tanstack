@@ -103,7 +103,8 @@ edge's HTTP logs.
 
 Railway sends SIGTERM to the old deployment once the new one is live, and SIGKILL after
 `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`, **0 by default**: without it set (10 s covers both servers),
-no request in flight survives a deploy. Both images run `node` as PID 1, so the servers' own
+no request in flight survives a deploy. `.railway/railway.ts` sets 10 s (`deploy.drainingSeconds`;
+`docs/deployment-railway.md`). Both images run `node` as PID 1, so the servers' own
 handlers are all there is.
 
 |                        | API (`src/main.ts`)                                   | web (Nitro's server, srvx)                                      |
