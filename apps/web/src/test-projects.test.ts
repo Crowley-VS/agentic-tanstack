@@ -7,8 +7,11 @@ import browser from '../vitest.browser.config';
 import node from '../vitest.config';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+// Vitest's own artifacts carry their test file's name: snapshots (`__snapshots__/a.test.ts.snap`)
+// and reference screenshots (a `__screenshots__/a.browser.test.tsx/` directory)
+const ARTIFACTS = ['**/__snapshots__/**', '**/__screenshots__/**'];
 const glob = (patterns: readonly string[] = [], exclude: readonly string[] = []) =>
-  globSync([...patterns], { cwd: root, exclude: [...exclude] }).toSorted();
+  globSync([...patterns], { cwd: root, exclude: [...exclude, ...ARTIFACTS] }).toSorted();
 
 it('runs every test file in exactly one project', () => {
   const nodeFiles = glob(node.test?.include, node.test?.exclude);

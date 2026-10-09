@@ -206,7 +206,7 @@ describe('the write rate limit', () => {
     const res = await proxyGraphql(post(MUTATION), limited(), { socketIp });
     expect(res.status).toBe(429);
     const retryAfter = Number(res.headers.get('retry-after'));
-    expect(retryAfter).toBeGreaterThanOrEqual(59);
+    expect([59, 60]).toContain(retryAfter);
     expect(await res.json()).toEqual({
       errors: [
         {
@@ -265,6 +265,18 @@ describe('the write rate limit', () => {
       429,
     );
     expect(received?.headers[CLIENT_IP_HEADER]).toBe('203.0.113.2');
+  });
+
+  it('counts an IPv6 client by its /64: a host cannot get fresh writes from new addresses', async () => {
+    const socketIp = freshIp();
+    for (const ip of ['2001:db8:0:1::1', '2001:db8:0:1::2'])
+      expect((await proxyGraphql(writeFrom(ip), limited(), { socketIp })).status).toBe(200);
+    expect((await proxyGraphql(writeFrom('2001:db8:0:1::3'), limited(), { socketIp })).status).toBe(
+      429,
+    );
+    expect((await proxyGraphql(writeFrom('2001:db8:0:2::1'), limited(), { socketIp })).status).toBe(
+      200,
+    );
   });
 
   it('ignores X-Forwarded-For, and X-Real-IP too when REAL_IP_HEADER is empty', async () => {

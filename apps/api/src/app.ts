@@ -1,6 +1,7 @@
 // The Yoga app: schema, request context and the security defaults. A pure factory (no env reads,
 // no connections), so tests call it directly with `yoga.fetch`.
 import type { Db } from '@acme/db';
+import { MAX_TOKENS } from '@acme/validators/internal-api';
 import { EnvelopArmorPlugin } from '@escape.tech/graphql-armor';
 import { useCSRFPrevention } from '@graphql-yoga/plugin-csrf-prevention';
 import { useDisableIntrospection } from '@graphql-yoga/plugin-disable-introspection';
@@ -48,7 +49,7 @@ export function createApp({ db, env, log }: { db: Db; env: Env; log?: (line: str
         maxDepth: { n: 10 },
         maxAliases: { n: 15 },
         maxDirectives: { n: 10 },
-        maxTokens: { n: 2000 },
+        maxTokens: { n: MAX_TOKENS },
         costLimit: { maxCost: 5000 },
         blockFieldSuggestion: { enabled: production },
       }),

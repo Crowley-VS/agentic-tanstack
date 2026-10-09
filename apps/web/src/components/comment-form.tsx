@@ -27,12 +27,13 @@ export function CommentForm({ noteId }: { noteId: string }) {
   const addComment = useMutation({
     mutationFn: async (input: CommentInput) =>
       (await execute(AddCommentMutation, { input })).addComment,
-    // the note shows the comment; the board shows the note's comment count
+    // the note shows the comment; the board shows the note's comment count. The board is off
+    // screen here (inactive): 'all' refetches it too, so going back never shows the old count
     onSuccess: (result) =>
       result.__typename === 'MutationAddCommentSuccess' &&
       Promise.all([
         queryClient.invalidateQueries({ queryKey: noteKeys.detail(noteId) }),
-        queryClient.invalidateQueries({ queryKey: noteKeys.lists() }),
+        queryClient.invalidateQueries({ queryKey: noteKeys.lists(), refetchType: 'all' }),
       ]),
   });
 
@@ -58,7 +59,7 @@ export function CommentForm({ noteId }: { noteId: string }) {
       case 'NotFoundError':
         return setErrors({ form: 'This note no longer exists.' });
       default:
-        return unreachable(result);
+        return setErrors({ form: unreachable(result) });
     }
   }
 

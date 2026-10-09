@@ -60,7 +60,7 @@ export function NoteForm() {
       case 'ValidationError':
         return setErrors(fieldErrors(result.fieldErrors, FIELDS, { argument: 'input' }));
       default:
-        return unreachable(result);
+        return setErrors({ form: unreachable(result) });
     }
   }
 

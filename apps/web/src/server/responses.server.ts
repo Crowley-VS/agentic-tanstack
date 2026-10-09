@@ -1,6 +1,6 @@
 // The web server's own error answers on /api/*, in GraphQL's response shape ({ errors: [...] }), so
 // execute() and the UI read a BFF refusal (405, 413, 415, 429, 502, 504) like an error from the
-// API; `extensions.code` tells one refusal from another (429: RATE_LIMITED).
+// API. Clients tell them apart by status; only the 429 carries an `extensions.code` (RATE_LIMITED).
 
 type ErrorInit = { headers?: Record<string, string>; extensions?: Record<string, unknown> };
 

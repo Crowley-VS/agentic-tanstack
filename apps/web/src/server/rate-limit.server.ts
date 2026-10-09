@@ -5,6 +5,7 @@
 // one shared count moves it to a shared store (e.g. Redis) or the platform's edge.
 import { isIPv6 } from 'node:net';
 import { RATE_LIMITED } from '@acme/validators/error-codes';
+import { MAX_TOKENS } from '@acme/validators/internal-api';
 import {
   type DocumentNode,
   type FragmentDefinitionNode,
@@ -24,8 +25,9 @@ export const MAX_CLIENTS = 10_000;
  * How many writes a JSON request body may make. A body that surely runs a query makes none; a
  * mutation makes one per root field it selects (aliases let one request run the same mutation
  * many times). A body this cannot make sense of (bad JSON, a batch, no query, a syntax error, an
- * operation operationName does not single out) counts as one write, so no body skips the limit by
- * being read differently here than by the API. The app's own requests always parse.
+ * operation operationName does not single out, more tokens than the API accepts) counts as one
+ * write, so no body skips the limit by being read differently here than by the API. The app's own
+ * requests always parse.
  */
 export function writesIn(body: string): number {
   let params: unknown;
@@ -39,7 +41,9 @@ export function writesIn(body: string): number {
   const name: unknown = Reflect.get(params, 'operationName') ?? undefined;
   if (typeof query !== 'string' || (name !== undefined && typeof name !== 'string')) return 1;
   try {
-    const document = parse(query, { noLocation: true });
+    // the API's token budget: it refuses a longer document unparsed, and a walk of an unbounded
+    // one (thousands of fragments) would cost this server milliseconds per request
+    const document = parse(query, { noLocation: true, maxTokens: MAX_TOKENS });
     const operation = getOperationAST(document, name);
     if (operation?.operation === OperationTypeNode.QUERY) return 0;
     if (!operation) return 1;

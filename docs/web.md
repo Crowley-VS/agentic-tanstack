@@ -85,21 +85,24 @@ BFF's 502) retry up to 3 times. A failed loader or query shows the error page
 (`src/components/error-page.tsx`), whose "Try again" runs the loaders again (with the API down,
 SSR answers 500 with that page). It logs what failed a server render, with its cause, and shows a
 fixed message chosen from the error's message alone (an SSR error reaches the browser as a plain
-`Error`, so a class check would break hydration): the raw message in development only.
+`Error`, so a class check would break hydration): the raw message in development only. The
+message is in the page's dehydrated state either way, so keep server detail in `cause`.
 `notFound()` (an unknown URL, a malformed or missing id) renders `src/components/not-found.tsx`
 with HTTP 404; a route may pass it its own message.
 
 The root loader fills `appStatusOptions()` (`src/lib/app-status.ts`) for every page:
 `Query.readOnly`, true while the API runs with `READ_ONLY=true`. `useReadOnly()` reads it, and the
 root layout shows a banner while it is true. With the API down, the root loader fails, so the
-error page renders without the layout.
+error page renders without the layout, for every URL: an unknown URL or a malformed note id
+answers 500 then, not 404.
 
 Hydration-safe rendering:
 
-- Buttons that need JavaScript ("Load more", a form's submit) render disabled until
-  `useHydrated()`: a click before hydration would be lost (a submit would be a native GET, with
-  the form's fields in the URL). Playwright waits for them to be enabled, so e2e specs need no
-  hydration retries. "Load more" also stays disabled while any fetch runs or is paused (offline).
+- Buttons that need JavaScript ("Load more", a form's submit, the error page's "Try again")
+  render disabled until `useHydrated()`: a click before hydration would be lost (a submit would be
+  a native GET, with the form's fields in the URL). Playwright waits for them to be enabled, so e2e
+  specs need no hydration retries. "Load more" also stays disabled while any fetch runs or is
+  paused (offline).
 - User text renders as React text only (never `dangerouslySetInnerHTML`); long words wrap
   (`wrap-anywhere`) and bodies keep their line breaks (`whitespace-pre-wrap`).
 - Timestamps are UTC text (`formatTimestamp()` in `src/lib/notes/format.ts`): the server and
@@ -119,19 +122,22 @@ board's operations (`src/lib/notes/queries.ts`); the helpers are in `src/lib/for
 2. **Send** with `execute()` inside `useMutation` (the pending state disables the fieldset and
    marks the button `aria-busy`).
 3. **Handle the result** with an exhaustive `switch` on `__typename` that ends in
-   `unreachable(result)`: a union member the API adds later fails `web:typecheck` there. A
-   `ValidationError` maps to the fields with `fieldErrors(…, { argument: 'input' })`; the input
-   stays, so it can be fixed.
+   `setErrors({ form: unreachable(result) })`: a union member the API adds later fails
+   `web:typecheck` there; at run time (an API deployed ahead of the web) it logs the result and
+   the form shows the generic message. A `ValidationError` maps to the fields with
+   `fieldErrors(…, { argument: 'input' })`; the input stays, so it can be fixed.
 4. **On success**, the options-level `onSuccess` returns the `invalidateQueries` promise for every
    query that shows the new data (by `noteKeys`), so the form stays pending until they have
    refetched (a per-call `onSuccess` is not awaited); then the form resets and a toast says so.
+   A query no component on the page reads (the board's list, from a note's page) needs
+   `refetchType: 'all'`: a plain invalidation only marks it stale, and going back shows old data.
 
 A write that throws shows one message under the form (`useWriteError()`): read-only (`READ_ONLY`
 from the API; it also sets the cached `appStatus` to read-only, so the banner shows and every form
 disables), `Too many writes: try again in N s.` (the BFF's 429 `RATE_LIMITED`, N from
-`Retry-After`), or a generic one (network, masked errors). Both codes come from
-`@acme/validators/error-codes`. Forms render disabled while `useReadOnly()` is true, and their
-submit button until hydration.
+`Retry-After`; "in a moment" without one), or a generic one (network, masked errors). Both codes
+come from `@acme/validators/error-codes`. Forms render disabled while `useReadOnly()` is true, and
+their submit button until hydration.
 
 The forms use plain React state: two short forms, with every step visible to copy.
 `@tanstack/react-form` is the upgrade for bigger forms; it is not added while its 2.0 is in alpha
@@ -173,7 +179,8 @@ without one, Start answers it with the page renderer's 200 HTML. In production t
   writes); `off` or `E2E=1` (the e2e servers) turns it off. Only a body that surely runs a query
   is free: a mutation counts one write per root field (aliases included, through fragments, so
   `mutation { a: createNote(…) b: createNote(…) }` is 2), and anything the BFF cannot classify
-  (bad JSON, a batch, a persisted query, a syntax error, an unclear `operationName`) counts 1; a
+  (bad JSON, a batch, a persisted query, a syntax error, more tokens than the API accepts
+  (`MAX_TOKENS` from `@acme/validators/internal-api`), an unclear `operationName`) counts 1; a
   body refused with 413 or 415 does not. A request that would go past the limit is refused whole.
   Over the limit: 429 with `Retry-After` and the error `Too many writes: try again in N s.` with
   `extensions.code: RATE_LIMITED` (from `@acme/validators/error-codes`); `execute()` rejects with
