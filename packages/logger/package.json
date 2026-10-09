@@ -1,0 +1,21 @@
+{
+  "name": "@acme/logger",
+  "version": "0.0.0",
+  "private": true,
+  "description": "One log line per event for the web and API servers: JSON in production, text in development. No dependencies.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@acme/source": "./src/logger.ts",
+      "types": "./src/logger.ts",
+      "default": "./src/logger.ts"
+    }
+  },
+  "nx": {
+    "name": "logger",
+    "tags": [
+      "scope:shared",
+      "type:util"
+    ]
+  }
+}

@@ -1,5 +1,6 @@
 // The API's environment, validated once at startup (main.ts). Nothing reads process.env at import
 // time: the schema must print with an empty environment (print-schema, CI).
+import { isIPv6 } from 'node:net';
 import { InternalApiSecret, SECRET_REQUIRED_IN_PRODUCTION } from '@acme/validators/internal-api';
 import { z } from 'zod';
 
@@ -17,6 +18,10 @@ const Env = z
     READ_ONLY: z.stringbool().default(false),
     /** Shared with the web server (its BFF sends it on every request): the API is private. */
     INTERNAL_API_SECRET: InternalApiSecret,
+    /** The deploy's version (the image bakes it in): Query.apiVersion, and every JSON log line. */
+    APP_VERSION: z.string().trim().min(1).optional(),
+    /** `json` or `text`; by default JSON in production, text elsewhere (@acme/logger). */
+    LOG_FORMAT: z.enum(['json', 'text']).optional(),
   })
   .refine(
     (env) => env.NODE_ENV !== 'production' || env.INTERNAL_API_SECRET,
@@ -47,3 +52,14 @@ export const listenPort = (env: Env) => env.PORT ?? env.API_PORT ?? 4000;
  */
 export const listenHost = (env: Env) =>
   env.LISTEN_HOST ?? (env.NODE_ENV === 'production' ? '::' : '127.0.0.1');
+
+/**
+ * The listen address as a URL's host, for the startup line: `localhost` reaches a wildcard or
+ * loopback address; any other is named as it is (an IPv6 address in brackets).
+ */
+export const urlHost = (host: string) =>
+  ['::', '0.0.0.0', '::1', '127.0.0.1'].includes(host)
+    ? 'localhost'
+    : isIPv6(host)
+      ? `[${host}]`
+      : host;

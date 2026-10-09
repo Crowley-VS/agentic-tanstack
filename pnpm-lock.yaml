@@ -281,6 +281,9 @@ importers:
       '@acme/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@acme/logger':
+        specifier: workspace:*
+        version: link:../../packages/logger
       '@acme/validators':
         specifier: workspace:*
         version: link:../../packages/validators
@@ -454,6 +457,8 @@ importers:
         version: 4.23.15
 
   packages/graphql: {}
+
+  packages/logger: {}
 
   packages/ui:
     dependencies:

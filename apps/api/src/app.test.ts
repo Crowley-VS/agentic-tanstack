@@ -1,6 +1,7 @@
 // The Yoga app's security defaults, through `yoga.fetch` (no server, no database: these queries
 // never touch it, and the pool connects lazily).
 import { createDb } from '@acme/db';
+import { createLogger, type LogFormat } from '@acme/logger';
 import { CLIENT_IP_HEADER, REQUEST_ID_HEADER, SECRET_HEADER } from '@acme/validators/internal-api';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createApp } from './app';
@@ -128,13 +129,14 @@ describe('api app', () => {
   });
 });
 
-/** An app whose request log goes to `lines`. */
-function logged(env: Record<string, string>) {
+/** An app whose log lines go to `lines`. */
+function logged(env: Record<string, string>, format: LogFormat = 'text') {
   const lines: string[] = [];
+  const log = createLogger({ app: 'api', format, write: (line) => lines.push(line) });
   const app = createApp({
     db,
     env: loadEnv({ DATABASE_URL: 'postgres://127.0.0.1/app', ...env }),
-    log: (line) => lines.push(line),
+    log,
   });
   return { app, lines };
 }
@@ -175,9 +177,67 @@ describe('request log', () => {
     expect(without.lines).toEqual([expect.stringMatching(/ ip=- id=-$/)]);
   });
 
-  it('leaves the health check out', async () => {
+  it('logs an empty forwarded value as missing', async () => {
+    const { app, lines } = logged({ NODE_ENV: 'production', INTERNAL_API_SECRET: SECRET });
+    await query(app, '{ apiVersion }', {
+      ...trusted,
+      [CLIENT_IP_HEADER]: '',
+      [REQUEST_ID_HEADER]: '',
+    });
+    expect(lines).toEqual([expect.stringMatching(/ ip=- id=-$/)]);
+  });
+
+  it('logs the socket address of a client that hangs up before the answer', async () => {
+    const { app, lines } = logged({});
+    // node:http's socket, as main.ts hands it to Yoga: its address is gone once the client leaves
+    const socket: { remoteAddress?: string } = { remoteAddress: '198.51.100.9' };
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        socket.remoteAddress = undefined; // the client hangs up while its body is read
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ query: '{ apiVersion }' })));
+        controller.close();
+      },
+    });
+    const init: RequestInit & { duplex: 'half' } = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      duplex: 'half',
+    };
+    await app.fetch('http://api/graphql', init, { req: { socket } });
+    expect(lines).toEqual([expect.stringMatching(/ ip=198\.51\.100\.9 id=-$/)]);
+  });
+
+  it("leaves the health check and (in development) GraphiQL's page out", async () => {
     const { app, lines } = logged({});
     expect((await app.fetch('http://api/health')).status).toBe(200);
+    const page = await app.fetch('http://api/graphql', { headers: { accept: 'text/html' } });
+    expect(page.headers.get('content-type')).toContain('text/html');
     expect(lines).toEqual([]);
+  });
+
+  it('logs an unexpected error with its stack and request id; the client sees it masked', async () => {
+    // the database is unreachable here: the notes query fails inside its resolver
+    const { app, lines } = logged({ NODE_ENV: 'production', INTERNAL_API_SECRET: SECRET }, 'json');
+    const res = await query(app, '{ notes(first: 1) { edges { cursor } } }', {
+      ...trusted,
+      ...forwarded,
+    });
+    expect(messages(res.body)).toBe('Unexpected error.');
+    expect(lines.map((line) => JSON.parse(line) as unknown)).toEqual([
+      expect.objectContaining({
+        level: 'error',
+        app: 'api',
+        message: expect.stringContaining('Failed query'),
+        requestId: 'req-1',
+        err: expect.objectContaining({ stack: expect.any(String) }),
+      }),
+      expect.objectContaining({
+        level: 'info',
+        status: 200,
+        requestId: 'req-1',
+        ip: '203.0.113.7',
+      }),
+    ]);
   });
 });

@@ -1,6 +1,7 @@
 // The Yoga app: schema, request context and the security defaults. A pure factory (no env reads,
 // no connections), so tests call it directly with `yoga.fetch`.
 import type { Db } from '@acme/db';
+import type { Logger } from '@acme/logger';
 import { MAX_TOKENS } from '@acme/validators/internal-api';
 import { EnvelopArmorPlugin } from '@escape.tech/graphql-armor';
 import { useCSRFPrevention } from '@graphql-yoga/plugin-csrf-prevention';
@@ -11,13 +12,16 @@ import type { Context } from './graphql/builder';
 import { schema } from './graphql/schema';
 import { fromWebServer, useInternalSecret } from './plugins/internal-secret';
 import { useReadOnly } from './plugins/read-only';
-import { useRequestLog } from './plugins/request-log';
+import { useRequestLog, yogaLogger } from './plugins/request-log';
 
 export const GRAPHQL_PATH = '/graphql';
 export const HEALTH_PATH = '/health';
 
-/** `log` gets one line per request (main.ts passes console.log); tests leave it out. */
-export function createApp({ db, env, log }: { db: Db; env: Env; log?: (line: string) => void }) {
+/**
+ * `log` gets one line per request, and Yoga's own lines (main.ts passes the server's logger); tests
+ * leave it out, and Yoga then logs an unexpected error to the console itself.
+ */
+export function createApp({ db, env, log }: { db: Db; env: Env; log?: Logger }) {
   const production = env.NODE_ENV === 'production';
   return createYoga<Record<string, unknown>, Context>({
     schema,
@@ -32,9 +36,11 @@ export function createApp({ db, env, log }: { db: Db; env: Env; log?: (line: str
     landingPage: false,
     // unexpected errors reach the client as "Unexpected error." (details stay in the server log)
     maskedErrors: true,
+    ...(log && { logging: yogaLogger(log) }),
     plugins: [
-      // first, so it times the whole request and sees the secret check's 401 too; it trusts the
-      // forwarded client IP and request id whenever the secret matches (in development too)
+      // first of ours, so it times the whole request and sees the secret check's 401 too (Yoga's
+      // health check and GraphiQL page answer before it); it trusts the forwarded client IP and
+      // request id whenever the secret matches (in development too)
       ...(log ? [useRequestLog({ trusted: fromWebServer(env.INTERNAL_API_SECRET), log })] : []),
       // production only: in development Nx loads the root .env (which sets the secret) into every
       // task, and GraphiQL, curl and agents must work on 127.0.0.1 without it

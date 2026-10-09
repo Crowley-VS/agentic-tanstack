@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { listenHost, listenPort, loadEnv } from './env';
+import { listenHost, listenPort, loadEnv, urlHost } from './env';
 
 const DATABASE_URL = 'postgres://postgres:postgres@127.0.0.1:5432/app';
 const SECRET = 's'.repeat(32);
@@ -24,6 +24,25 @@ describe('loadEnv', () => {
     // a production-mode run that only this machine can reach (e2e)
     expect(listenHost(loadEnv({ ...production, LISTEN_HOST: '127.0.0.1' }))).toBe('127.0.0.1');
     expect(listenHost(loadEnv({ DATABASE_URL, LISTEN_HOST: '::' }))).toBe('::');
+  });
+
+  it('names the address it listens on in its startup URL: localhost when that reaches it', () => {
+    for (const host of ['::', '0.0.0.0', '::1', '127.0.0.1'])
+      expect(urlHost(host)).toBe('localhost');
+    expect(urlHost('10.0.0.5')).toBe('10.0.0.5');
+    expect(urlHost('fd12:3456::1')).toBe('[fd12:3456::1]');
+    expect(urlHost('api.railway.internal')).toBe('api.railway.internal');
+  });
+
+  it('takes the version and the log format, and refuses a log format it does not know', () => {
+    const unset = loadEnv({ DATABASE_URL });
+    expect([unset.APP_VERSION, unset.LOG_FORMAT]).toEqual([undefined, undefined]);
+    expect(loadEnv({ DATABASE_URL, APP_VERSION: '9f2c1ab', LOG_FORMAT: 'json' })).toMatchObject({
+      APP_VERSION: '9f2c1ab',
+      LOG_FORMAT: 'json',
+    });
+    expect(() => loadEnv({ DATABASE_URL, LOG_FORMAT: 'yaml' })).toThrow('LOG_FORMAT');
+    expect(() => loadEnv({ DATABASE_URL, APP_VERSION: ' ' })).toThrow('APP_VERSION');
   });
 
   it('needs a Postgres DATABASE_URL', () => {

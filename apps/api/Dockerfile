@@ -30,6 +30,13 @@ WORKDIR /app
 # the app cannot change its own code.
 COPY --from=build /repo/apps/api/dist ./dist
 COPY --from=build /repo/apps/api/migrations ./migrations
+# The version Query.apiVersion and every log line report (docs/production.md). Railway passes its
+# variables to a Dockerfile build as build args when they are declared: a deploy from GitHub gets
+# the commit's SHA. Elsewhere: --build-arg APP_VERSION=<version> (or RAILWAY_GIT_COMMIT_SHA, as CI
+# does). After the COPYs, so a new version changes only the layers from here on.
+ARG RAILWAY_GIT_COMMIT_SHA
+ARG APP_VERSION=${RAILWAY_GIT_COMMIT_SHA:-dev}
+ENV APP_VERSION=${APP_VERSION}
 USER node
 EXPOSE 4000
 # Slim images have no curl. Railway ignores this (it checks /health itself); Docker and compose
