@@ -4,7 +4,7 @@
 
 Nx monorepo: **TanStack Start** web app → **GraphQL** API (Yoga + Pothos) → **Drizzle** → Postgres 18 (Docker).
 Business logic lives in `packages/core`; apps are thin wrappers around it.
-Before you work on an area, read its doc (how to run, build and test it; its rules): `docs/api.md`, `docs/web.md`, `docs/e2e.md`, `docs/database.md`.
+Before you work on an area, read its doc (how to run, build and test it; its rules): `docs/api.md`, `docs/web.md`, `docs/e2e.md`, `docs/database.md`, `docs/deployment.md`.
 
 <!-- stack:end -->
 
@@ -22,7 +22,7 @@ Never claim "done" without these. If a check fails, fix the cause; never weaken 
 
 <!-- stack:start:done -->
 
-Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI or API changes also need `pnpm nx e2e web-e2e` (production builds, own ports and database: `docs/e2e.md`). Browser tests (`*.browser.test.{ts,tsx}`) need Chromium, once per machine and after each Playwright bump: `pnpm exec playwright install chromium`.
+Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI or API changes also need `pnpm nx e2e web-e2e` (production builds, own ports and database: `docs/e2e.md`). Dockerfile, `.dockerignore` or `docker-compose.stack.yml` changes need `pnpm nx run web-e2e:stack-up`, then `stack-down` (`docs/deployment.md`). Browser tests (`*.browser.test.{ts,tsx}`) need Chromium, once per machine and after each Playwright bump: `pnpm exec playwright install chromium`.
 
 <!-- stack:end -->
 
@@ -45,7 +45,7 @@ Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI 
 - `pnpm ports`: this checkout's URLs, ports and database URLs (each git worktree gets its own).
 - `pnpm dev` in the background: web + API, reloading. Curl the web's `/api/health` and the API's `/health`; stop it when done. Writes per IP are rate-limited, in dev too (`docs/web.md`).
 - Database: `pnpm db:up` (a no-op when it is up), `pnpm db:migrate`, `pnpm db:seed` (deterministic data), `pnpm db:reset` (wipes the data). Schema changes: Migrations, below.
-- `pnpm teardown` stops this checkout's Postgres and Nx daemon (data kept): run it before you leave or delete a worktree, once no server runs there (stop yours; skip it while a `pnpm dev` you did not start runs). `pnpm prune:orphans` removes what deleted worktrees left behind (`pnpm db:up` does the Docker part too, when it starts the server). Details: `docs/local-resources.md`.
+- `pnpm teardown` stops this checkout's Postgres and Nx daemon (data kept) and removes its image stack: run it before you leave or delete a worktree, once no server runs there (stop yours; skip it while a `pnpm dev` you did not start runs). `pnpm prune:orphans` removes what deleted worktrees left behind (`pnpm db:up` does the Docker part too, when it starts the server). Details: `docs/local-resources.md`.
 
 <!-- stack:end -->
 
@@ -81,7 +81,7 @@ Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI 
 - `packages/ui` (`scope:web`, `type:ui`): React components (shadcn/ui, radix-nova) and the Tailwind 4 theme. Add one with `pnpm --filter @acme/ui exec shadcn add <name> --overwrite` (without `--overwrite` it writes nothing when no terminal is attached), then `pnpm format` and `git diff packages/ui` (`docs/web.md`).
 - `packages/validators` (`scope:shared`, `type:util`): Zod schemas and limits shared by api and web.
 - `tools` (`scope:tooling`, `type:tooling`): dev ports, Claude Code hooks, `pnpm check`, agent-config sync; plain `.mjs`, gated by lint, boundaries and tests (no `typecheck`).
-- `docker-compose.yml`: the local Postgres (dev, e2e and tests only).
+- `docker-compose.yml`: the local Postgres (dev, e2e and tests only); `docker-compose.stack.yml`: the production images (`apps/*/Dockerfile`) run together locally.
 
 Without Docker, `pnpm nx affected -t test --exclude=tag:needs-db` skips the `needs-db` projects.
 

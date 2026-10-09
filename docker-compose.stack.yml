@@ -1,0 +1,101 @@
+# The production images, run like production on this machine: Postgres 18, the API's migrations
+# as a one-off, the private API, and the web server, the only service with a port (127.0.0.1 and
+# this checkout's stack port, `pnpm ports`). Not the dev database (docker-compose.yml): its own
+# Postgres, from empty and in memory, like a first deploy. Run it through Nx, which names the
+# project after this checkout (`<compose project>-stack`, or STACK_PROJECT) and builds the images:
+#
+#   pnpm nx run web-e2e:stack-up      build, start, wait until every service is healthy
+#   pnpm nx run web-e2e:stack-down    remove it all: containers, data, network and its images
+#                                     (`pnpm teardown` runs it too)
+#
+# docs/deployment.md has the details. The targets name the project with `-p "$STACK_PROJECT"`
+# (tools/dev-ports.mjs): COMPOSE_PROJECT_NAME, the dev database's project, would win over `name`.
+# Its services are named apart from docker-compose.yml's all the same.
+name: ${STACK_PROJECT:-acme-app-stack}
+
+# Which repository and checkout this belongs to (as in docker-compose.yml), on the containers and
+# the images: `pnpm prune:orphans` removes a deleted checkout's stack, its images included. Empty
+# for a project that is not the checkout's own (tools/dev-ports.mjs): never pruned.
+x-checkout: &checkout
+  dev-checkout.git-common-dir: ${DEV_CHECKOUT_GIT_COMMON_DIR:-}
+  dev-checkout.root: ${DEV_CHECKOUT_ROOT:-}
+
+# A test value, not a secret, for the API and the web server: it is in this file, so it guards
+# nothing but this local stack, whose API no other machine reaches. Run this file anywhere else
+# (a server) only with STACK_INTERNAL_API_SECRET set to a real secret; a platform running the
+# images gets its own INTERNAL_API_SECRET.
+x-secret: &secret
+  INTERNAL_API_SECRET: ${STACK_INTERNAL_API_SECRET:-stack-only-fixed-value-not-a-secret-0000}
+
+# The apps write nothing but /tmp: a read-only root and no capabilities prove it.
+x-hardening: &hardening
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+
+x-api-build: &api-build
+  context: .
+  dockerfile: apps/api/Dockerfile
+  labels: *checkout
+
+services:
+  db:
+    image: postgres:18.6-trixie
+    labels: *checkout
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    # Throwaway data, in memory: no volume to leave behind (without a mount at this path the
+    # image makes an anonymous one). PG18 keeps data in /var/lib/postgresql/18/docker.
+    tmpfs: [/var/lib/postgresql]
+    healthcheck:
+      # -h 127.0.0.1: during init a temporary server answers on the unix socket only.
+      test: ['CMD', 'pg_isready', '-h', '127.0.0.1', '-U', 'app', '-d', 'app']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+      start_interval: 200ms
+
+  # The deploy's pre-deploy step: apply the migrations, then exit.
+  migrate:
+    build: *api-build
+    <<: *hardening
+    labels: *checkout
+    command: ['node', 'dist/migrate.mjs']
+    environment:
+      DATABASE_URL: postgresql://app:app@db:5432/app
+    depends_on:
+      db: { condition: service_healthy }
+    restart: 'no'
+
+  # Private: no published port, reached as http://api:4000 on this project's network only.
+  api:
+    build: *api-build
+    <<: *hardening
+    labels: *checkout
+    environment:
+      <<: *secret
+      DATABASE_URL: postgresql://app:app@db:5432/app
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      labels: *checkout
+    <<: *hardening
+    labels: *checkout
+    environment:
+      <<: *secret
+      API_HOST: api
+      API_PORT: '4000'
+      # No proxy in front sets X-Real-IP here: count writes per socket address.
+      REAL_IP_HEADER: ''
+    ports:
+      - '127.0.0.1:${STACK_PORT:-3200}:3000'
+    depends_on:
+      api: { condition: service_healthy }

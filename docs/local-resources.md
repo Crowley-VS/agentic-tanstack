@@ -4,27 +4,33 @@ Every checkout (the primary one and each git worktree) starts things of its own 
 unless something stops them: agents work in throwaway worktrees, so on a busy machine these pile
 up. Details behind `pnpm teardown` and `pnpm prune:orphans`.
 
-| What                  | Per                  | Started by                                 | Released by                            |
-| --------------------- | -------------------- | ------------------------------------------ | -------------------------------------- |
-| Postgres container    | checkout             | `pnpm db:up`, db tests, `pnpm dev`, e2e    | `pnpm teardown` (keeps the data)       |
-| its volume (the data) | checkout             | the first `pnpm db:up`                     | `pnpm db:reset`, `pnpm prune:orphans`  |
-| Nx daemon             | checkout (workspace) | the first `pnpm nx …` command              | `pnpm teardown`, deleting the checkout |
-| dev / e2e servers     | whoever started them | `pnpm dev`, `serve-e2e`, a background task | whoever started them                   |
+| What                                                     | Per                  | Started by                                    | Released by                                       |
+| -------------------------------------------------------- | -------------------- | --------------------------------------------- | ------------------------------------------------- |
+| Postgres container                                       | checkout             | `pnpm db:up`, db tests, `pnpm dev`, e2e       | `pnpm teardown` (keeps the data)                  |
+| its volume (the data)                                    | checkout             | the first `pnpm db:up`                        | `pnpm db:reset`, `pnpm prune:orphans`             |
+| Nx daemon                                                | checkout (workspace) | the first `pnpm nx …` command                 | `pnpm teardown`, deleting the checkout            |
+| dev / e2e servers                                        | whoever started them | `pnpm dev`, `serve-e2e`, a background task    | whoever started them                              |
+| production-image stack (containers, network, its images) | checkout             | `web-e2e:stack-up`, `docker-build`            | `web-e2e:stack-down`, `teardown`, `prune:orphans` |
+| Docker's build cache                                     | machine (shared)     | every image build, of any checkout or project | `docker builder prune`, by hand (below)           |
 
 ## `pnpm teardown`: release what this checkout started
 
-Stops this checkout's Nx daemon (`nx daemon --stop`) and its Postgres container
-(`node packages/db/scripts/db-up.mjs down`). It keeps the volume, so a checkout's dev data
-survives (`pnpm db:up` brings it back); `pnpm db:reset` is what deletes data. It is idempotent and
-takes well under a second when nothing runs, Docker stopped or missing included.
+Removes this checkout's production-image stack (`node tools/stack-down.mjs`, what
+`web-e2e:stack-down` runs: its containers, network and images, `docs/deployment.md`), then stops
+its Nx daemon (`nx daemon --stop`) and its Postgres container
+(`node packages/db/scripts/db-up.mjs down`). The stack goes first, without Nx (no project graph to
+compute, no daemon to start), and the rest runs even when that fails. It keeps the Postgres volume,
+so a checkout's dev data survives (`pnpm db:up` brings it back); `pnpm db:reset` is what deletes
+data. It is idempotent and takes well under a second when nothing runs, Docker stopped or missing
+included; about 2 s with a stack to remove.
 
 Run it before you delete a worktree. Servers you started yourself (`pnpm dev`, a background
 `serve-e2e`) are yours to stop first. The review loop's agents do both as their last step, before
 they reset their worktree (`.claude/workflows/review-loop-run.js`). Skip it while a server you did
 not start still runs in the checkout (the user's `pnpm dev`; the API's `/health` from `pnpm ports`
 answers): its API answers every query with an error until `pnpm db:up` brings the database back.
-A project `COMPOSE_PROJECT_NAME` names other than the checkout's own may serve other checkouts
-too, so `teardown` leaves it running.
+A project `COMPOSE_PROJECT_NAME` (or, for the stack, `STACK_PROJECT`) names other than the
+checkout's own may serve other checkouts too, so `teardown` leaves it running.
 
 ## `pnpm prune:orphans`: remove what deleted checkouts left behind
 
@@ -49,8 +55,9 @@ another fails (the command then exits non-zero):
   `.npmrc`, if the workspace has one), nothing else. Nx writes them before it installs a package
   there; which command leaves them empty is not traced yet (one agent session left 16).
 - **This repository's Docker resources** whose checkout directory no longer exists: containers
-  (running or not), volumes and networks (`packages/db/scripts/orphans.mjs`). It prints each
-  compose project it removed and the directory it belonged to.
+  (running or not), volumes, networks and images (`packages/db/scripts/orphans.mjs`), of the dev
+  Postgres and of the production-image stack alike. It prints each compose project it removed and
+  the directory it belonged to.
 
 `pnpm db:up` (and everything that starts the database through it) runs the Docker part on its own
 whenever it has to start the server, since it calls Docker then anyway: a deleted worktree's
@@ -67,6 +74,12 @@ whose checkout directory is gone are looked at further. Such a project is remove
 resource of it labeled with this repository's common dir names a checkout directory that is gone,
 and no container of it runs from a directory that still exists. Its containers, volumes and
 networks then go, unlabeled ones of the same project included.
+
+`docker-compose.stack.yml` puts the same labels on the stack's containers and on the images it
+builds (`tools/dev-ports.mjs` fills them in for the checkout's own stack project). Images may
+outlive their containers (built alone, or kept by a `down`), so their own labels decide: one
+labeled with this repository and a checkout directory that is gone is removed, tagged or not,
+unless its compose project stays (a container of it runs from a live checkout).
 
 `db-up` labels only a checkout's own compose project. When `COMPOSE_PROJECT_NAME` names another
 one (to point several checkouts at one Postgres server, say), what it creates carries empty labels,
@@ -90,6 +103,19 @@ To clear the unlabeled leftovers once, by hand:
 docker ps -a --filter label=com.docker.compose.project --format '{{.Names}}\t{{.Label "com.docker.compose.project.working_dir"}}'
 docker volume ls --filter label=com.docker.compose.project
 docker compose -p <project of a deleted worktree> down -v   # or docker rm -f / docker volume rm
+```
+
+## Docker's build cache: shared, never pruned for you
+
+Every image build (`docker-build`, `stack-up`, a plain `docker build`) adds to Docker's build
+cache, which all checkouts of all repositories on the machine share; `docker system df` shows its
+size. Nothing here removes it: a checkout cannot tell its cache entries from another's, and the
+next build of the same layers reuses them. Each changed lockfile adds a full install (several
+hundred MB), so it grows. Prune it by hand now and then (the next build after it is a cold one):
+
+```bash
+docker builder prune --filter until=168h   # entries older than a week
+docker builder prune                       # everything no running build uses
 ```
 
 ## Agent sessions: no temp files per checkout

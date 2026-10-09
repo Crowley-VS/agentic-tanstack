@@ -71,6 +71,19 @@
           "{projectRoot}/migrations"
         ]
       },
+      "docker-build": {
+        "command": "node tools/dev-ports.mjs --exec -- sh -c 'docker compose -p \"$STACK_PROJECT\" -f docker-compose.stack.yml build api migrate'",
+        "options": {
+          "cwd": "{workspaceRoot}"
+        },
+        "inputs": [
+          "production",
+          "^production",
+          "{projectRoot}/Dockerfile",
+          "{workspaceRoot}/.dockerignore",
+          "{workspaceRoot}/docker-compose.stack.yml"
+        ]
+      },
       "serve-e2e": {
         "command": "node ../../tools/dev-ports.mjs --exec -- sh -c 'DATABASE_URL=$E2E_DATABASE_URL PORT=$API_E2E_PORT exec node dist/main.mjs'",
         "options": {

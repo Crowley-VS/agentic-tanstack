@@ -18,6 +18,29 @@
     "implicitDependencies": [
       "web",
       "api"
-    ]
+    ],
+    "targets": {
+      "stack-up": {
+        "command": "node tools/dev-ports.mjs --exec -- sh -c 'docker compose -p \"$STACK_PROJECT\" -f docker-compose.stack.yml up --detach --wait && echo \"stack: web on http://127.0.0.1:$STACK_PORT\"'",
+        "options": {
+          "cwd": "{workspaceRoot}"
+        },
+        "dependsOn": [
+          {
+            "projects": [
+              "api",
+              "web"
+            ],
+            "target": "docker-build"
+          }
+        ]
+      },
+      "stack-down": {
+        "command": "node tools/stack-down.mjs",
+        "options": {
+          "cwd": "{workspaceRoot}"
+        }
+      }
+    }
   }
 }
