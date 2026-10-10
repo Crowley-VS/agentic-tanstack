@@ -4,7 +4,8 @@ Details behind `.railway` in the repo map of `AGENTS.md`: what runs on Railway, 
 it up (`.railway/railway.ts` or the dashboard), what it costs, how to check a deploy, and what an
 agent may do. The images are the Dockerfiles in `apps/api` and `apps/web` (`docs/deployment.md`),
 the same on every platform; what they do at runtime (logs, versions, request ids, shutdown, client
-IP) is in `docs/production.md`. Only this page and `.railway/` are about Railway.
+IP) is in `docs/production.md`, Railway's side included: searching its logs, its SIGTERM and
+draining, the client IP its edge sets.
 
 ## What runs
 
@@ -67,7 +68,8 @@ railway init --name acme-app           # a new project (or `railway link` to an 
 Then, in the dashboard: **Project Settings → Shared Variables**, environment `production`, add
 `INTERNAL_API_SECRET` with the output of
 `node -p "require('node:crypto').randomBytes(32).toString('hex')"` (railway.ts only refers to
-it; without it both apps refuse to start). Then:
+it; without it the api refuses to start and web's `/api/health` answers 503, so neither deploy
+goes live). Then:
 
 ```bash
 pnpm nx run railway-iac:test           # the file evaluates and holds its rules (offline)
@@ -77,8 +79,9 @@ railway domain --service web --port 8080   # web's public domain (once; not part
 ```
 
 The apply creates the services from your repository's `main`; each deploys once CI passes on that
-commit (`checkSuites`, "Wait for CI"). `railway.ts` names the repository (bootstrap wrote yours
-into `REPO`). Wait for CI waits for every GitHub Actions run on the commit, and a failed one skips
+commit (`checkSuites`, "Wait for CI"). `REPO` in `railway.ts` names the repository: check it is
+yours. Bootstrap set it from `--repo` or your GitHub origin, else guessed `<scope>/<name>` (it
+printed which). Wait for CI waits for every GitHub Actions run on the commit, and a failed one skips
 the deploy: in the upstream template repository (`TEMPLATE_MAINTENANCE` set) that includes the
 template smoke test, up to 40 minutes.
 
@@ -109,9 +112,8 @@ The same project by hand, if you would rather not use the SDK (or it breaks):
 2. **Project Settings → Shared Variables:** `INTERNAL_API_SECRET`, as above.
 3. **New → GitHub Repo →** your repository; rename the service `api`. In its Settings:
    Source: branch `main`, **Wait for CI** on; Build: builder Dockerfile, Dockerfile path
-   `apps/api/Dockerfile`, Watch Paths (one per line) `/apps/api/**`, `/packages/core/**`,
-   `/packages/db/**`, `/packages/logger/**`, `/packages/validators/**` and the workspace files
-   listed in `.railway/railway.ts`; Deploy: Pre-deploy Command `node dist/migrate.mjs`,
+   `apps/api/Dockerfile`, Watch Paths (one per line) the api's `watchPatterns` in
+   `.railway/railway.ts` (its test keeps them in step with the packages the image bundles); Deploy: Pre-deploy Command `node dist/migrate.mjs`,
    Healthcheck Path `/health`; Networking: no public domain. Variables (Raw Editor):
 
    ```bash
@@ -122,8 +124,8 @@ The same project by hand, if you would rather not use the SDK (or it breaks):
    ```
 
 4. **New → GitHub Repo →** the same repository again; rename it `web`. Settings as for the api,
-   with Dockerfile path `apps/web/Dockerfile`, Watch Paths `/apps/web/**`, `/packages/logger/**`,
-   `/packages/ui/**`, `/packages/validators/**` and the workspace files, no pre-deploy command,
+   with Dockerfile path `apps/web/Dockerfile`, Watch Paths web's `watchPatterns` in
+   `.railway/railway.ts`, no pre-deploy command,
    Healthcheck Path `/api/health`, and **Networking → Generate Domain** on port 8080. Variables:
 
    ```bash
@@ -195,7 +197,10 @@ evaluation script of CLI 5.63.4.
 
 Agents never log in, create tokens or read secrets. In `.claude/settings.json` every `railway`
 command asks first: deploys (`railway up` even signs you in when you are not), `config apply`,
-variable and domain changes, all of it. An agent may edit `.railway/railway.ts` and run
+variable and domain changes, all of it. So do the Railway plugin's API script (`railway-api.sh`,
+which calls Railway's API with your login) and its MCP server's tools. The plugin's own hook
+approves its commands, but a hook cannot skip an ask rule; `tools/test/railway-permissions.test.mjs`
+keeps the rules. An agent may edit `.railway/railway.ts` and run
 `pnpm nx run railway-iac:test` freely; it shows you `railway config plan` and applies only when
 you approve. Variable values are redacted in plans; `--show-values`, `--decrypt-variables` and
 `railway variable list --kv` or `--json` print secrets: never paste their output anywhere.

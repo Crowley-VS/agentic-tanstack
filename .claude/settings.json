@@ -114,6 +114,8 @@
       "Bash(node tools/pr-review.mjs comment *)",
       "Bash(railway)",
       "Bash(railway *)",
+      "Bash(*railway-api.sh*)",
+      "mcp__plugin_railway_*",
       "Bash(pnpm nx run db:db-reset)",
       "Bash(pnpm nx run db:db-psql)",
       "Bash(pnpm nx run db:db-studio)",

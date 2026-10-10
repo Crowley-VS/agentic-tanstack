@@ -62,6 +62,7 @@ process.stdout.write(JSON.stringify(evaluated));
 
 type Variable =
   | { type: 'literal'; value: string }
+  | { type: 'raw'; value: string } // an env entry given as `{ value }`
   | { type: 'reference'; resource: string; output: string }
   | { type: 'sharedReference'; name: string };
 type Resource = {
@@ -212,10 +213,17 @@ describe('railway.ts', () => {
         type: 'sharedReference',
         name: 'INTERNAL_API_SECRET',
       });
-    const literals = [api, web].flatMap((s) =>
-      Object.entries(s.variables ?? {}).filter(([, v]) => v.type === 'literal'),
+    // every other value comes from a reference: a value typed here (a literal, or the SDK's raw
+    // `{ value }`) would be committed and applied as it is
+    const values = [api, web].flatMap((s) =>
+      Object.entries(s.variables ?? {}).filter(
+        ([, v]) => v.type !== 'reference' && v.type !== 'sharedReference',
+      ),
     );
-    expect(literals.map(([name]) => name)).toEqual(['PORT', 'PORT']);
+    expect(values.map(([name, v]) => `${name}: ${v.type}`)).toEqual([
+      'PORT: literal',
+      'PORT: literal',
+    ]);
   });
 
   it('watches what each image is built from, so a change to one app redeploys only that app', () => {
@@ -225,13 +233,27 @@ describe('railway.ts', () => {
       [api, apiDirs],
       [web, webDirs],
     ] as const) {
-      for (const dir of dirs) expect(service.build?.watchPatterns).toContain(`/${dir}/**`);
-      for (const p of service.build?.watchPatterns ?? [])
+      const patterns = service.build?.watchPatterns ?? [];
+      for (const p of patterns)
         expect(p, 'only /dir/** and /file patterns (what `watches` models)').toMatch(
           /^\/[^*]+(\/\*\*)?$/,
         );
+      // its directories are exactly the packages its image is built from: no fewer (a change to
+      // one would not redeploy it), no more (a change to another would)
+      expect(patterns.filter((p) => p.endsWith('/**')).toSorted(), service.name).toEqual(
+        [...dirs].map((dir) => `/${dir}/**`).toSorted(),
+      );
       for (const file of ['/package.json', '/pnpm-lock.yaml', '/pnpm-workspace.yaml'])
         expect(watches(service, file)).toBe(true);
+    }
+    // its files are the workspace files every install and build reads: the same for both apps,
+    // at the root, and real
+    const files = (service: Resource) =>
+      (service.build?.watchPatterns ?? []).filter((p) => !p.endsWith('/**'));
+    expect(files(api)).toEqual(files(web));
+    for (const file of files(api)) {
+      expect(file, 'a root-level file').toMatch(/^\/[^/]+$/);
+      expect(existsSync(join(ROOT, file)), file).toBe(true);
     }
     for (const dir of apiDirs)
       if (!webDirs.has(dir)) expect(watches(web, `/${dir}/src/index.ts`), dir).toBe(false);

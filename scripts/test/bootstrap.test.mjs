@@ -167,19 +167,43 @@ describe('bootstrap', () => {
       gitIn(copy, 'remote', 'add', 'origin', 'git@github.com:origin-owner/origin-repo.git');
       return copy;
     };
-    for (const { copy, args, repo } of [
-      { copy: cloned(), args: ['--repo', 'flag-owner/flag-repo'], repo: 'flag-owner/flag-repo' },
-      { copy: cloned(), args: [], repo: 'origin-owner/origin-repo' },
-      { copy: archiveCopy(), args: [], repo: 'smoke/smoke-app' },
+    for (const { copy, args, repo, from } of [
+      {
+        copy: cloned(),
+        args: ['--repo', 'flag-owner/flag-repo'],
+        repo: 'flag-owner/flag-repo',
+        from: '--repo',
+      },
+      {
+        copy: archiveCopy(),
+        args: ['--repo', 'https://github.com/url-owner/url-repo.git'],
+        repo: 'url-owner/url-repo',
+        from: '--repo',
+      },
+      { copy: cloned(), args: [], repo: 'origin-owner/origin-repo', from: 'the origin remote' },
+      { copy: archiveCopy(), args: [], repo: 'smoke/smoke-app', from: 'a guess' },
     ]) {
       const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit', ...args]);
       expect(res.code, res.out).toBe(0);
       expect(railwayRepo(copy), repo).toBe(repo);
+      // it says which repository Railway will build, and where that came from
+      expect(res.out, repo).toContain(`deploys GitHub repository ${repo} (from ${from}`);
+      expect(res.out.includes('check that it is yours'), repo).toBe(from === 'a guess');
       // what the template smoke test checks too: the upstream slug survives nowhere in .railway
       expect(
         railwayFiles(copy).filter((text) => text.includes(upstream)),
         repo,
       ).toEqual([]);
+    }
+  });
+
+  it('refuses a --repo that is not owner/repo: it is written into railway.ts as a string', () => {
+    for (const repo of ["it's/bad", 'no-slash', 'https://gitlab.com/a/b']) {
+      const copy = archiveCopy();
+      const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit', '--repo', repo]);
+      expect(res.code, repo).toBe(1);
+      expect(res.out, repo).toContain('is not a GitHub repository');
+      expect(railwayRepo(copy), repo).toBe(railwayRepo(REPO)); // nothing written
     }
   });
 

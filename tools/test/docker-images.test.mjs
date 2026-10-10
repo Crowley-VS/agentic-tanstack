@@ -210,9 +210,10 @@ describe('production images', () => {
 
   it("keeps every file the frozen install reads: each workspace package's package.json", () => {
     const workspace = read('pnpm-workspace.yaml');
-    // the `packages:` list runs to the next top-level key: comment and blank lines do not end it
+    // the `packages:` list runs to the next top-level key: comment lines (indented or not) and
+    // blank lines do not end it
     const globs = [
-      ...(workspace.match(/^packages:\r?\n((?:(?:[ \t].*)?\r?\n)+)/m)?.[1] ?? '').matchAll(
+      ...(workspace.match(/^packages:\r?\n((?:(?:[ \t].*|#.*)?\r?\n)+)/m)?.[1] ?? '').matchAll(
         /^[ \t]+-[ \t]*['"]?([^'"\s#]+)/gm,
       ),
     ].map((m) => m[1]);
