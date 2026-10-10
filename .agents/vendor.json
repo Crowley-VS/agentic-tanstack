@@ -1,0 +1,216 @@
+{
+  "$comment": "Third-party agent skills vendored into .agents/skills: each copy is the SKILL.md an installed package ships, with the rewrites below applied, and is never edited by hand. `node tools/vendor-skills.mjs update` renders them from the installed packages and pins their versions and sha256; `pnpm agents:check` fails when a copy differs. Each rewrite must change the upstream text, so an upstream change fails the check instead of slipping through. Format: the header of tools/vendor-skills.mjs.",
+  "packages": {
+    "playwright-core": {
+      "version": "1.63.0",
+      "license": "Apache-2.0",
+      "via": ["@playwright/test", "playwright"],
+      "licenseFiles": ["LICENSE", "NOTICE"],
+      "source": "https://github.com/microsoft/playwright/tree/v1.63.0/packages/playwright-core/src/tools/skills",
+      "notVendored": {
+        "playwright-cli/references": "the playwright-cli skill points at them in the installed package instead (its `Specific tasks` rewrite)",
+        "playwright-trace": "not needed: skill e2e-test opens traces with `pnpm exec playwright show-trace`",
+        "playwright-component-testing": "this repo has no Playwright component tests (browser tests use Vitest)"
+      }
+    },
+    "drizzle-kit": {
+      "version": "1.0.0-rc.4",
+      "license": "MIT",
+      "from": "packages/db",
+      "licenseFiles": [],
+      "licenseNote": "drizzle-kit's package.json declares MIT and the package ships no license file or copyright line; its source repository (drizzle-team/drizzle-orm) is Apache-2.0 at the root. .agents/vendor/drizzle-kit/LICENSE is written by hand and covers both.",
+      "source": "https://github.com/drizzle-team/drizzle-orm/tree/beta/drizzle-kit/skills",
+      "notVendored": {
+        "drizzle-output-modes": "reference: `pnpm exec intent load drizzle-kit#drizzle-output-modes` (allowed in package.json#intent.skills)",
+        "drizzle-responses-and-errors": "reference: `pnpm exec intent load drizzle-kit#drizzle-responses-and-errors` (allowed in package.json#intent.skills)",
+        "drizzle-migrations": "conflicts: it recommends `drizzle-kit push` for local iteration; this repo only generates and commits migrations (skill db-migration)",
+        "drizzle-push": "conflicts: this repo never pushes a schema; every change is a committed migration",
+        "drizzle-pull": "not needed: the schema is written in packages/db/src/schema, never introspected"
+      }
+    }
+  },
+  "skills": {
+    "playwright-cli": {
+      "package": "playwright-core",
+      "file": "lib/tools/skills/playwright-cli/SKILL.md",
+      "sha256": "1a609c93bff3eea9ab99fed93c0334c851fdc39fb6ac5335551bfb87c171d57c",
+      "rewrites": [
+        {
+          "why": "upstream's description names no command form; ours names the pinned one",
+          "frontmatter": "description",
+          "with": "Automate browser interactions, test web pages and work with Playwright tests. Here every command is `pnpm exec playwright cli <command>` (the pinned Playwright): never npx or a global playwright-cli."
+        },
+        {
+          "why": "upstream pre-approves `playwright-cli`, `npx` and `npm` (anything); ours pre-approves only the local CLI's commands whose options cannot run code or write files outside .playwright-cli/ (not open --config, run-code, eval, snapshot --filename, state-save, …)",
+          "frontmatter": "allowed-tools",
+          "with": "Bash(pnpm exec playwright cli --help *) Bash(pnpm exec playwright cli open) Bash(pnpm exec playwright cli open --browser=chromium) Bash(pnpm exec playwright cli goto *) Bash(pnpm exec playwright cli snapshot) Bash(pnpm exec playwright cli find *) Bash(pnpm exec playwright cli click *) Bash(pnpm exec playwright cli dblclick *) Bash(pnpm exec playwright cli fill *) Bash(pnpm exec playwright cli type *) Bash(pnpm exec playwright cli press *) Bash(pnpm exec playwright cli hover *) Bash(pnpm exec playwright cli select *) Bash(pnpm exec playwright cli check *) Bash(pnpm exec playwright cli uncheck *) Bash(pnpm exec playwright cli go-back) Bash(pnpm exec playwright cli go-forward) Bash(pnpm exec playwright cli reload) Bash(pnpm exec playwright cli tab-list) Bash(pnpm exec playwright cli console *) Bash(pnpm exec playwright cli requests *) Bash(pnpm exec playwright cli list) Bash(pnpm exec playwright cli close) Bash(pnpm exec playwright cli close-all)"
+        },
+        {
+          "why": "every `playwright-cli <args>` command runs as the pinned `pnpm exec playwright cli <args>` (Playwright 1.63 has the `cli` subcommand; no @playwright/cli package)",
+          "pattern": "(?<![\\w./-])playwright-cli(?= )",
+          "with": "pnpm exec playwright cli"
+        },
+        {
+          "why": "upstream installs a global `@playwright/cli@latest` or runs `npx`; here Playwright is pinned in the pnpm catalog",
+          "section": "## Installation",
+          "with": [
+            "## Installation",
+            "",
+            "Playwright is a pinned dependency of this repo (the pnpm catalog). Run every command from the",
+            "repo root as `pnpm exec playwright cli <command>`: never `npx`, `npm install -g @playwright/cli`",
+            "or a global `playwright-cli`, which run another version.",
+            "",
+            "- `pnpm exec playwright cli open --browser=chromium` opens the Chromium that",
+            "  `pnpm exec playwright install chromium` installs (once per machine, and after each Playwright",
+            "  bump); a bare `open` launches the installed Google Chrome.",
+            "- This checkout's URLs (the dev web server, the e2e one): `pnpm ports`. Skill `run-web` starts",
+            "  the servers.",
+            "- Snapshots, console logs and other output land in `.playwright-cli/` (gitignored).",
+            "- Close the browser when you are done: `pnpm exec playwright cli close` (`close-all` for every",
+            "  session). Its daemon keeps running until then."
+          ]
+        },
+        {
+          "why": "the references are not vendored: they ship with the installed version, and run tests with `npx playwright test` where this repo runs them through Nx",
+          "section": "## Specific tasks",
+          "with": [
+            "## Specific tasks",
+            "",
+            "Playwright ships more guides with this skill, for the installed version: the `references/`",
+            "folder next to the `Agent skill:` path that `pnpm exec playwright cli --help` prints (request",
+            "mocking, running code, sessions, storage state, test generation, tracing, video, element",
+            "attributes). They spell commands `playwright-cli …` and `npx playwright …`: run them as",
+            "`pnpm exec playwright cli …` and `pnpm exec playwright …`.",
+            "",
+            "Run and debug this repo's e2e specs through Nx, never `npx playwright test`: skill `e2e-test`."
+          ]
+        }
+      ]
+    },
+    "drizzle": {
+      "package": "drizzle-kit",
+      "file": "skills/drizzle/SKILL.md",
+      "sha256": "fc50cd2083bf5c064e2bc8874407845380ebea0c2b019fc978c82568f8a8f226",
+      "rewrites": [
+        {
+          "why": "upstream's is over the 300-character limit, and drizzle-kit runs only through Nx here",
+          "frontmatter": "description",
+          "with": "Load before reading or editing a Drizzle file (anything importing from `drizzle-orm/*`), touching `drizzle.config.ts`, running drizzle-kit or handling its output. Says how drizzle-kit runs in this repo: only through the db project's Nx targets."
+        },
+        {
+          "why": "the staleness check is replaced by the vendor check; this repo's rules win",
+          "replace": "This skill runs a one-time staleness check against the installed `drizzle-kit` binary. If `drizzle-kit` ships a newer agent-skills bundle than the revision embedded in this file (the skills currently in use), surface a single user-facing notice with the refresh command.",
+          "with": "This repo vendors this skill, `drizzle-generate` and `drizzle-hints` with their commands rewritten (`.agents/vendor.json`). Where they and skill `db-migration` differ, `db-migration` wins: expand and contract instead of renames, never an edit to a migration git tracks, `testDb()` from `@acme/db/testing` in tests that touch the database."
+        },
+        {
+          "why": "`drizzle-kit skills` installs `skills@latest` with a download-latest runner over the vendored copies",
+          "section": "## Staleness check",
+          "with": [
+            "## Staleness check",
+            "",
+            "Skip it here. `pnpm agents:check` (part of `pnpm check`) fails when the installed drizzle-kit",
+            "ships other skills than these copies, and `node tools/vendor-skills.mjs update` refreshes them",
+            "from it. Never run `drizzle-kit skills`: it installs `skills@latest` through a download-latest",
+            "runner and writes unrewritten copies over these."
+          ]
+        },
+        {
+          "why": "no drizzle MCP server here; drizzle-kit runs from packages/db through Nx, never npx",
+          "section": "## Surface selection",
+          "with": [
+            "## Surface selection",
+            "",
+            "drizzle-kit exposes its verbs (`generate`, `push`, `pull`, `up`, `check`, `export`) over a CLI,",
+            "an SDK and an MCP server; all three return the same JSON envelope and take the same `hints`",
+            "array. Here only the CLI runs, in `packages/db` (its `drizzle.config.ts`), through the db",
+            "project's Nx targets. No drizzle MCP server is configured.",
+            "",
+            "- `pnpm nx run db:db-generate --args=\"--name=<what>\"`: a new migration from the schema (skill",
+            "  `db-migration`). Add `--output json` inside `--args` for the envelope, and `--explain` for a dry",
+            "  run that writes nothing: `pnpm nx run db:db-generate --args=\"--output json --explain\"`.",
+            "- `pnpm nx run db:db-check`: drizzle-kit's consistency check of `packages/db/migrations`",
+            "  (`pnpm nx run db:test` runs it first).",
+            "- `push`, `pull`, `up` and `export` are not used: every schema change is a generated, reviewed",
+            "  and committed migration, which each deploy applies.",
+            "- Never `npx drizzle-kit`, a global `drizzle-kit` or a download-latest runner (`pnpm dlx`): they",
+            "  run another version than the pinned one."
+          ]
+        }
+      ]
+    },
+    "drizzle-generate": {
+      "package": "drizzle-kit",
+      "file": "skills/drizzle-generate/SKILL.md",
+      "sha256": "5296feb186212d3b9c0e4869f38ebdc06a3929a3f02daa5d2ad6ae3c0d89c6ff",
+      "rewrites": [
+        {
+          "why": "upstream's is over the 300-character limit; ours names the Nx command",
+          "frontmatter": "description",
+          "with": "Create a new drizzle migration by diffing the schema against the latest snapshot. Load before generating a migration, after a Drizzle schema edit when the next step is its SQL, or to read drizzle-kit generate output. Here: `pnpm nx run db:db-generate --args=\"--name=<what>\"`."
+        },
+        {
+          "why": "points at this repo's rules and at the drizzle-kit skills that are not vendored",
+          "replace": "If the `drizzle` skill has not been loaded yet this session, load it first — it carries the staleness check and the MCP-vs-CLI surface-selection rule that govern every drizzle-kit invocation.",
+          "with": "Load skill `drizzle` first: it says how drizzle-kit runs here (through Nx, in `packages/db`). Skill `db-migration` has this repo's steps and wins where they differ: always pass `--name`, read the SQL, never edit a migration git tracks. The drizzle-kit skills named below that this repo does not vendor, `drizzle-output-modes` and `drizzle-responses-and-errors`: `pnpm exec intent load drizzle-kit#<name>`."
+        },
+        {
+          "why": "the CLI form, through the db project's Nx target",
+          "replace": "drizzle-kit generate --output json [--config drizzle.config.ts] [--dialect <d>] [--schema <path>] [--out <dir>] [--explain] [--hints '<json>' | --hints-file ./hints.json]",
+          "with": "pnpm nx run db:db-generate --args=\"--name=<what> --output json [--explain] [--hints-file <file>]\""
+        },
+        {
+          "why": "packages/db/drizzle.config.ts sets them",
+          "replace": "- `--dialect`, `--schema`, `--out` — override the corresponding `defineConfig` fields.",
+          "with": "- `--dialect`, `--schema`, `--out` — override the corresponding `defineConfig` fields. Never here: `packages/db/drizzle.config.ts` sets them."
+        },
+        {
+          "why": "the examples, through the db project's Nx target (it passes packages/db/drizzle.config.ts)",
+          "replace": "drizzle-kit generate --output json --config drizzle.config.ts",
+          "with": "pnpm nx run db:db-generate --args=\"--name=<what> --output json\""
+        },
+        {
+          "why": "the error example, through the db project's Nx target",
+          "replace": "drizzle-kit generate --output json --config missing.ts",
+          "with": "pnpm nx run db:db-generate --args=\"--name=<what> --output json --config missing.ts\""
+        },
+        {
+          "why": "drizzle-migrations is not vendored or loadable here (it recommends push)",
+          "replace": "See the `drizzle-migrations` skill's dialect-notes section.",
+          "with": "The `drizzle-migrations` skill that has them is left out here: it recommends `drizzle-kit push` for local iteration, which this repo never uses. This repo's dialect is postgresql."
+        }
+      ]
+    },
+    "drizzle-hints": {
+      "package": "drizzle-kit",
+      "file": "skills/drizzle-hints/SKILL.md",
+      "sha256": "39f012a01c405dbf1d068b670f31ff0df4b6e3b5f44fd567d3e1b58a50e4081c",
+      "rewrites": [
+        {
+          "why": "upstream's is over the 300-character limit; this repo never answers a rename with a hint",
+          "frontmatter": "description",
+          "with": "Read `missing_hints` from drizzle-kit generate: rename-vs-create, `confirm_data_loss` and the `Hint` reply array. Here a `rename_or_create` means the change drops and adds at once: split it into expand and contract steps (skill db-migration), never answer it with a hint."
+        },
+        {
+          "why": "this repo's expand/contract rule wins over answering a rename_or_create",
+          "replace": "If the `drizzle` skill has not been loaded yet this session, load it first — it carries the staleness check and the MCP-vs-CLI surface-selection rule that govern every drizzle-kit invocation.",
+          "with": "Load skill `drizzle` first: it says how drizzle-kit runs here. **This repo's rule wins over this skill** (skill `db-migration`, step 5): a `missing_hints` with a `rename_or_create` from `pnpm nx run db:db-generate` means the schema change drops one entity and adds another in one step. Do not answer it with a `rename` or `create` hint: split the change into an expand migration and a later contract migration, each deployed on its own. Use this skill to read what drizzle-kit asks. The drizzle-kit skills it names that this repo does not vendor: `pnpm exec intent load drizzle-kit#<name>`."
+        },
+        {
+          "why": "the CLI form, through the db project's Nx target; push is not used here",
+          "replace": "Run `drizzle-kit generate --output json` / `push --output json` (CLI)",
+          "with": "Run `pnpm nx run db:db-generate --args=\"--name=<what> --output json\"` (CLI; `push` is not used here)"
+        },
+        {
+          "why": "inline JSON does not survive Nx's --args",
+          "replace": "Watch shell quoting; the JSON has to survive your shell intact.",
+          "with": "Watch shell quoting; the JSON has to survive your shell intact. Through Nx's `--args` it does not: use `--hints-file`."
+        },
+        {
+          "why": "the CLI example, through the db project's Nx target (a file path is relative to packages/db)",
+          "replace": "drizzle-kit push --output json --config drizzle.config.ts --hints-file ./hints.json",
+          "with": "pnpm nx run db:db-generate --args=\"--name=<what> --output json --hints-file <file>\"   # <file>: relative to packages/db"
+        }
+      ]
+    }
+  }
+}

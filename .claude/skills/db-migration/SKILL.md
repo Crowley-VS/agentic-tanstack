@@ -37,6 +37,11 @@ purely additive.
 - A change that drops a column or table and adds another makes drizzle-kit ask whether it is a
   rename; with no terminal it exits listing `missing_hints`. Do not answer it: split the change
   into expand and contract steps (step 5).
+- drizzle-kit's own skills, vendored with this repo's commands: `drizzle-generate` (the JSON
+  envelope with `--output json`, a dry run with `--explain`) and `drizzle-hints` (what a
+  `missing_hints` asks). Where they differ from this skill, this skill wins: never answer a
+  `rename_or_create` with a hint (step 5), never `drizzle-kit push`, never edit a tracked migration,
+  and tests use `testDb()`.
 - A data change (a backfill) is a migration of its own:
   `pnpm nx run db:db-generate --args="--custom --name=<what>"` writes an empty `migration.sql` for
   your SQL.

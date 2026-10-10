@@ -58,8 +58,17 @@ on this checkout's e2e ports and its own e2e database, dropped and seeded at the
   `pnpm exec playwright show-report <report dir>`. The report never opens by itself.
 - On CI: the `test-output` artifact (the `docker` job's is `docker-test-output`);
   `pnpm nx run web-e2e:e2e-ci--merge-reports` merges the per-file reports.
+- See the page a test sees, paused (skill `playwright-cli`): run the test in the background with
+  `pnpm nx e2e web-e2e --skip-nx-cache -- src/board.spec.ts -g "<test>" --debug=cli`. It pauses
+  at the test's start and prints `playwright-cli attach tw-<id>`: run it as
+  `pnpm exec playwright cli attach tw-<id>`, then
+  `pnpm exec playwright cli -s=tw-<id> <command>`: `step-over`, `pause-at <file>:<line>`,
+  `snapshot`, `find "<text>"`, `console`, and `resume` to let it finish. Each action prints the
+  Playwright code it ran, ready for the spec. Stop the run if you leave it paused.
 - To poke at the servers: `pnpm nx run-many -t serve-e2e -p api web` in the background, with the
-  e2e URLs from `pnpm ports`. Stop it before the next e2e run.
+  e2e URLs from `pnpm ports`; look with `pnpm exec playwright cli open --browser=chromium`, then
+  `pnpm exec playwright cli goto <e2e web URL>` and `pnpm exec playwright cli snapshot`. Close the
+  browser (`pnpm exec playwright cli close`) and stop the servers before the next e2e run.
 
 ## 4. Against the production images
 

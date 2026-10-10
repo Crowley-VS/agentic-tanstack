@@ -32,6 +32,7 @@
     "@nx/playwright": "catalog:",
     "@nx/vitest": "catalog:",
     "@playwright/test": "catalog:",
+    "@tanstack/intent": "catalog:",
     "@types/node": "catalog:",
     "@typescript-eslint/parser": "catalog:",
     "eslint": "catalog:",
@@ -49,5 +50,12 @@
   "engines": {
     "node": ">=24"
   },
-  "packageManager": "pnpm@11.27.1"
+  "packageManager": "pnpm@11.27.1",
+  "intent": {
+    "skills": [
+      "@tanstack/*",
+      "drizzle-kit#drizzle-output-modes",
+      "drizzle-kit#drizzle-responses-and-errors"
+    ]
+  }
 }

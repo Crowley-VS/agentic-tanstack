@@ -121,3 +121,41 @@ describe('the skills, together', () => {
     expect(pnpmCommands(code).length).toBeGreaterThan(0);
   }, 60_000);
 });
+
+/** Run the bin `name` of package `pkg` installed at the root, as the skills' `pnpm exec` does. */
+function run(pkg, name, args) {
+  const bin = nodeBin(REPO, pkg, name);
+  expect(bin, `${pkg} is not installed: run \`pnpm install\``).toBeDefined();
+  const [cmd = '', ...pre] = bin ?? [];
+  return execFileSync(cmd, [...pre, ...args], { cwd: REPO, encoding: 'utf8' });
+}
+
+describe('the CLIs the vendored skills and AGENTS.md run', () => {
+  it('`pnpm exec playwright cli` is the pinned Playwright, shipping the vendored skill', () => {
+    // the skill's commands are `pnpm exec playwright cli <command>`: no @playwright/cli package
+    const help = run('@playwright/test', 'playwright', ['cli', '--help']).replaceAll('\\', '/');
+    expect(help).toMatch(/^\s+snapshot \[target\]/m);
+    expect(help).toMatch(/^\s+attach \[name\]/m);
+    const { packages } = JSON.parse(readFileSync(join(REPO, '.agents/vendor.json'), 'utf8'));
+    expect(help).toContain(
+      `playwright-core@${packages['playwright-core'].version}/node_modules/playwright-core/lib/tools/skills/playwright-cli/SKILL.md`,
+    );
+  });
+
+  it('`pnpm exec intent` lists and loads the allowed skills, not the vendored ones', () => {
+    const { skills, warnings } = JSON.parse(run('@tanstack/intent', 'intent', ['list', '--json']));
+    const uses = skills.map((s) => s.use);
+    expect(warnings).toEqual([]);
+    expect(uses).toContain('@tanstack/router-core#router-core');
+    expect(uses).toContain('@tanstack/start-client-core#start-core');
+    // the drizzle-kit references the vendored drizzle skills point at, and none of the vendored
+    // ones (their unrewritten upstream would run drizzle-kit directly)
+    expect(uses.filter((u) => u.startsWith('drizzle-kit#'))).toEqual([
+      'drizzle-kit#drizzle-output-modes',
+      'drizzle-kit#drizzle-responses-and-errors',
+    ]);
+    expect(
+      run('@tanstack/intent', 'intent', ['load', '@tanstack/router-core#router-core']),
+    ).toMatch(/^---\nname: router-core\n/);
+  }, 60_000);
+});
