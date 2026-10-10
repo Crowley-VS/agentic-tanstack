@@ -15,6 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   adopt,
+  allowedTools,
   check,
   checkStaged,
   codeOf,
@@ -318,6 +319,7 @@ describe('sync --stage (pre-commit)', () => {
     for (const f of [
       'lefthook.yml',
       'tools/agents.mjs',
+      'tools/vendor-skills.mjs',
       'tools/lib/generated.mjs',
       'tools/lib/bin.mjs',
       'tools/lib/file-types.mjs',
@@ -823,6 +825,29 @@ describe('check', () => {
     expect(problems).not.toContain('nx show');
   });
 
+  it("checks a skill's allowed-tools like allow rules (they approve while the skill runs)", () => {
+    expect(allowedTools('Read Bash(git add *), Bash(pnpm exec x cli open)  Grep')).toEqual([
+      'Read',
+      'Bash(git add *)',
+      'Bash(pnpm exec x cli open)',
+      'Grep',
+    ]);
+    expect(allowedTools(undefined)).toEqual([]);
+    const tools = 'Read Bash(git log *) Bash(pnpm exec playwright cli goto *)';
+    const root = repo({
+      '.agents/skills/verify/SKILL.md': skill('verify').replace(
+        '---\n\n',
+        `allowed-tools: '${tools}'\n---\n\n`,
+      ),
+    });
+    sync(root);
+    expect(check(root)).toEqual([
+      expect.stringMatching(
+        /^skill "verify": allowed-tools approves Bash\(git log \*\), which also approves writing any file/,
+      ),
+    ]);
+  });
+
   it("this repository's allow rules approve no hidden writes or commands", () => {
     const settings = JSON.parse(readFileSync(join(REPO, '.claude/settings.json'), 'utf8'));
     expect(settings.permissions.allow.filter((r) => unsafeAllowRule(r))).toEqual([]);
@@ -1181,6 +1206,23 @@ describe('check: the paths and pnpm commands skills name', () => {
         'Delete `migrations.json` and `tmp/out.log`, not `other.json`.',
     );
     expect(referenceProblems(root)).toEqual([expect.stringContaining('names `other.json`')]);
+  });
+
+  it('skips the paths of a vendored skill (.agents/vendor.json), never its pnpm commands', () => {
+    // upstream's examples name upstream's files; the vendor check pins that text instead
+    const upstream = 'Edit `examples/0001/setup.sql` and `auth.json`; run `pnpm exec nope`.';
+    const root = skillRepo('Ours names `auth.json`.', {
+      '.agents/skills/demo/SKILL.md': `${skill('demo')}\n${upstream}\n`,
+      '.agents/vendor.json': {
+        packages: { up: { version: '1.0.0', license: 'MIT' } },
+        skills: { demo: { package: 'up', file: 'SKILL.md', rewrites: [] } },
+      },
+    });
+    const named = check(root).filter((p) => p.startsWith('.agents/skills/'));
+    expect(named).toEqual([
+      expect.stringMatching(/^\.agents\/skills\/demo\/SKILL\.md runs `pnpm exec nope`/),
+      expect.stringMatching(/^\.agents\/skills\/verify\/SKILL\.md names `auth\.json`/),
+    ]);
   });
 
   it('checks `pnpm exec` and bare binaries against node_modules/.bin once installed', () => {
