@@ -2,6 +2,8 @@ packages:
   - apps/*
   - packages/*
   - tools
+  # Railway infrastructure as code (.railway/railway.ts): a package so it can depend on the SDK
+  - .railway
 
 # Supply chain: never install a version published less than 24h ago.
 minimumReleaseAge: 1440
@@ -83,6 +85,9 @@ catalog:
   # exact, with @playwright/test
   playwright: 1.63.0
   radix-ui: ^1.6.7
+  # exact: Railway's IaC SDK is a beta ("there will be breaking changes"); the CLI evaluates
+  # .railway/railway.ts with it. Bump on purpose, then re-run `railway config plan`.
+  railway: 3.13.0
   react: ^19.3.0
   react-dom: ^19.3.0
   # exact: the CLI writes the vendored components (packages/ui/src/components)

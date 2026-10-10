@@ -87,6 +87,14 @@ function oxfmtCheck(copy) {
 }
 const secret = (root) =>
   readFileSync(join(root, '.env'), 'utf8').match(/^INTERNAL_API_SECRET=(.*)$/m)?.[1];
+/** The text of every file in a checkout's .railway directory. */
+const railwayFiles = (root) =>
+  readdirSync(join(root, '.railway'), { withFileTypes: true })
+    .filter((d) => d.isFile())
+    .map((d) => readFileSync(join(root, '.railway', d.name), 'utf8'));
+/** The repository .railway/railway.ts builds from (its REPO constant). */
+const railwayRepo = (root) =>
+  readFileSync(join(root, '.railway/railway.ts'), 'utf8').match(/^const REPO = '(.*)';$/m)?.[1];
 
 describe('bootstrap', () => {
   it('turns a tarball copy into a project with no template leftovers', () => {
@@ -146,6 +154,57 @@ describe('bootstrap', () => {
     expect(readFileSync(join(authored, 'LICENSE'), 'utf8')).toMatch(
       /^Copyright \(c\) \d{4} Ada L$/m,
     );
+  });
+
+  it('points the Railway config at your repository: --repo, else the origin, else <scope>/<name>', () => {
+    const upstream = JSON.parse(readFileSync(join(REPO, 'template.json'), 'utf8')).repo;
+    expect(railwayRepo(REPO)).toBe(upstream);
+
+    /** A copy whose git origin is a fork of the template on GitHub. */
+    const cloned = () => {
+      const copy = archiveCopy();
+      gitIn(copy, 'init', '-q', '-b', 'main');
+      gitIn(copy, 'remote', 'add', 'origin', 'git@github.com:origin-owner/origin-repo.git');
+      return copy;
+    };
+    for (const { copy, args, repo, from } of [
+      {
+        copy: cloned(),
+        args: ['--repo', 'flag-owner/flag-repo'],
+        repo: 'flag-owner/flag-repo',
+        from: '--repo',
+      },
+      {
+        copy: archiveCopy(),
+        args: ['--repo', 'https://github.com/url-owner/url-repo.git'],
+        repo: 'url-owner/url-repo',
+        from: '--repo',
+      },
+      { copy: cloned(), args: [], repo: 'origin-owner/origin-repo', from: 'the origin remote' },
+      { copy: archiveCopy(), args: [], repo: 'smoke/smoke-app', from: 'a guess' },
+    ]) {
+      const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit', ...args]);
+      expect(res.code, res.out).toBe(0);
+      expect(railwayRepo(copy), repo).toBe(repo);
+      // it says which repository Railway will build, and where that came from
+      expect(res.out, repo).toContain(`deploys GitHub repository ${repo} (from ${from}`);
+      expect(res.out.includes('check that it is yours'), repo).toBe(from === 'a guess');
+      // what the template smoke test checks too: the upstream slug survives nowhere in .railway
+      expect(
+        railwayFiles(copy).filter((text) => text.includes(upstream)),
+        repo,
+      ).toEqual([]);
+    }
+  });
+
+  it('refuses a --repo that is not owner/repo: it is written into railway.ts as a string', () => {
+    for (const repo of ["it's/bad", 'no-slash', 'https://gitlab.com/a/b']) {
+      const copy = archiveCopy();
+      const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit', '--repo', repo]);
+      expect(res.code, repo).toBe(1);
+      expect(res.out, repo).toContain('is not a GitHub repository');
+      expect(railwayRepo(copy), repo).toBe(railwayRepo(REPO)); // nothing written
+    }
   });
 
   it('refuses to run in the template itself, whatever the case, but not in repos named like it', () => {

@@ -70,6 +70,10 @@ jobs:
         run: |
           set -e
           if git grep -nE '@acme/|acme-app'; then echo "placeholders survived bootstrap"; exit 1; fi
+          # the Railway config builds the copy's repository: the upstream slug may remain only
+          # outside .railway (package.json#template, the README's provenance link)
+          upstream=$(node -p "require('./package.json').template?.repo || process.exit(1)")
+          if git grep -nF "$upstream" -- .railway; then echo ".railway still builds $upstream"; exit 1; fi
           test ! -e scripts/bootstrap.ts
           test ! -e scripts/bootstrap.mjs
           test ! -e template.json

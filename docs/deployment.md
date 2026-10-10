@@ -2,7 +2,7 @@
 
 Details behind the deployment lines of `AGENTS.md`: what the two images hold, how to build them,
 how to run them together on this machine and test them there, the CI job that does the same, and
-what they expect from the platform.
+what they expect from the platform. Deploying them to Railway: `docs/deployment-railway.md`.
 
 ## Two images, built from the repository root
 

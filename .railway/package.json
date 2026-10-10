@@ -1,0 +1,28 @@
+{
+  "name": "@acme/railway-iac",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Railway infrastructure as code (experimental): Postgres, the private api and the public web service. Applied by hand with the Railway CLI (docs/deployment-railway.md).",
+  "type": "module",
+  "devDependencies": {
+    "railway": "catalog:"
+  },
+  "nx": {
+    "name": "railway-iac",
+    "tags": [
+      "scope:tooling",
+      "type:tooling"
+    ],
+    "targets": {
+      "test": {
+        "inputs": [
+          "default",
+          "{workspaceRoot}/template.json",
+          "{workspaceRoot}/apps/*/package.json",
+          "{workspaceRoot}/packages/*/package.json",
+          "{workspaceRoot}/apps/*/Dockerfile"
+        ]
+      }
+    }
+  }
+}

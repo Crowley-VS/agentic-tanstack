@@ -120,9 +120,14 @@ function parseArgs(argv: string[]): Options {
       case '--name':
         opts.name = value();
         break;
-      case '--repo':
-        opts.repo = value();
+      case '--repo': {
+        // owner/repo, or a GitHub URL of it: it is written into .railway/railway.ts as a string
+        const repo = value();
+        opts.repo = githubSlug(repo) ?? repo;
+        if (!/^[\w.-]+\/[\w.-]+$/.test(opts.repo))
+          fail(`--repo "${repo}" is not a GitHub repository: use owner/repo (or its GitHub URL).`);
         break;
+      }
       case '--author':
         opts.author = value();
         break;
@@ -381,6 +386,11 @@ export async function main() {
       fail(`"${name}" is not a valid project name (use a-z, 0-9, -).`);
 
     const repoSlug = opts.repo ?? originSlug ?? `${scope.slice(1)}/${name}`;
+    const repoFrom = opts.repo
+      ? '--repo'
+      : originSlug
+        ? 'the origin remote'
+        : 'a guess: <scope>/<name>';
     let changed = 0;
     for (const file of projectFiles()) {
       const full = join(ROOT, file);
@@ -402,6 +412,13 @@ export async function main() {
     console.log(
       `  ${PLACEHOLDER_SCOPE}/ → ${scope}/, ${PLACEHOLDER_NAME} → ${name} (${changed} files)`,
     );
+    if (template?.repo) {
+      console.log(`  .railway/railway.ts deploys GitHub repository ${repoSlug} (from ${repoFrom})`);
+      if (!opts.repo && !originSlug)
+        console.log(
+          '  check that it is yours before `railway config apply`: edit REPO there, or re-run with --repo',
+        );
+    }
   } else {
     // A re-run (e.g. after a failed install): an earlier run renamed everything. Report the names
     // it chose: the scope of the root package, and the project name from --name or the README.
