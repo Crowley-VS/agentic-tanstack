@@ -30,8 +30,8 @@ purely additive.
 - `pnpm nx run db:db-generate --args="--name=<what>"` writes
   `packages/db/migrations/<timestamp>_<what>/migration.sql` and its `snapshot.json`. Always pass a
   name: `pnpm regen` runs the generator without one, so a pending change gets a random name.
-- Read the SQL. Except in the contract step of an expand/contract change, it only adds: tables,
-  nullable or defaulted columns, indexes.
+- Read the SQL. Except in the contract step of an expand/contract change, it only adds (tables,
+  nullable or defaulted columns, indexes) or relaxes (a dropped `NOT NULL` or check).
 - A change that drops a column or table and adds another makes drizzle-kit ask whether it is a
   rename; with no terminal it exits listing `missing_hints`. Do not answer it: split the change
   into expand and contract steps (step 5).
@@ -66,16 +66,26 @@ purely additive.
 Every deploy runs the migrations first (`node dist/migrate.mjs` from the api image: Railway's
 pre-deploy command, the `migrate` service of `docker-compose.stack.yml`) while the previous API
 still serves requests; the new API starts after them (`docs/deployment.md`). So a migration must
-work with the code before it and after it, and so must a rollback of the code.
+work with the code before it and after it, and so must a rollback of the code. A backfill ships
+one deploy after the code that writes the column: rows the previous API inserts while the
+migrations run would miss it.
 
 - **One deploy:** a new table; a nullable column, or one with a default; a new index; a dropped
   `NOT NULL` or check.
-- **A required column:** deploy 1 adds it nullable (or with a default) and the code writes it; a
-  custom migration backfills the old rows; deploy 2 makes it `NOT NULL`.
-- **A rename:** deploy 1 adds the new column, the code writes both and reads the new one, and a
-  custom migration copies the old values; deploy 2 drops the old column. Never one rename.
+- **A required column:** deploy 1 adds it nullable (or with a default) and the code writes it.
+  Deploy 2 backfills the old rows in a custom migration, generated before the schema edit that
+  makes it `NOT NULL` (migrations run in the order they were generated).
+- **A rename:** deploy 1 adds the new column, nullable; the code writes both and still reads the
+  old one. Deploy 2 copies the old values in a custom migration (then `NOT NULL`, as above), and
+  the code reads the new column and still writes both, so a rollback to deploy 1 reads complete
+  rows. The old column then goes as a drop (below): two more deploys. Never one rename.
 - **A drop:** deploy 1 removes every use of it (an API field first: skill `graphql-change`
-  deprecates it); deploy 2 drops the column or table.
+  deprecates it) but keeps it in `packages/db/src/schema` (removing it there generates the `DROP`
+  in deploy 1, under the API that still selects it). A column becomes nullable or gets a default,
+  so inserts can leave it out; queries that select every schema column by default (`.returning()`,
+  `db.query.*`, a `drizzleObject` without `select`) name their columns, so the API that serves
+  during deploy 2's migrations never selects it. Deploy 2 removes it from the schema, which
+  generates the `DROP`.
 - Each step is its own PR, merged and deployed before the next one.
 
 ## 6. Prove it
