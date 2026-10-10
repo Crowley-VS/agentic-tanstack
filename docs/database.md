@@ -26,7 +26,8 @@ databases).
 Generate them from the schema with a name (`pnpm regen` runs `db:db-generate` without one, so a
 pending schema change would get a random name), read the SQL, and commit them. Once git tracks a
 migration (staged or committed) the guard hook blocks edits to it; only a new, untracked one may
-still be edited. A new field end to end, migration included: skill `add-feature`.
+still be edited. A migration step by step, and a change that takes more than one deploy (expand,
+then contract): skill `db-migration`; a new field end to end: skill `add-feature`.
 
 ## Test databases
 
