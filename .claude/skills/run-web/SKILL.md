@@ -36,13 +36,14 @@ curl -sS -H 'content-type: application/json' \
 
 - Expected failures come back as data (`"__typename":"ValidationError"` with `fieldErrors`), not
   as `errors`.
-- Writes are rate-limited in dev too (10 a minute per client): a 429 with `RATE_LIMITED` says so.
-  For scripted writes, start the servers with `WRITE_RATE_LIMIT=off pnpm dev`.
+- Writes are rate-limited in dev too (`WRITE_RATE_LIMIT`, `docs/web.md`): a 429 with
+  `RATE_LIMITED` says so. For scripted writes, start the servers with
+  `WRITE_RATE_LIMIT=off pnpm dev`.
 - Test through the BFF, not the API's port: in production only the web server reaches the API,
   with a secret.
 - A page: the server-rendered HTML holds the loaders' data, so after `pnpm db:seed`,
-  `curl -fsS "$WEB/" | grep -ao 'Seed note 25'` finds the newest note (`-a`: grep calls the page
-  binary).
+  `curl -fsS "$WEB/" | grep -ao 'Seed note [0-9]*' | head -1` prints the newest seed note (`-a`:
+  grep calls the page binary; the seed's titles: `SEED` in `apps/web-e2e/src/fixtures.ts`).
 
 ## 3. The production build
 

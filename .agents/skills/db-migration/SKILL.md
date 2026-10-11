@@ -31,8 +31,9 @@ purely additive.
   `packages/db/migrations/<timestamp>_<what>/migration.sql` and its `snapshot.json`. Always pass a
   name: `pnpm regen` runs the generator without one, so a pending change gets a random name.
 - Read the SQL. Except in the contract step of an expand/contract change, it only adds (tables,
-  nullable or defaulted columns, indexes) or relaxes (a dropped `NOT NULL` or check); a drop's
-  first deploy replaces its generated `DROP COLUMN` (step 5).
+  nullable or defaulted columns, indexes) or relaxes (a dropped `NOT NULL` or check); a column
+  drop's first deploy replaces its generated `DROP COLUMN`, and a `DROP TABLE` waits for the
+  second (step 5).
 - A change that drops a column or table and adds another makes drizzle-kit ask whether it is a
   rename; with no terminal it exits listing `missing_hints`. Do not answer it: split the change
   into expand and contract steps (step 5).
@@ -46,9 +47,8 @@ purely additive.
 ## 3. Apply it
 
 - `pnpm db:migrate` applies it to the dev database.
-- Look at the rows: `pnpm nx run db:db-psql -- -c "select count(*) from notes"`. Nx splits a
-  forwarded argument that holds `=`: pass such a query as
-  `pnpm nx run db:db-psql --args='-c "select … where x = 1"'`.
+- Look at the rows: `pnpm nx run db:db-psql --args='-c "select count(*) from notes"'` (this form
+  keeps a query with `=` whole: `docs/database.md`).
 
 ## 4. Seed and tests
 
@@ -79,8 +79,8 @@ migrations run would miss it.
 - **A rename:** deploy 1 adds the new column, nullable; the code writes both and still reads the
   old one. Deploy 2 copies the old values in a custom migration (then `NOT NULL`, as above), and
   the code reads the new column and still writes both, so a rollback to deploy 1 reads complete
-  rows. The old column then goes as a drop (below): two more deploys. Never one rename.
-- **A drop:** deploy 1 removes every use of it (an API field first: skill `graphql-change`
+  rows. The old column then goes as a column drop (below): two more deploys. Never one rename.
+- **A column drop:** deploy 1 removes every use of it (an API field first: skill `graphql-change`
   deprecates it) and removes it from `packages/db/src/schema`: Drizzle names every schema column
   in each insert (`default` for a value left out) and in each select without a field list, so code
   that still has the column in its schema fails once it is gone. The generated migration drops it
@@ -89,6 +89,11 @@ migrations run would miss it.
   or `DROP NOT NULL` when no default fits), so inserts can leave it out; otherwise leave only a
   comment. Its snapshot already records the column as gone. Deploy 2 drops it in a custom
   migration (step 2): by then neither the serving code nor a rollback target has it in its schema.
+- **A table drop:** deploy 1 removes every use of it (API fields first, as above; then its
+  queries and relations) but keeps the table in `packages/db/src/schema`, so its migration has no
+  `DROP TABLE`: the previous API still reads the table while deploy 1's migrations run, and a
+  rollback needs it. Code that never queries a table does not fail once it is gone, so deploy 2
+  removes it from the schema, and its generated `DROP TABLE` drops it.
 - Each step is its own PR, merged and deployed before the next one.
 
 ## 6. Prove it

@@ -14,12 +14,14 @@ it first (`db:db-migrate` depends on `db:db-up`; `db:db-seed`, `db:db-studio` an
 | Migrate / reseed (deterministic data)      | `pnpm db:migrate` / `pnpm db:seed`                                                        |
 | Change the schema                          | edit `packages/db/src/schema/*`, then `pnpm nx run db:db-generate --args="--name=<what>"` |
 | Wipe it and start an empty server          | `pnpm db:reset` (then `pnpm db:seed` migrates and seeds it)                               |
-| Browse data (the studio URL: `pnpm ports`) | `pnpm db:studio` · `pnpm nx run db:db-psql` (`-- -c "select …"` runs one query)           |
+| Browse data (the studio URL: `pnpm ports`) | `pnpm db:studio` · `pnpm nx run db:db-psql` (one query: below)                            |
 | Stop it, data kept / remove leftovers      | `pnpm teardown` / `pnpm prune:orphans` (`docs/local-resources.md`)                        |
 
 `db-psql` opens the dev database, which exists once something has migrated it in this checkout
 (`pnpm db:migrate`, `pnpm db:seed`, `pnpm db:studio` or `pnpm dev`; `pnpm check` creates only test
-databases).
+databases). One query: `pnpm nx run db:db-psql --args='-c "select … where x = 1"'`. Not
+`-- -c "…"`: Nx passes on a forwarded argument that holds `=` unquoted, so the shell splits the
+query and psql runs only its first word.
 
 ## Migrations
 

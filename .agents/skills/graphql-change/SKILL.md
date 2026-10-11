@@ -39,15 +39,19 @@ Read `docs/api.md` first. The schema is Pothos code in `apps/api/src/graphql`;
 
 ## 3. Deployed clients: add, deprecate, then remove
 
-The API and the web server deploy separately, and open browser tabs keep running the old web code,
-so for a while old operations meet the new schema.
+The API and the web server deploy separately: a push to `main` redeploys each service whose files
+it changes, in no set order, and the API's deploy stops if its pre-deploy migration fails
+(`.railway/railway.ts`). Open browser tabs keep running the old web code. So for a while old
+operations meet the new schema, and new operations can meet the old one.
 
-- Add freely: a type, a field, a query or mutation, an optional argument or input field.
+- Add freely to the API: a type, a field, a query or mutation, an optional argument or input
+  field. The web uses it in a later PR, once the API that has it is deployed: an operation that
+  selects a field the running API lacks fails validation (`Cannot query field`) on every request.
 - Never rename or remove a field, argument or enum value, or make an input required, in one
-  change. Add the replacement and mark the old one `deprecationReason: 'Use x'` (it prints as
-  `@deprecated` in `schema.graphql`); move every operation in `apps/web/src` to the replacement in
-  the same PR (`web:eslint` fails on an operation that selects a deprecated field). Remove the old
-  one in a later PR, after a deploy.
+  change. PR 1 adds the replacement, and is deployed. PR 2 marks the old one
+  `deprecationReason: 'Use x'` (it prints as `@deprecated` in `schema.graphql`) and moves every
+  operation in `apps/web/src` to the replacement: `web:eslint` fails on an operation that selects
+  a deprecated field, so the two go together. PR 3 removes the old one, after PR 2's deploy.
 - A new union member reaches old clients too: the forms' exhaustive `__typename` switch shows a
   generic message for one it does not know (`docs/web.md`, "Writes: forms").
 

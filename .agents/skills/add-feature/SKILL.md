@@ -14,7 +14,9 @@ An optional field leaves the repo compiling with its tests green after each step
 turns the tests that create rows (core, API, `note-form.browser.test.tsx`, the e2e `createNote`
 fixture) red from step 2 until steps 3-7 give them the field: add it there, never weaken a test.
 A new required input also breaks deployed clients (step 4): add the field optional first, and make
-it required in a later change.
+it required in a later change. Once the app is deployed, the web selects a new field only after
+the API that has it is live (skill `graphql-change`, step 3): steps 1-4 are one PR, steps 5-7 the
+next.
 
 ## 0. Start
 
@@ -48,7 +50,8 @@ it required in a later change.
   and generate again, then `pnpm db:seed` (it migrates, then seeds). Reseeding before the new
   migration exists fails: the seed writes every column of the schema.
 - `pnpm db:migrate` applies it to the seeded dev database. Check the existing rows:
-  `pnpm nx run db:db-psql -- -c "select …"`.
+  `pnpm nx run db:db-psql --args='-c "select …"'` (the form that keeps a query with `=` whole:
+  `docs/database.md`).
 - Change `packages/db/src/seed.ts` only if the feature needs seeded data, and then `SEED` in
   `apps/web-e2e/src/fixtures.ts` with it (e2e may not import `@acme/db`).
 - A constraint or index the schema enforces gets a test in `packages/db/src/schema.test.ts`.
@@ -166,7 +169,8 @@ it required in a later change.
   `curl -fsS -o /dev/null -w "%{http_code}\n" <url>`: the API answers with an empty body. Then
   drive a browser as `docs/e2e.md` shows ("Driving the app by hand", the web URL from
   `pnpm ports`): the form → the board → the note page → a reload.
-- One PR with a summary and a test plan, then the review loop (skill `review-loop`).
+- One PR (two once the app is deployed: above) with a summary and a test plan, then the review
+  loop (skill `review-loop`).
 
 ## Gotchas
 
@@ -178,6 +182,6 @@ it required in a later change.
 - Test files stay out of `src/routes` (the route generator reads every file there).
 - An operation is a type error until `web:codegen` runs, and `graphql()` returns no document for
   it (`execute()` rejects, naming `web:codegen`).
-- The write rate limit is on in dev (10 writes a minute per client); e2e turns it off itself.
+- The write rate limit is on in dev (`WRITE_RATE_LIMIT`, `docs/web.md`); e2e turns it off itself.
 - `pnpm regen` runs `db:db-generate` without `--name`: a pending schema change gets a random
   migration name. Generate with `--name` first.
