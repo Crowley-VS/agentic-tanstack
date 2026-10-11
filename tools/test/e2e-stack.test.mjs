@@ -1,6 +1,6 @@
 // tools/e2e-stack.mjs, behind `pnpm nx run web-e2e:e2e-stack`: the steps it runs against the
 // production images' stack, in order, with a fake runner in place of docker and pnpm.
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -142,11 +142,97 @@ describe('stackGuard', () => {
   });
 });
 
-describe.runIf(process.platform !== 'win32')('e2e-stack interrupted', () => {
-  const dirs = [];
-  afterEach(() => {
-    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+// Each wait below has a budget of its own (wall clock), and a test's timeout is more than all of its
+// waits together (five at most): a slow or broken run fails naming the step that did not happen,
+// never with Vitest's timeout, which would also run the cleanup while the test still waits.
+const WAIT = 10_000;
+
+/** Polls `ok` until it holds or `ms` have passed; returns whether it holds. */
+const until = async (ok, ms = WAIT) => {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (ok()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+};
+
+/**
+ * The pids of the watchers of process `pid` (`tools/stack-down.mjs --after <pid> …`), found by
+ * their arguments. pgrep prints only the pids that match, so its output stays small however long
+ * the machine's other command lines are (`ps -A -ww` prints them all, past spawnSync's 1 MiB
+ * default buffer). One that has exited but is not yet reaped matches none.
+ */
+function watchersOf(pid) {
+  const res = spawnSync('pgrep', ['-f', `stack-down\\.mjs --after ${pid} `], {
+    encoding: 'utf8',
   });
+  if (res.status === 1) return []; // none matches
+  if (res.status !== 0) throw res.error ?? new Error(`pgrep: exit code ${res.status}`);
+  return res.stdout.trim().split('\n').map(Number);
+}
+
+/** The process group of process `pid`, or undefined once it has exited. */
+const groupOf = (pid) =>
+  Number(spawnSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim()) ||
+  undefined;
+
+/**
+ * Sends `signal` to process `target` (a negative one: that process group); returns whether it
+ * runs (EPERM: as another user's). Signal 0 only asks.
+ */
+const kill = (target, signal) => {
+  try {
+    process.kill(target, signal);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM'; // ESRCH: none left
+  }
+};
+
+/**
+ * Kills what e2e-stack (`child`) still runs, as after a test that failed early: its own process
+ * group (with the fake pnpm's spec run) and each watcher's, a session of its own (with the fake
+ * docker the watcher runs), so that nothing writes in the temp dir any more. Returns whether all
+ * of them have exited within the wait; a watcher that starts late is killed on a later round.
+ */
+function stop(child) {
+  const own = groupOf(process.pid);
+  const groups = new Set();
+  // once e2e-stack has exited, so has what it ran: its group is gone, its pid free for reuse
+  if (child.exitCode === null && child.signalCode === null) {
+    groups.add(child.pid);
+    kill(-child.pid, 'SIGKILL');
+  }
+  return until(() => {
+    for (const watcher of watchersOf(child.pid)) {
+      const group = groupOf(watcher);
+      if (!group) continue; // it has just exited
+      if (group === own) kill(watcher, 'SIGKILL'); // never this test's own group
+      else if (kill(-group, 'SIGKILL')) groups.add(group);
+    }
+    return [...groups].every((group) => !kill(-group, 0)) && watchersOf(child.pid).length === 0;
+  });
+}
+
+/** The file e2e-stack `pid` leaves after a normal end, for its watcher to remove. */
+const markerOf = (pid) => join(tmpdir(), `e2e-stack-${pid}-removed`);
+
+describe.runIf(process.platform !== 'win32')('e2e-stack interrupted', { timeout: 6 * WAIT }, () => {
+  /** What run() started: temp dirs and e2e-stack processes. */
+  const dirs = [];
+  const children = [];
+  afterEach(async () => {
+    const pids = children.map((child) => child.pid);
+    const left = [];
+    try {
+      for (const child of children.splice(0)) if (!(await stop(child))) left.push(child.pid);
+    } finally {
+      for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+      for (const pid of pids) rmSync(markerOf(pid), { force: true });
+    }
+    expect(left, 'e2e-stack or its watcher still runs').toEqual([]);
+  }, 2 * WAIT);
 
   /**
    * `node tools/e2e-stack.mjs` in its own process group (as a terminal's foreground job is), with a
@@ -154,8 +240,8 @@ describe.runIf(process.platform !== 'win32')('e2e-stack interrupted', () => {
    *
    * Its watcher (`tools/stack-down.mjs --after <its pid>`) runs outside that group and outlives it:
    * after a kill it removes the stack through the fake docker, which writes in the temp dir. Each
-   * test waits until the watcher has exited (`watching`), so the dir goes only once nothing writes
-   * there any more.
+   * test waits until the watcher has exited (`watching`), and the cleanup first kills whatever a
+   * failed test left running, so the dir goes only once nothing writes there any more.
    */
   function run({ specs = 20 } = {}) {
     const bin = mkdtempSync(join(tmpdir(), 'e2e-stack-int-'));
@@ -187,56 +273,92 @@ describe.runIf(process.platform !== 'win32')('e2e-stack interrupted', () => {
       detached: true,
       stdio: 'ignore',
     });
-    const exited = new Promise((done) =>
-      child.on('exit', (code, signal) => done({ code, signal })),
-    );
+    const { pid } = child;
+    // a signal to `-pid` reaches its group; to -0 it would reach this test's own
+    if (!pid) throw new Error('e2e-stack did not start');
+    children.push(child);
+    // how it exited (`{ code, signal }`), once it has within the wait
+    const exited = async () =>
+      (await until(() => child.exitCode !== null || child.signalCode !== null))
+        ? { code: child.exitCode, signal: child.signalCode }
+        : 'still running';
     const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []);
     const downs = () => calls().filter((call) => / down --volumes --rmi local/.test(call));
-    const until = async (ok, ms = 10_000) => {
-      for (let t = 0; t < ms && !ok(); t += 50) await new Promise((r) => setTimeout(r, 50));
-      return ok();
+    return {
+      pid,
+      exited,
+      calls,
+      downs,
+      watching: () => watchersOf(pid).length > 0,
+      specsRunning: () => existsSync(ready),
+      markerLeft: () => existsSync(markerOf(pid)),
     };
-    // whether its watcher runs, found in the process list by its arguments (`-ww`: whole command
-    // lines, on Linux and macOS); one that has exited but is not yet reaped lists none
-    const watching = () =>
-      execFileSync('ps', ['-A', '-ww', '-o', 'args='], { encoding: 'utf8' })
-        .split('\n')
-        .some((args) => args.includes(`stack-down.mjs --after ${child.pid} `));
-    return { child, exited, calls, downs, until, watching, specsRunning: () => existsSync(ready) };
   }
 
   it('still removes the stack when Ctrl-C reaches it mid-run', async () => {
-    const { child, exited, calls, downs, until, watching, specsRunning } = run();
+    const { pid, exited, calls, downs, watching, specsRunning, markerLeft } = run();
     expect(await until(specsRunning), 'the specs never started').toBe(true);
     expect(await until(watching), 'no watcher').toBe(true);
-    process.kill(-(child.pid ?? 0), 'SIGINT'); // Ctrl-C signals the whole foreground group
-    expect(await exited).toEqual({ code: 130, signal: null });
+    process.kill(-pid, 'SIGINT'); // Ctrl-C signals the whole foreground group
+    expect(await exited()).toEqual({ code: 130, signal: null });
     const specs = calls().findIndex((call) => call.includes('e2e-base-url'));
     const down = calls().findIndex((call) => / down --volumes --rmi local/.test(call));
     expect(specs).toBeGreaterThan(-1);
     expect(down, calls().join('\n')).toBeGreaterThan(specs);
-    // its own cleanup ran, so the watcher exits and does nothing more
+    // its own cleanup ran, so the watcher only removes the marker it left, and exits
     expect(await until(() => !watching()), 'the watcher never exited').toBe(true);
     expect(downs()).toHaveLength(1);
-  }, 30_000);
+    expect(markerLeft(), 'marker left behind').toBe(false);
+  });
 
   it('still removes the stack when its whole process tree is killed (what Nx does on Ctrl-C)', async () => {
-    const { child, exited, downs, until, watching, specsRunning } = run();
+    const { pid, exited, downs, watching, specsRunning, markerLeft } = run();
     expect(await until(specsRunning), 'the specs never started').toBe(true);
     expect(await until(watching), 'no watcher').toBe(true);
-    process.kill(-(child.pid ?? 0), 'SIGKILL');
-    expect(await exited).toEqual({ code: null, signal: 'SIGKILL' });
+    process.kill(-pid, 'SIGKILL');
+    expect(await exited()).toEqual({ code: null, signal: 'SIGKILL' });
     // the watcher, outside the killed tree, notices and removes it; it goes on after `down` (the
     // untagged images, through the fake docker again), so the test ends once it has exited
     expect(await until(() => downs().length > 0), 'no stack-down after the kill').toBe(true);
     expect(await until(() => !watching()), 'the watcher never exited').toBe(true);
     expect(downs()).toHaveLength(1);
-  }, 30_000);
+    expect(markerLeft(), 'marker left behind').toBe(false);
+  });
 
   it('removes the stack once after a normal run: the watcher stands down', async () => {
-    const { exited, downs, until, watching } = run({ specs: 0 });
-    expect(await exited).toEqual({ code: 0, signal: null });
+    const { exited, downs, watching, markerLeft } = run({ specs: 0 });
+    expect(await exited()).toEqual({ code: 0, signal: null });
     expect(await until(() => !watching()), 'the watcher never exited').toBe(true);
     expect(downs()).toHaveLength(1);
-  }, 30_000);
+    // the watcher found the marker this run left, and removed it: without a watcher it stays
+    expect(markerLeft(), 'marker left behind').toBe(false);
+  });
+
+  it('finds a watcher however long the other command lines on the machine are', async () => {
+    // over 1 MiB of command lines in all (spawnSync's default buffer, which `ps -A -ww` overflowed),
+    // as Chrome or Electron helpers make them; ps prints at most 128 KiB of each one (procps)
+    const pad = 'x'.repeat(100_000);
+    const sleepers = [];
+    const sleeper = (...args) => {
+      const proc = spawn('/bin/sh', ['-c', 'sleep 60; exit', 'sh', ...args], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      sleepers.push(proc);
+      if (!proc.pid) throw new Error('sh did not start');
+      return proc.pid;
+    };
+    try {
+      for (let i = 0; i < 12; i++) sleeper(pad);
+      // a watcher of this test's own process, which no e2e-stack is
+      const watcher = sleeper('stack-down.mjs', '--after', String(process.pid), '--unless', 'x');
+      const all = execFileSync('ps', ['-A', '-ww', '-o', 'args='], { maxBuffer: 256 * 1024 ** 2 });
+      expect(all.length).toBeGreaterThan(1024 ** 2);
+      expect(watchersOf(process.pid)).toEqual([watcher]);
+      process.kill(-watcher, 'SIGKILL');
+      expect(await until(() => watchersOf(process.pid).length === 0), 'still listed').toBe(true);
+    } finally {
+      for (const { pid } of sleepers) if (pid) kill(-pid, 'SIGKILL');
+    }
+  });
 });
