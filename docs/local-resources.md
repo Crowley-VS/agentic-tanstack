@@ -62,7 +62,9 @@ another fails (the command then exits non-zero):
 `pnpm db:up` (and everything that starts the database through it) runs the Docker part on its own
 whenever it has to start the server, since it calls Docker then anyway: a deleted worktree's
 container may hold a port that the port registry has since handed to a new worktree. When the
-server already runs, `db:up` makes no Docker call at all.
+server already runs, `db:up` makes no Docker call at all. While it starts the server it holds a
+lock file in the temp directory (`db-up-<compose project>.lock`, `docs/database.md`) and removes
+it when done; one left by a `db-up` that was killed is taken over by the next.
 
 ### How it knows what is this repository's
 
