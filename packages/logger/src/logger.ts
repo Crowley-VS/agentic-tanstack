@@ -60,10 +60,11 @@ export function logFormat(env: { LOG_FORMAT?: string; NODE_ENV?: string }): LogF
 }
 
 /**
- * JSON lines all go to stdout: a platform reads the level from the line (Railway marks every
- * stderr line an error, whatever it says). Text lines go where a terminal user expects them.
+ * The default `write`: JSON lines all go to stdout, since a platform reads the level from the line
+ * (Railway marks every stderr line an error, whatever it says). Text lines go where a terminal
+ * user expects them. Exported for a `write` that changes a line before it goes out.
  */
-function consoleWriter(format: LogFormat) {
+export function consoleWriter(format: LogFormat): (line: string, level: Level) => void {
   return (line: string, level: Level) => {
     if (format === 'text' && level !== 'info') console.error(line);
     else console.log(line);

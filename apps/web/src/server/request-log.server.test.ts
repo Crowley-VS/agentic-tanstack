@@ -104,14 +104,34 @@ describe('logRequest', () => {
 });
 
 describe('sigtermFlag', () => {
-  it('turns true on SIGTERM when another listener (srvx) handles the signal', () => {
+  it('turns true on SIGTERM when another listener (srvx) handles the signal', async () => {
+    // fresh modules: after SIGTERM the logger starts each line with a newline, for good
+    vi.resetModules();
+    const fresh = await import('./request-log.server');
     const proc = new EventEmitter();
     proc.on('SIGTERM', () => {});
-    const draining = sigtermFlag(proc);
+    const draining = fresh.sigtermFlag(proc);
     expect(draining()).toBe(false);
     proc.emit('SIGTERM');
     expect(draining()).toBe(true);
     expect(lines()).toEqual(['[web] SIGTERM: finishing in-flight requests, then exiting']);
+  });
+
+  it("writes its line before srvx's countdown, and every later line on a line of its own", async () => {
+    vi.resetModules();
+    const fresh = await import('./request-log.server');
+    const proc = new EventEmitter();
+    // srvx's listener (registered when the server starts, before the first request) writes
+    // `\rStopping server gracefully (5s)...` to stderr and leaves the line open
+    const seenBySrvx: string[][] = [];
+    proc.on('SIGTERM', () => seenBySrvx.push(lines()));
+    const draining = fresh.sigtermFlag(proc);
+    proc.emit('SIGTERM');
+    expect(seenBySrvx).toEqual([['[web] SIGTERM: finishing in-flight requests, then exiting']]);
+    // a request that finishes during the drain: its line starts with a newline, which ends
+    // srvx's open line where stdout and stderr are one stream
+    await fresh.logRequest(request('/'), answer(new Response()), { ...options, draining });
+    expect(lines()[1]).toMatch(/^\n\[web\] 200 GET \/ \d+ms /);
   });
 
   it('adds no listener when nothing else handles SIGTERM (CI or TEST set: Node exits at once)', () => {

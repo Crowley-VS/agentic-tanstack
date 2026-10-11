@@ -53,9 +53,10 @@ dropped; an SSR page writes a web line and one API line per query it runs).
 
 Text that still reaches the logs, as plain lines: Node's own output (an invalid API environment at
 start, where the API refuses to start listing every problem, and a crash), srvx's `Listening on`
-at start and its shutdown progress on stderr (`Stopping server gracefully (5s)...`, error lines on
-Railway), and h3's multi-line dump of an error a server route throws (only with an invalid web
-environment, whose failing health check keeps such a deploy from going live).
+at start and its shutdown countdown on stderr (`Stopping server gracefully (5s)...`, then
+`Server closed successfully.`: error lines on Railway; Shutdown, below), and h3's multi-line dump
+of an error a server route throws (only with an invalid web environment, whose failing health check
+keeps such a deploy from going live).
 
 No pino: these servers need one line per event, and pino would add 11 packages and 126 kB to each
 server bundle (measured with tsdown), plus pino-pretty for development, whose worker-thread
@@ -131,6 +132,17 @@ exit 137): the runtime stage of the image must not set them (a build stage's `EN
 not carry over; `tools/test/docker-images.test.mjs` checks both). Outside a container Node's
 default ends the process at once; the request middleware adds no SIGTERM listener of its own
 then, since one would cancel that default.
+
+The web server's shutdown in its log: its JSON line `SIGTERM: finishing in-flight requests, then
+exiting` first, then srvx's countdown on stderr, one line srvx rewrites every second and ends only
+once the server has closed (`\rStopping server gracefully (5s)...`, then
+`\x1b[2K\rServer closed successfully.`). Railway reads stdout and stderr as one stream: a line
+written while srvx's is open joins it, and Railway keeps the two as one error-level text line, the
+JSON in it lost (so went the SIGTERM line and the in-flight requests' lines, before). So the
+request middleware listens for SIGTERM ahead of srvx, and from then on each line starts with a
+newline (`src/server/log.server.ts`): at worst an empty line between two lines.
+`src/built-server.test.ts` runs the production build with both streams on one file and checks
+every line.
 
 ## The client's IP
 
