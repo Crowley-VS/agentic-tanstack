@@ -31,7 +31,8 @@ purely additive.
   `packages/db/migrations/<timestamp>_<what>/migration.sql` and its `snapshot.json`. Always pass a
   name: `pnpm regen` runs the generator without one, so a pending change gets a random name.
 - Read the SQL. Except in the contract step of an expand/contract change, it only adds (tables,
-  nullable or defaulted columns, indexes) or relaxes (a dropped `NOT NULL` or check).
+  nullable or defaulted columns, indexes) or relaxes (a dropped `NOT NULL` or check); a drop's
+  first deploy replaces its generated `DROP COLUMN` (step 5).
 - A change that drops a column or table and adds another makes drizzle-kit ask whether it is a
   rename; with no terminal it exits listing `missing_hints`. Do not answer it: split the change
   into expand and contract steps (step 5).
@@ -80,12 +81,14 @@ migrations run would miss it.
   the code reads the new column and still writes both, so a rollback to deploy 1 reads complete
   rows. The old column then goes as a drop (below): two more deploys. Never one rename.
 - **A drop:** deploy 1 removes every use of it (an API field first: skill `graphql-change`
-  deprecates it) but keeps it in `packages/db/src/schema` (removing it there generates the `DROP`
-  in deploy 1, under the API that still selects it). A column becomes nullable or gets a default,
-  so inserts can leave it out; queries that select every schema column by default (`.returning()`,
-  `db.query.*`, a `drizzleObject` without `select`) name their columns, so the API that serves
-  during deploy 2's migrations never selects it. Deploy 2 removes it from the schema, which
-  generates the `DROP`.
+  deprecates it) and removes it from `packages/db/src/schema`: Drizzle names every schema column
+  in each insert (`default` for a value left out) and in each select without a field list, so code
+  that still has the column in its schema fails once it is gone. The generated migration drops it
+  under the API that still uses it: before you apply it (it is new and untracked), replace its
+  `DROP COLUMN`. A `NOT NULL` column without a default gets one (`ALTER COLUMN … SET DEFAULT …`,
+  or `DROP NOT NULL` when no default fits), so inserts can leave it out; otherwise leave only a
+  comment. Its snapshot already records the column as gone. Deploy 2 drops it in a custom
+  migration (step 2): by then neither the serving code nor a rollback target has it in its schema.
 - Each step is its own PR, merged and deployed before the next one.
 
 ## 6. Prove it
