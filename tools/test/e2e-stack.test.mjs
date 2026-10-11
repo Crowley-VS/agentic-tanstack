@@ -151,6 +151,11 @@ describe.runIf(process.platform !== 'win32')('e2e-stack interrupted', () => {
   /**
    * `node tools/e2e-stack.mjs` in its own process group (as a terminal's foreground job is), with a
    * fake `docker` that logs its calls and a fake `pnpm` whose spec run takes `specs` seconds.
+   *
+   * Its watcher (`tools/stack-down.mjs --after <its pid>`) runs outside that group and outlives it:
+   * after a kill it removes the stack through the fake docker, which writes in the temp dir. Each
+   * test waits until the watcher has exited (`watching`), so the dir goes only once nothing writes
+   * there any more.
    */
   function run({ specs = 20 } = {}) {
     const bin = mkdtempSync(join(tmpdir(), 'e2e-stack-int-'));
@@ -191,36 +196,47 @@ describe.runIf(process.platform !== 'win32')('e2e-stack interrupted', () => {
       for (let t = 0; t < ms && !ok(); t += 50) await new Promise((r) => setTimeout(r, 50));
       return ok();
     };
-    return { child, exited, calls, downs, until, specsRunning: () => existsSync(ready) };
+    // whether its watcher runs, found in the process list by its arguments (`-ww`: whole command
+    // lines, on Linux and macOS); one that has exited but is not yet reaped lists none
+    const watching = () =>
+      execFileSync('ps', ['-A', '-ww', '-o', 'args='], { encoding: 'utf8' })
+        .split('\n')
+        .some((args) => args.includes(`stack-down.mjs --after ${child.pid} `));
+    return { child, exited, calls, downs, until, watching, specsRunning: () => existsSync(ready) };
   }
 
   it('still removes the stack when Ctrl-C reaches it mid-run', async () => {
-    const { child, exited, calls, downs, until, specsRunning } = run();
+    const { child, exited, calls, downs, until, watching, specsRunning } = run();
     expect(await until(specsRunning), 'the specs never started').toBe(true);
+    expect(await until(watching), 'no watcher').toBe(true);
     process.kill(-(child.pid ?? 0), 'SIGINT'); // Ctrl-C signals the whole foreground group
     expect(await exited).toEqual({ code: 130, signal: null });
     const specs = calls().findIndex((call) => call.includes('e2e-base-url'));
     const down = calls().findIndex((call) => / down --volumes --rmi local/.test(call));
     expect(specs).toBeGreaterThan(-1);
     expect(down, calls().join('\n')).toBeGreaterThan(specs);
-    // its own cleanup ran, so the watcher does nothing more
-    await new Promise((r) => setTimeout(r, 1500));
+    // its own cleanup ran, so the watcher exits and does nothing more
+    expect(await until(() => !watching()), 'the watcher never exited').toBe(true);
     expect(downs()).toHaveLength(1);
   }, 30_000);
 
   it('still removes the stack when its whole process tree is killed (what Nx does on Ctrl-C)', async () => {
-    const { child, exited, downs, until, specsRunning } = run();
+    const { child, exited, downs, until, watching, specsRunning } = run();
     expect(await until(specsRunning), 'the specs never started').toBe(true);
+    expect(await until(watching), 'no watcher').toBe(true);
     process.kill(-(child.pid ?? 0), 'SIGKILL');
     expect(await exited).toEqual({ code: null, signal: 'SIGKILL' });
-    // the watcher, outside the killed tree, notices and removes it
+    // the watcher, outside the killed tree, notices and removes it; it goes on after `down` (the
+    // untagged images, through the fake docker again), so the test ends once it has exited
     expect(await until(() => downs().length > 0), 'no stack-down after the kill').toBe(true);
+    expect(await until(() => !watching()), 'the watcher never exited').toBe(true);
+    expect(downs()).toHaveLength(1);
   }, 30_000);
 
   it('removes the stack once after a normal run: the watcher stands down', async () => {
-    const { exited, downs } = run({ specs: 0 });
+    const { exited, downs, until, watching } = run({ specs: 0 });
     expect(await exited).toEqual({ code: 0, signal: null });
-    await new Promise((r) => setTimeout(r, 1500));
+    expect(await until(() => !watching()), 'the watcher never exited').toBe(true);
     expect(downs()).toHaveLength(1);
   }, 30_000);
 });
