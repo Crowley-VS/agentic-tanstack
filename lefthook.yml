@@ -6,7 +6,8 @@
 #   2. re-sync agent config from the (now formatted) sources: the index from the STAGED sources,
 #      so a commit never carries copies of unstaged or untracked skill files, and the working
 #      tree from its own. Staged generated copies are re-synced too (never committed stale).
-#   3. check agent-config hygiene of what is about to be committed (the index)
+#   3. check agent-config hygiene of what is about to be committed (the index), including the
+#      paths and root package.json scripts skills name (`pnpm check` and CI check them always)
 # Post-commit: `git commit -- <paths>` runs the pre-commit on a temporary index; put what it
 # changed in the commit back in the real index (a no-op after any other commit). Then re-sync the
 # working tree from its own sources: during the pre-commit, lefthook hid the unstaged edits of
@@ -22,7 +23,7 @@ pre-commit:
       glob: '{.agents/**,.claude/settings.json,.claude/skills/**,.gitattributes,.oxfmtrc.json,.oxlintrc.json}'
       run: node tools/agents.mjs sync --stage
     - name: agent-config
-      glob: '{.agents/**,.claude/**,.gitattributes,AGENTS.md,CLAUDE.md}'
+      glob: '{.agents/**,.claude/**,.gitattributes,AGENTS.md,CLAUDE.md,package.json}'
       run: node tools/agents.mjs check --staged
 post-commit:
   jobs:

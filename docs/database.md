@@ -14,19 +14,22 @@ it first (`db:db-migrate` depends on `db:db-up`; `db:db-seed`, `db:db-studio` an
 | Migrate / reseed (deterministic data)      | `pnpm db:migrate` / `pnpm db:seed`                                                        |
 | Change the schema                          | edit `packages/db/src/schema/*`, then `pnpm nx run db:db-generate --args="--name=<what>"` |
 | Wipe it and start an empty server          | `pnpm db:reset` (then `pnpm db:seed` migrates and seeds it)                               |
-| Browse data (the studio URL: `pnpm ports`) | `pnpm db:studio` · `pnpm nx run db:db-psql` (`-- -c "select …"` runs one query)           |
+| Browse data (the studio URL: `pnpm ports`) | `pnpm db:studio` · `pnpm nx run db:db-psql` (one query: below)                            |
 | Stop it, data kept / remove leftovers      | `pnpm teardown` / `pnpm prune:orphans` (`docs/local-resources.md`)                        |
 
 `db-psql` opens the dev database, which exists once something has migrated it in this checkout
 (`pnpm db:migrate`, `pnpm db:seed`, `pnpm db:studio` or `pnpm dev`; `pnpm check` creates only test
-databases).
+databases). One query: `pnpm nx run db:db-psql --args='-c "select … where x = 1"'`. Not
+`-- -c "…"`: Nx passes on a forwarded argument that holds `=` unquoted, so the shell splits the
+query and psql runs only its first word.
 
 ## Migrations
 
 Generate them from the schema with a name (`pnpm regen` runs `db:db-generate` without one, so a
 pending schema change would get a random name), read the SQL, and commit them. Once git tracks a
 migration (staged or committed) the guard hook blocks edits to it; only a new, untracked one may
-still be edited. A new field end to end, migration included: skill `add-feature`.
+still be edited. A migration step by step, and a change that takes more than one deploy (expand,
+then contract): skill `db-migration`; a new field end to end: skill `add-feature`.
 
 ## Test databases
 
