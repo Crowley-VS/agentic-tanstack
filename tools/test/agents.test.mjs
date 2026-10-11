@@ -1334,7 +1334,7 @@ describe('check: the paths and pnpm commands skills name', () => {
         'Run `pnpm nope` on `tools/ports.mjs` and `docs/missing.md`.',
       ),
       '.claude/agents/review/deep.md': subagent('tools/ports.mjs', 'Run `pnpm db:seed`.'),
-      // one a tool generates on this machine (`pnpm pw:agents`): not the repo's to check
+      // one a tool generated on this machine (gitignored): not the repo's to check
       '.claude/agents/local-tool.md': subagent('tools/gone.mjs', 'Names `apps/missing.ts`.'),
       '.gitignore': 'node_modules/\n.claude/agents/local-*.md\n',
     });
