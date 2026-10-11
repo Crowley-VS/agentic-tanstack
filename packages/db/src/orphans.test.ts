@@ -4,14 +4,21 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 // @ts-expect-error plain .mjs script
 import * as orphans from '../scripts/orphans.mjs';
 
-const { describePruned, findOrphanImages, findOrphans, LABELS, parseListing, pruneOrphans } =
-  orphans;
+const {
+  describePruned,
+  findOrphanImages,
+  findOrphans,
+  LABELS,
+  ownerRunning,
+  parseListing,
+  pruneOrphans,
+} = orphans;
 const tmp = mkdtempSync(join(tmpdir(), 'orphans-test-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
@@ -25,8 +32,17 @@ type Resource = {
   workingDir?: string;
   commonDir?: string;
   root?: string;
+  owner?: string;
 };
-const r = (res: Resource) => ({ workingDir: '', commonDir: '', root: '', ...res });
+const r = (res: Resource) => ({ workingDir: '', commonDir: '', root: '', owner: '', ...res });
+/** What ownerRunning says, for owners named after it: 'running' runs, any other has exited. */
+const running = (owner: string) => owner === 'running';
+/** The pid of a process that has exited. */
+const exitedPid = () => {
+  const pid = spawnSync(process.execPath, ['-e', '']).pid ?? 0;
+  expect(pid).toBeGreaterThan(0);
+  return pid;
+};
 /** A compose project as db-up makes it: a container, a volume and a network. */
 const project = (name: string, root: string, commonDir = REPO) => ({
   containers: [r({ id: `${name}-c`, project: name, workingDir: root, commonDir, root })],
@@ -90,6 +106,33 @@ describe('findOrphans', () => {
     expect(findOrphans(project('g', GONE), { commonDir: undefined, exists }).projects).toEqual([]);
   });
 
+  // a test's project (db-up.test.ts): its temp directory outlives a run that was killed
+  it('judges a project that names its owner process by that process alone', () => {
+    // its checkout directory, and compose's working directory, still exist
+    const owned = (owner: string) => ({
+      containers: [
+        r({ id: 'p-c', project: 'p', workingDir: LIVE, commonDir: REPO, root: LIVE, owner }),
+      ],
+      volumes: [r({ id: 'p_pgdata', project: 'p', commonDir: REPO, root: LIVE, owner })],
+      networks: [r({ id: 'p_default', project: 'p' })],
+    });
+    const options = { commonDir: REPO, exists, running };
+    expect(findOrphans(owned('exited'), options)).toEqual({
+      projects: [{ project: 'p', root: LIVE }],
+      containers: ['p-c'],
+      volumes: ['p_pgdata'],
+      networks: ['p_default'],
+    });
+    expect(findOrphans(owned('running'), options).projects).toEqual([]);
+    // a container of the same project that names no owner, from a live checkout, keeps it
+    const shared = merge(owned('exited'), {
+      containers: [r({ id: 'p-c2', project: 'p', workingDir: LIVE })],
+      volumes: [],
+      networks: [],
+    });
+    expect(findOrphans(shared, options).projects).toEqual([]);
+  });
+
   it('takes the unlabeled volume of an orphaned project too (made before the labels)', () => {
     const old = merge(project('gone-1', GONE), {
       containers: [],
@@ -124,6 +167,25 @@ describe('findOrphanImages', () => {
     expect(findOrphanImages(images, { commonDir: undefined, exists })).toEqual([]);
     // a project a live checkout's container keeps (findOrphans): its images stay with it
     expect(findOrphanImages(images, { commonDir: REPO, exists, live: new Set(['p']) })).toEqual([]);
+    // one that names its owner process goes by that process, its directory still there or not
+    const owned = [
+      { ...image('exited', LIVE), owner: 'exited' },
+      { ...image('running', GONE), owner: 'running' },
+    ];
+    const byOwner: { id: string }[] = findOrphanImages(owned, { commonDir: REPO, exists, running });
+    expect(byOwner.map((i) => i.id)).toEqual(['exited']);
+  });
+});
+
+describe('ownerRunning', () => {
+  it('is false only for a process of this machine that has exited', () => {
+    const gone = exitedPid();
+    expect(ownerRunning(`${process.pid}@${hostname()}`)).toBe(true);
+    expect(ownerRunning(`${gone}@${hostname()}`)).toBe(false);
+    // another machine's (a container's): its pids are not this one's
+    expect(ownerRunning(`${gone}@elsewhere`)).toBe(true);
+    expect(ownerRunning('not an owner')).toBe(true);
+    expect(ownerRunning('')).toBe(true);
   });
 });
 
@@ -131,7 +193,9 @@ describe('parseListing', () => {
   it('reads one resource per line of tab-separated JSON strings, whatever the values hold', () => {
     const odd = '/tmp/a\tb\nc'; // a tab and a newline in a label value stay inside its JSON string
     // in the order `list` asks for them: the id, then LABELS' values
-    const line = ['abc', REPO, odd, 'proj', ''].map((v) => JSON.stringify(v)).join('\t');
+    const line = ['abc', REPO, odd, 'proj', '', '123@host']
+      .map((v) => JSON.stringify(v))
+      .join('\t');
     expect(parseListing(`${line}\n${line}\n`)).toEqual(
       Array.from({ length: 2 }, () => ({
         id: 'abc',
@@ -139,6 +203,7 @@ describe('parseListing', () => {
         root: odd,
         project: 'proj',
         workingDir: '',
+        owner: '123@host',
       })),
     );
   });
@@ -238,6 +303,27 @@ describe.runIf(docker('info', '--format', '{{.ID}}').status === 0)('pruneOrphans
     expect(left('network')).toEqual([]);
     // nothing left to do the second time
     expect(pruneOrphans({ commonDir: repo }).projects).toEqual([]);
+  });
+
+  it('removes the leftovers of an owner process that has exited, its checkout still there', () => {
+    const labels = (name: string, owner: string) => ({
+      [LABELS.project]: name,
+      [LABELS.commonDir]: repo,
+      [LABELS.root]: live,
+      [LABELS.owner]: owner,
+    });
+    const killed = `orphans-test-killed-${id}`;
+    create('volume', `${killed}_pgdata`, labels(killed, `${exitedPid()}@${hostname()}`));
+    const kept = `orphans-test-running-${id}`; // this process's
+    create('volume', `${kept}_pgdata`, labels(kept, `${process.pid}@${hostname()}`));
+    expect(pruneOrphans({ commonDir: repo })).toMatchObject({
+      projects: [{ project: killed, root: live }],
+      volumes: [`${killed}_pgdata`],
+      failed: [],
+    });
+    const left = docker('volume', 'ls', '--format', '{{.Name}}').stdout.split('\n');
+    expect(left).not.toContain(`${killed}_pgdata`);
+    expect(left).toContain(`${kept}_pgdata`);
   });
 
   it('removes the images of a deleted checkout’s stack, tagged or not, and keeps the others', () => {

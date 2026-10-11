@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import pg from 'pg';
 import type { TestProject } from 'vitest/node';
 // @ts-expect-error plain .mjs script shared with the db targets
-import { dbUp } from '../../scripts/db-up.mjs';
+import { alive, dbUp } from '../../scripts/db-up.mjs';
 import { MIGRATIONS_DIR, runMigrations } from '../migrate';
 
 declare module 'vitest' {
@@ -30,15 +30,6 @@ function hashDir(dir: string): string {
 
 const withDb = (url: string, db: string) =>
   Object.assign(new URL(url), { pathname: `/${db}` }).toString();
-
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
-  }
-};
 
 export default async function setup(project: TestProject) {
   // per checkout, so worktrees pointed at one server never rebuild each other's template
