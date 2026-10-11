@@ -15,10 +15,10 @@
     },
     "drizzle-kit": {
       "version": "1.0.0-rc.4",
-      "license": "MIT",
+      "license": "Apache-2.0",
       "from": "packages/db",
       "licenseFiles": [],
-      "licenseNote": "drizzle-kit's package.json declares MIT and the package ships no license file or copyright line; its source repository (drizzle-team/drizzle-orm) is Apache-2.0 at the root. .agents/vendor/drizzle-kit/LICENSE is written by hand and covers both.",
+      "licenseNote": "drizzle-kit's package.json declares MIT, but the package ships no license file or copyright line, and its source repository (drizzle-team/drizzle-orm) is Apache-2.0 at the root. The copies are used under Apache-2.0, which also meets MIT's terms: .agents/vendor/drizzle-kit/LICENSE (written by hand: source, attribution, changes) and LICENSE-Apache-2.0 (the license text).",
       "source": "https://github.com/drizzle-team/drizzle-orm/tree/beta/drizzle-kit/skills",
       "notVendored": {
         "drizzle-output-modes": "reference: `pnpm exec intent load drizzle-kit#drizzle-output-modes` (allowed in package.json#intent.skills)",

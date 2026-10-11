@@ -5,7 +5,7 @@ metadata:
   version: "1.0.0"
 ---
 
-<!-- Vendored from drizzle-kit@1.0.0-rc.4 (skills/drizzle-hints/SKILL.md), MIT: .agents/vendor/drizzle-kit/. Changed for this repo by the rewrites in .agents/vendor.json. Do not edit this copy: change its rewrites, then run `node tools/vendor-skills.mjs update`. -->
+<!-- Vendored from drizzle-kit@1.0.0-rc.4 (skills/drizzle-hints/SKILL.md), Apache-2.0: .agents/vendor/drizzle-kit/. Changed for this repo by the rewrites in .agents/vendor.json. Do not edit this copy: change its rewrites, then run `node tools/vendor-skills.mjs update`. -->
 
 # Drizzle hints
 
