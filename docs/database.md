@@ -39,10 +39,14 @@ and its tests share it. Assume nothing about rows other tests write. The e2e dat
 again: `docs/e2e.md`.
 
 Their global setup starts the server as `pnpm db:up` does (`packages/db/scripts/db-up.mjs`), and
-Nx runs the tests of several such projects at once (every one of them on a push to main). So one
-process starts it: the first takes a lock file, `db-up-<compose project>.lock` in the temp
-directory, and the others wait until its server answers, saying what they wait for after 5 s. A
-lock whose process has exited is taken over at once; none is waited on for more than 10 minutes.
-A `compose up` that fails on a network or registry error (a timeout, Docker Hub's
-`toomanyrequests`, a reset connection) runs again, up to 4 times in all, 2, 4 and 8 s apart; any
-other failure is reported at once. CI starts the server in a step of its own before `pnpm check`.
+Nx runs the tests of several such projects at once (`pnpm check`, `nx run-many`). So one process
+starts it: the first takes a lock file, `db-up-<compose project>.lock` in `db-up-<uid>` (a
+directory of the temp directory that only you can write to), and the others wait until its
+server answers, saying what they wait for after 5 s. A lock whose process has exited is taken
+over at once; none is waited on for more than 10 minutes. A `compose up` that fails on a network
+or registry error (a timeout, Docker Hub's `toomanyrequests`, a reset connection) runs again, up
+to 4 times in all, 2, 4 and 8 s apart; any other failure is reported at once. When the start
+fails anyway, the processes that waited on its lock fail with its error, without tries of their
+own; a later start tries again. What a failed or killed start leaves in `db-up-<uid>`, and what
+removes it: `docs/local-resources.md`. CI starts the server in a step of its own before
+`pnpm check`, when a project tagged `needs-db` is affected.
