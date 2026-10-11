@@ -562,7 +562,7 @@ export async function main() {
     try {
       rmdirSync(join(ROOT, 'scripts'));
     } catch {
-      // not empty: the scripts every clone runs (setup-agents.mjs) stay
+      // not empty: the scripts every clone runs (setup-agents.mjs, pw-agents.mjs) stay
     }
   }
 

@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/nx/schemas/project-schema.json",
-  "$comment": "Template-only project: lints, typechecks and tests the scripts here. Not a pnpm package (it has no dependencies). Bootstrap deletes the project and itself, and keeps the scripts every clone runs (setup-agents.mjs), which `pnpm check` then lints as files outside projects.",
+  "$comment": "Template-only project: lints, typechecks and tests the scripts here. Not a pnpm package (it has no dependencies). Bootstrap deletes the project and itself, and keeps the scripts every clone runs (setup-agents.mjs, pw-agents.mjs), which `pnpm check` then lints as files outside projects.",
   "name": "scripts",
   "tags": ["scope:tooling", "type:tooling"],
   "targets": {

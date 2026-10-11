@@ -43,3 +43,7 @@ apps/api/migrations/
 
 # TanStack Router generator temp files (written under the cwd, then renamed into src/)
 .tanstack/
+
+# `pnpm pw:agents` (opt-in, per machine): Playwright's test agents and the planner's test plans
+.claude/agents/playwright-test-*.md
+/specs/

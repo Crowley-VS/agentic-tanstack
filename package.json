@@ -22,7 +22,8 @@
     "db:migrate": "nx run db:db-migrate",
     "db:seed": "nx run db:db-seed",
     "db:reset": "nx run db:db-reset",
-    "db:studio": "nx run db:db-studio"
+    "db:studio": "nx run db:db-studio",
+    "pw:agents": "node scripts/pw-agents.mjs"
   },
   "devDependencies": {
     "@graphql-eslint/eslint-plugin": "catalog:",

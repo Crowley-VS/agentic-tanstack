@@ -19,7 +19,7 @@ import { needsShell, sortedPackageJson, USAGE, withoutScriptsRules } from '../bo
 const REPO = resolve(import.meta.dirname, '../..');
 const PROJECT = ['--yes', '--scope', '@smoke', '--name', 'smoke-app'];
 /** What a bootstrapped project keeps of scripts/: what every clone runs (docs/agents.md). */
-const KEPT_SCRIPTS = ['setup-agents.mjs'];
+const KEPT_SCRIPTS = ['pw-agents.mjs', 'setup-agents.mjs'];
 
 /** A tarball-style copy of the working tree: every git-visible file, no .git (like giget). */
 function archiveCopy() {
