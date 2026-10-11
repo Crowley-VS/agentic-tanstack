@@ -7,7 +7,8 @@
 //            .claude/settings.json (Edit deny rules); --stage (pre-commit, after formatting) also
 //            syncs the INDEX from the staged sources, so a commit never carries copies of unstaged
 //            or untracked files
-//   check    fail if sync is stale, or on agent-config hygiene problems (CI); --staged checks
+//   check    fail if sync is stale, on agent-config hygiene problems, or when a skill names a
+//            repo path or pnpm script that does not exist (CI, `pnpm check`); --staged checks
 //            what the next commit contains instead of the working tree (pre-commit)
 //   adopt    move skills that tools wrote directly into .claude/skills into .agents/skills
 //   regen    run every regen command from .agents/generated.json; --check = fail when regen
@@ -534,12 +535,311 @@ export function unsafeAllowRule(rule) {
   return undefined;
 }
 
+// ---------- check: what skills name ----------
+/** File extensions that make a code token a file name even without a `/` (`index.test.ts`). */
+const FILE_EXTENSION = /\.(?:[cm]?[jt]sx?|json|md|sql|graphql|ya?ml|css|html|sh|toml)$/;
+/**
+ * Code tokens shaped like a path that name something else: git refs and ranges (`origin/main`,
+ * `refs/heads/x`, `main...HEAD`), MIME types (`application/json`), ratios and rates (`3/3`,
+ * `10/60s`) and product names (`Node.js`).
+ */
+const NOT_A_PATH = new RegExp(
+  [
+    String.raw`^(?:origin|upstream|refs)/`,
+    String.raw`(?:^|/)(?:[^/]+\.\.[^/]*|\.\.[^/]+)(?:/|$)`,
+    String.raw`^(?:application|audio|font|image|message|model|multipart|text|video)/[\w.-]+$`,
+    String.raw`^\d+/`,
+    String.raw`^[A-Z][a-z\d]*\.js$`,
+  ].join('|'),
+);
+/**
+ * pnpm's own commands (`pnpm help -a`) and those it passes to npm (`view`, `version`, `whoami`…):
+ * `pnpm <one of these>` is no package.json script. The ones that run a script are SCRIPT_RUNNERS.
+ */
+const PNPM_COMMANDS = new Set(
+  (
+    'add approve-builds audit bin c cache cat-file cat-index clean config create dedupe deploy ' +
+    'dlx doctor env exec fetch find-hash help i ignored-builds import init install licenses link ' +
+    'list ln ls outdated pack patch patch-commit patch-remove prune publish rb rebuild remove rm ' +
+    'root rt run runtime self-update server setup stage store unlink up update why ' +
+    'access adduser bugs deprecate dist-tag docs edit info login logout owner ping pkg prefix ' +
+    'profile repo s se search set-script show star stars team token unpublish unstar v version ' +
+    'view whoami'
+  ).split(' '),
+);
+/** pnpm commands that run a root package.json script, and the script they run. */
+const SCRIPT_RUNNERS = new Map([
+  ['t', 'test'],
+  ['test', 'test'],
+  ['it', 'test'],
+  ['install-test', 'test'],
+  ['start', 'start'],
+]);
+
+/**
+ * The code in a Markdown text (`code`): every line of a fenced block, and every inline code span
+ * outside them. Spans are read as CommonMark reads them, within one block (a paragraph, list
+ * item, heading or table row; a span may wrap onto its next line): a run of backticks opens one,
+ * the next run of the same length closes it (`` `a` `` holds `a`), and a run that nothing closes
+ * is text. So a stray backtick changes at most its own block, as it renders; `stray` holds the
+ * line of each such run, as the spans around it may be paired wrongly.
+ */
+export function markdownCode(markdown) {
+  const code = [];
+  const stray = [];
+  const blocks = [{ line: 1, lines: [] }];
+  let fence = '';
+  markdown.split(/\r?\n/).forEach((line, i) => {
+    const marker = line.match(/^\s*(`{3,}|~{3,})/)?.[1];
+    if (fence) {
+      if (
+        marker?.[0] === fence[0] &&
+        marker.length >= fence.length &&
+        !line.trim().slice(marker.length)
+      ) {
+        fence = '';
+        blocks.push({ line: i + 2, lines: [] });
+      } else code.push(line);
+    } else if (marker) fence = marker;
+    else {
+      // a blank line ends a block; a list item, heading, quote or table row starts one
+      if (!line.trim() || /^\s*(?:[-*+]\s|\d+[.)]\s|#{1,6}(?:\s|$)|>|\|)/.test(line))
+        blocks.push({ line: i + 1, lines: [] });
+      blocks.at(-1).lines.push(line);
+    }
+  });
+  for (const { line, lines } of blocks) {
+    const block = lines.join('\n');
+    const runs = [...block.matchAll(/`+/g)];
+    for (let i = 0; i < runs.length; i++) {
+      const close = runs.findIndex((run, j) => j > i && run[0].length === runs[i][0].length);
+      if (close === -1) {
+        stray.push(line + block.slice(0, runs[i].index).split('\n').length - 1);
+        continue;
+      }
+      code.push(
+        block.slice(runs[i].index + runs[i][0].length, runs[close].index).replace(/\n/g, ' '),
+      );
+      i = close;
+    }
+  }
+  return { code, stray };
+}
+
+/** The code in a Markdown text (markdownCode). */
+export const codeOf = (markdown) => markdownCode(markdown).code;
+
+/**
+ * The tokens of `code` that name a repo path: a `/` or a file extension, and nothing a path
+ * would not hold (quotes, calls, `=`, `:`, `{}`, `@scope/` packages). `<placeholder>`, `*` and
+ * `**` stand for parts of it. Left out: absolute, home, `$VAR` and `./`-relative paths, flags,
+ * URLs without a scheme (`github.com/x`), none of which names a file of this repo, and NOT_A_PATH.
+ */
+export function pathTokens(code) {
+  return code
+    .flatMap((text) => text.split(/\s+/))
+    .map((token) => token.replace(/[;,]$/, ''))
+    .filter(
+      (token) =>
+        /^[\w.$*<>/-]+$/.test(token) &&
+        !/[<>]/.test(token.replace(/<[\w.-]+>/g, '')) &&
+        !/^(?:[/~$-]|\.\.?\/)/.test(token) &&
+        !/^[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}\//i.test(token) &&
+        !NOT_A_PATH.test(token) &&
+        (token.includes('/') || FILE_EXTENSION.test(token)),
+    );
+}
+
+/**
+ * The `pnpm <name>` commands in `code`, as [name, kind]: kind `run` (`pnpm run <script>`), `exec`
+ * (`pnpm exec <bin>`) or `pnpm` (anything else). `pnpm --filter …` and other options are skipped.
+ */
+export function pnpmCommands(code) {
+  return code.flatMap((text) =>
+    [...text.matchAll(/(?:^|[\s;&|(])pnpm\s+([a-z][\w:.-]*)(?:\s+([a-z@][\w:./@-]*))?/g)]
+      .map(([, name, next]) =>
+        name === 'run' || name === 'exec' ? [next ?? '', name] : [name, 'pnpm'],
+      )
+      .filter(([name]) => name),
+  );
+}
+
+/**
+ * A path token as a pattern over repo paths: `*` within a segment, `**` across them (`**\/`: none
+ * or more directories), `<placeholder>` and `YYYY-MM-DD` for part of one segment. A token whose
+ * first segment is a top-level entry is matched from the root; any other (`index.test.ts`,
+ * `src/lib`) as the end of a path.
+ */
+export function pathPattern(token, topLevel) {
+  const path = token.replace(/\/$/, '');
+  const body = path
+    .split(/(\*\*\/|\*\*|\*|<[^>]+>|YYYY-MM-DD)/)
+    .map((part) =>
+      part === '**/'
+        ? '(?:.*/)?'
+        : part === '**'
+          ? '.*'
+          : part === '*' || part.startsWith('<')
+            ? '[^/]+'
+            : part === 'YYYY-MM-DD'
+              ? '\\d{4}-\\d{2}-\\d{2}'
+              : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+    )
+    .join('');
+  return new RegExp(`${topLevel.has(path.split('/')[0]) ? '^' : '(^|/)'}${body}$`);
+}
+
+/** Every repo file in `files`, and each directory of one. */
+function withDirectories(files) {
+  const entries = new Set(files);
+  for (const file of files)
+    for (let dir = dirname(file); dir !== '.'; dir = dirname(dir)) entries.add(dir);
+  return entries;
+}
+
+/** The paths git ignores in `gitRoot`, of those given (none when it is no git work tree). */
+function ignoredPaths(gitRoot, paths) {
+  const checkIgnore = (list) =>
+    spawnSync('git', ['check-ignore', '--no-index', '--stdin', '-z'], {
+      cwd: gitRoot,
+      input: list.join('\0'),
+      encoding: 'utf8',
+    });
+  if (!paths.length) return new Set();
+  const res = checkIgnore(paths);
+  // 0: some are ignored, 1: none is
+  if (res.status === 0 || res.status === 1) return new Set(lines0(res.stdout));
+  // one path git cannot check (outside the repo: `apps/../../x`) fails them all: one at a time
+  return new Set(
+    paths.filter((p) => {
+      const one = checkIgnore([p]);
+      return one.status === 0 && lines0(one.stdout).includes(p);
+    }),
+  );
+}
+
+/**
+ * The tokens a skill file lists in `<!-- agents:unchecked a b -->` comments: paths the check
+ * skips (a file the skill's own steps create, a token that is no path), and the names of `pnpm
+ * <name>` commands it does not know.
+ */
+const uncheckedTokens = (markdown) =>
+  new Set(
+    [...markdown.matchAll(/<!--\s*agents:unchecked\s+([\s\S]*?)-->/g)].flatMap((m) =>
+      m[1].trim().split(/\s+/),
+    ),
+  );
+
+/**
+ * What the skill files (`.agents/skills/**\/*.md`) in `root` name that does not exist: repo
+ * paths (`files`: the repo's files; undefined skips paths) and `pnpm` commands (root package.json
+ * scripts; `pnpm exec <bin>` and a bare `pnpm <bin>` against `<gitRoot>/node_modules/.bin`, once
+ * installed). Only code is read: fenced blocks and inline code spans. Two kinds of path are left
+ * out, as no clone has them: those git ignores (plans, personal settings, build output: whoever
+ * follows the skill makes them), and those a skill lists in an `<!-- agents:unchecked <path> … -->`
+ * comment (a file its own steps create, such as a tool's temp file).
+ */
+export function skillReferences(root, { files, gitRoot = root }) {
+  const skillFiles = listFiles(join(root, '.agents', 'skills'))
+    .map((f) => `.agents/skills/${f.split(sep).join('/')}`)
+    .filter((f) => f.endsWith('.md'));
+  if (!skillFiles.length) return [];
+  const entries = files && [...withDirectories(files)];
+  const topLevel = new Set(entries?.map((e) => e.split('/')[0]));
+  const exists = (token) => {
+    const pattern = pathPattern(token, topLevel);
+    return !entries || entries.some((e) => pattern.test(e));
+  };
+  const pkgPath = join(root, 'package.json');
+  const scripts = existsSync(pkgPath) ? (readJson(pkgPath).scripts ?? {}) : {};
+  const binDir = join(gitRoot, 'node_modules', '.bin');
+  // undefined before `pnpm install`: binaries are not checked then
+  const bins = existsSync(binDir)
+    ? new Set(readdirSync(binDir).map((b) => b.replace(/\.(?:cmd|ps1)$/i, '')))
+    : undefined;
+  const isBin = (name) => !bins || bins.has(name);
+  const hasScript = (name) => Object.hasOwn(scripts, name);
+
+  const missing = []; // [file, token]
+  const problems = [];
+  for (const file of skillFiles) {
+    const text = readFileSync(join(root, file), 'utf8');
+    const { code, stray } = markdownCode(text);
+    const unchecked = uncheckedTokens(text);
+    for (const token of new Set(pathTokens(code)))
+      if (!unchecked.has(token) && !exists(token)) missing.push([file, token]);
+    for (const [name, kind] of pnpmCommands(code)) {
+      if (unchecked.has(name)) continue;
+      // `pnpm test` runs the `test` script; `pnpm start` the `start` script, else `node server.js`
+      const runs = kind === 'pnpm' && SCRIPT_RUNNERS.get(name);
+      if (runs && !hasScript(runs) && !(runs === 'start' && existsSync(join(root, 'server.js'))))
+        problems.push(
+          `${file} runs \`pnpm ${name}\`, which runs the root package.json script "${runs}": there is none`,
+        );
+      if (kind === 'run' && !hasScript(name))
+        problems.push(
+          `${file} runs \`pnpm run ${name}\`: the root package.json has no such script`,
+        );
+      if (kind === 'exec' && !isBin(name))
+        problems.push(`${file} runs \`pnpm exec ${name}\`: node_modules/.bin has no \`${name}\``);
+      if (kind === 'pnpm' && !runs && !hasScript(name) && !PNPM_COMMANDS.has(name) && !isBin(name))
+        problems.push(
+          `${file} runs \`pnpm ${name}\`, which is no root package.json script, pnpm command or installed binary: renamed or removed? Update the skill (a command this check does not know: \`<!-- agents:unchecked ${name} -->\`)`,
+        );
+    }
+    for (const line of stray)
+      problems.push(
+        `${file} has a backtick on line ${line} that nothing closes: a stray backtick in that paragraph pairs its code spans wrongly, so they go unchecked. Close it, or write a literal one as code (\`\` \` \`\`)`,
+      );
+  }
+  const ignored = ignoredPaths(
+    gitRoot,
+    missing.map(([, token]) => token),
+  );
+  for (const [file, token] of missing)
+    if (!ignored.has(token))
+      problems.push(
+        `${file} names \`${token}\`, which is not in the repo: renamed or deleted? Update the skill (a path that starts with a top-level directory is read from the root; a file the skill's own steps create, or a token that is no repo path: \`<!-- agents:unchecked ${token} -->\`)`,
+      );
+  return [...new Set(problems)];
+}
+
 /** `meta.name` of a workflow script (.claude/workflows/*.js), if it declares one. */
 function workflowName(text) {
   return text.match(/export const meta\s*=\s*\{[\s\S]*?\bname:\s*(['"`])([^'"`]+)\1/)?.[2];
 }
 
-function check(root = ROOT, { tracked, previousGlobs, fix = '`pnpm agents:sync`' } = {}) {
+/**
+ * Every file on disk git would commit (tracked or new, not ignored), or undefined when `root` has
+ * no `.git` (a source archive: nothing tells repo files from local ones there). Any git failure
+ * in a work tree (git missing, a `safe.directory` refusal, a broken worktree link) throws: the
+ * paths skills name would go unchecked.
+ */
+function workingFiles(root) {
+  if (!existsSync(join(root, '.git'))) return undefined;
+  try {
+    return lines0(
+      git(root, ['ls-files', '-co', '--exclude-standard', '-z'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+    ).filter((f) => existsSync(join(root, f))); // a tracked file moved away is gone
+  } catch (err) {
+    const why = String(err.stderr ?? '').trim() || err.message;
+    throw new Error(`git cannot list the repo's files, to check the paths skills name: ${why}`, {
+      cause: err,
+    });
+  }
+}
+
+/**
+ * Agent-config problems of the checkout at `root`. `files`: the repo's files that skills may name
+ * (default: the working tree's); `gitRoot`: the git work tree (ignore rules, node_modules) when
+ * `root` is a copy of its index (checkStaged).
+ */
+function check(
+  root = ROOT,
+  { tracked, previousGlobs, fix = '`pnpm agents:sync`', files, gitRoot = root } = {},
+) {
   const problems = sync(root, { write: false, tracked, previousGlobs }).map((p) =>
     p.includes(NO_SOURCE) ? p : `${p} — run ${fix}`,
   );
@@ -586,6 +886,9 @@ function check(root = ROOT, { tracked, previousGlobs, fix = '`pnpm agents:sync`'
           problems.push(`skill "${name}": non-portable frontmatter key "${key}"`);
     }
   }
+  // Every repo path and pnpm script they name exists: here, uncached, so that renaming a file a
+  // skill names fails `pnpm check` and CI at once (a cached test would notice only on a miss).
+  problems.push(...skillReferences(root, { files: files ?? workingFiles(root), gitRoot }));
 
   // Claude Code lists a workflow as a skill named after its meta.name: a workflow and a skill with
   // the same name show up once (as the workflow), so the skill never loads.
@@ -697,6 +1000,9 @@ function checkStaged(root = ROOT) {
       previousGlobs: manifestGlobsAt(root, 'HEAD'),
       // re-syncs the index from the staged sources (and the working tree from its own)
       fix: '`pnpm agents:sync --stage`',
+      // skills may name only files the commit holds (not untracked or deleted-and-staged ones)
+      files: lines0(git(root, ['ls-files', '-z'])),
+      gitRoot: root,
     }).map((p) => `staged: ${p}`);
   } finally {
     rmSync(snapshot, { recursive: true, force: true });
@@ -797,9 +1103,16 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       for (const p of unresolved) console.warn(`! ${p}`);
       break;
     }
-    case 'check':
-      report(rest.includes('--staged') ? checkStaged() : check(), 'agents: config OK');
+    case 'check': {
+      let problems;
+      try {
+        problems = rest.includes('--staged') ? checkStaged() : check();
+      } catch (err) {
+        problems = [err.message]; // fails closed: what it could not check is no pass
+      }
+      report(problems, 'agents: config OK');
       break;
+    }
     case 'adopt': {
       const adopted = adopt();
       console.log(

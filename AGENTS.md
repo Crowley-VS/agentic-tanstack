@@ -134,6 +134,15 @@ Without Docker, `pnpm nx affected -t test --exclude=tag:needs-db` skips the `nee
 
 <!-- stack:start:workflow -->
 
-- A new field or feature end to end (schema → core → API → UI → e2e): skill `add-feature`.
+Task skills (`.agents/skills`), each with its steps, commands and checks:
+
+- A field or feature end to end (schema → core → API → UI → e2e): `add-feature`.
+- A schema change and its migration (deploy-safe: expand, then contract): `db-migration`.
+- The GraphQL API shape (Pothos, print-schema, codegen, deprecation): `graphql-change`.
+- A Playwright spec, or a failing e2e run: `e2e-test`.
+- A shadcn/ui component in `packages/ui`: `add-ui-component`.
+- Run the app and see a change work (dev, BFF, production build, images): `run-web`.
+- Before saying "done" (the checks each change needs, the evidence): `verify`.
+- Upgrading Nx and its plugins: `nx-upgrade`.
 
 <!-- stack:end -->

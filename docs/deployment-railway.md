@@ -183,9 +183,10 @@ evaluation script of CLI 5.63.4.
    web's deploy shows "skipped". A commit that changes only `docs/` deploys neither. Then close the
    pull request, delete the branch, and `railway config apply` (the file sets `main` back).
 8. **Shutdown is graceful:** redeploy the api, then web (dashboard, Deployments, Redeploy). Each old
-   deployment logs `SIGTERM: finishing in-flight requests, then exiting` (web: also srvx's
-   `Stopping server gracefully`, on stderr, so shown as an error) and stops within a few seconds,
-   never with the api's `requests still running after 8 s`.
+   deployment logs `SIGTERM: finishing in-flight requests, then exiting` as an info line of its
+   own (web: then srvx's `Stopping server gracefully` and `Server closed successfully.`, on stderr,
+   so shown as errors) and stops within a few seconds, never with the api's
+   `requests still running after 8 s`.
 9. **Optional, the e2e specs against the deploy:** set `WRITE_RATE_LIMIT=off` on web in the
    dashboard, then run `BASE_URL=https://<web> pnpm nx run web-e2e:e2e-base-url` (the specs that
    need the seed or the API's own address skip, `docs/e2e.md`; their notes stay in the database).
