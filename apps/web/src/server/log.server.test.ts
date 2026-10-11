@@ -57,6 +57,24 @@ describe('log()', () => {
   });
 });
 
+describe('newlineBeforeEachLine()', () => {
+  it('starts every later line with a newline, still one JSON object on stdout', async () => {
+    vi.stubEnv('PROD', true);
+    const { log, newlineBeforeEachLine } = await fresh();
+    log().info('before');
+    newlineBeforeEachLine();
+    log().info('after');
+    log().error('and after', { err: new Error('x') });
+    expect(vi.mocked(console.error)).not.toHaveBeenCalled();
+    expect(written().map((line) => JSON.parse(line) as unknown)).toEqual([
+      expect.objectContaining({ level: 'info', message: 'before' }),
+      expect.objectContaining({ level: 'info', message: 'after' }),
+      expect.objectContaining({ level: 'error', message: 'and after' }),
+    ]);
+    expect(written().map((line) => line.startsWith('\n'))).toEqual([false, true, true]);
+  });
+});
+
 describe('logError()', () => {
   it('tags the line with the id of the request being handled, and writes the error', async () => {
     const { logError } = await fresh();

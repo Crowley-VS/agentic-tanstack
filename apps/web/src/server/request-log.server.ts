@@ -7,11 +7,12 @@
 // - after SIGTERM, `connection: close` on every answer. Nitro's server (srvx) then stops accepting
 //   connections and waits for the open ones, up to SERVER_SHUTDOWN_TIMEOUT (5 s) before it cuts
 //   them; a keep-alive connection (the platform's proxy keeps them) stays open after its last
-//   response, so without this each shutdown would take the full 5 s and cut what came meanwhile.
+//   response, so without this each shutdown would take the full 5 s and cut what came meanwhile;
+// - on SIGTERM, one line that says so, before srvx's own countdown (sigtermFlag).
 import type { EventEmitter } from 'node:events';
 import { REQUEST_ID_HEADER } from '@acme/validators/internal-api';
 import { getRequestIP } from '@tanstack/react-start/server';
-import { log } from './log.server';
+import { log, newlineBeforeEachLine } from './log.server';
 import { proxyHeaders, requestContext } from './request-context.server';
 
 /** The platform's healthcheck (routes/api/health.ts): not logged. */
@@ -22,12 +23,18 @@ export const HEALTH_PATH = '/api/health';
  * the process exits) unless CI or TEST is set; then nothing listens and Node's default ends the
  * process at once. So this listens only next to another listener: one of its own would cancel
  * that default, and the process would ignore SIGTERM.
+ *
+ * It listens ahead of srvx, whose countdown on stderr starts a line it leaves open until the server
+ * has closed: the SIGTERM line is written before it, and it and every line after it start with a
+ * newline (newlineBeforeEachLine, log.server.ts), so each stays whole in whatever order a platform
+ * reads stdout and stderr.
  */
 export function sigtermFlag(proc: EventEmitter = process): () => boolean {
   let received = false;
   if (proc.listenerCount('SIGTERM') > 0)
-    proc.once('SIGTERM', () => {
+    proc.prependOnceListener('SIGTERM', () => {
       received = true;
+      newlineBeforeEachLine();
       log().info('SIGTERM: finishing in-flight requests, then exiting');
     });
   return () => received;

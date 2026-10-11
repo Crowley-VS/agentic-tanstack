@@ -20,7 +20,8 @@ the URLs. Every request Start handles gets one log line (`src/start.ts`; JSON in
 `web:serve` listens on 127.0.0.1 unless `NITRO_HOST` says otherwise (`NITRO_HOST=0.0.0.0` to
 reach it from another device; `HOST` is ignored there); in a container (`docs/deployment.md`)
 Nitro listens on every interface. Writes are rate-limited per client IP, in `pnpm dev` too
-(below).
+(below). `web:test` runs `web:build` first: `src/built-server.test.ts` runs the production build
+as a process and stops it with SIGTERM (`docs/production.md`, Shutdown).
 
 ## Operations are typed by codegen
 
