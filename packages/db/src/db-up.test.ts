@@ -9,11 +9,13 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { type AddressInfo, createServer } from 'node:net';
+import { type AddressInfo, createServer, type Socket } from 'node:net';
 import { devNull, tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -30,11 +32,15 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 // FAKE_DOCKER_FAIL: stderr of a failure for every call (e.g. the Docker daemon is not running)
 // FAKE_DOCKER_RM_FAIL: the same for removals only
 // FAKE_DOCKER_ENV: a file each `compose` call appends the checkout labels' values to
+// FAKE_DOCKER_STATE: a file standing for the container, which an `up` that succeeds creates as
+//   Docker does: in FAKE_DOCKER_CREATE_MS (default 300), during which another `up` fails on the
+//   container name, as a concurrent compose does; once it exists, an `up` finds it (fakePostgres
+//   answers while it exists)
 const BIN = join(tmp, 'bin');
 mkdirSync(BIN);
 writeFileSync(
   join(tmp, 'docker.mjs'),
-  `import { appendFileSync, readFileSync } from 'node:fs';
+  `import { appendFileSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 const { FAKE_DOCKER_LOG: log, FAKE_DOCKER_UP: up = '[]', FAKE_DOCKER_LS: ls = '{}' } = process.env;
 const args = process.argv.slice(2);
 appendFileSync(log, args.join(' ') + '\\n');
@@ -56,7 +62,17 @@ if (args.includes('up')) {
   const n = readFileSync(log, 'utf8').split('\\n').filter((l) => l.split(' ').includes('up')).length;
   const { stderr = '', status = 0 } = JSON.parse(up)[n - 1] ?? {};
   process.stderr.write(stderr);
-  process.exit(status);
+  const state = process.env.FAKE_DOCKER_STATE;
+  if (status !== 0 || !state || existsSync(state)) process.exit(status);
+  try {
+    openSync(state + '.creating', 'wx');
+  } catch {
+    process.stderr.write('Error response from daemon: Conflict. The container name "/fake-project-postgres-1" is already in use by container "0123abcd". You have to remove (or rename) that container to be able to reuse that name.\\n');
+    process.exit(1);
+  }
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_DOCKER_CREATE_MS ?? 300));
+  writeFileSync(state, '');
+  unlinkSync(state + '.creating');
 }
 `,
 );
@@ -98,14 +114,95 @@ const local = (port: number) => ({
   ownsProject: true,
 });
 
+// Postgres protocol pieces: a 2- or 4-byte integer, a C string, a message (type, length, body)
+const int = (size: 2 | 4, n: number) => {
+  const b = Buffer.alloc(size);
+  if (size === 2) b.writeInt16BE(n);
+  else b.writeInt32BE(n);
+  return b;
+};
+const cstring = (s: string) => Buffer.from(`${s}\0`);
+const msg = (type: string, ...parts: Buffer[]) => {
+  const body = Buffer.concat(parts);
+  return Buffer.concat([Buffer.from(type), int(4, body.length + 4), body]);
+};
+
+/**
+ * A Postgres on `port` that, while `up()` is true, answers db-up's `show cluster_name` with
+ * `project` (the protocol's startup, a simple query and its reply, nothing else), and otherwise
+ * drops every connection, as a server that is still starting does. Resolves to its stop function.
+ */
+async function fakePostgres(port: number, project: string, up: () => boolean) {
+  const ready = msg('Z', Buffer.from('I'));
+  const reply = Buffer.concat([
+    // one text column (no table, type oid 25, variable length, no modifier, text format), then
+    // its row, then the command's end
+    msg(
+      'T',
+      int(2, 1),
+      cstring('cluster_name'),
+      int(4, 0),
+      int(2, 0),
+      int(4, 25),
+      int(2, -1),
+      int(4, -1),
+      int(2, 0),
+    ),
+    msg('D', int(2, 1), int(4, Buffer.byteLength(project)), Buffer.from(project)),
+    msg('C', cstring('SHOW')),
+    ready,
+  ]);
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => {});
+    if (!up()) {
+      socket.destroy();
+      return;
+    }
+    let started = false;
+    let buf = Buffer.alloc(0);
+    socket.on('data', (chunk: Buffer) => {
+      buf = Buffer.concat([buf, chunk]);
+      for (;;) {
+        // the startup message has no type byte; every later one has
+        const at = started ? 1 : 0;
+        if (buf.length < at + 4 || buf.length < at + buf.readInt32BE(at)) return;
+        const type = started ? String.fromCharCode(buf[0] ?? 0) : '';
+        buf = buf.subarray(at + buf.readInt32BE(at));
+        if (!started) socket.write(Buffer.concat([msg('R', int(4, 0)), ready])); // trust
+        else if (type === 'Q') socket.write(reply);
+        else if (type === 'X') socket.end();
+        started = true;
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
+  return async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise((resolve) => server.close(resolve));
+  };
+}
+
 let runs = 0;
+/** A directory of its own for one test's locks: no other test or checkout ever shares it. */
+const lockDir = () => mkdtempSync(join(tmp, 'locks-'));
+/** dbUp's timings for the tests: no real waits. */
+const fast = { pollMs: 20, backoffMs: 1, noticeMs: 60_000, staleMs: 60_000 };
+
 /**
  * dbUp() against the fake docker: the message it failed with (if any) and the docker calls (a
- * listing as its first two words), and what it printed.
+ * listing as its first two words), and what it printed, on stdout and on stderr.
  */
 async function run(
   cfg: ReturnType<typeof local>,
-  { up = [], ls = {}, env = {} }: { up?: object[]; ls?: object; env?: Record<string, string> } = {},
+  {
+    up = [],
+    ls = {},
+    env = {},
+    options = {},
+  }: { up?: object[]; ls?: object; env?: Record<string, string>; options?: object } = {},
 ) {
   const log = join(tmp, `docker-${runs++}.log`);
   const fakeEnv = {
@@ -116,20 +213,54 @@ async function run(
     ...env,
   };
   const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   let error: string | undefined;
   let printed: string[] = [];
+  let warned: string[] = [];
   try {
-    await dbUp(cfg, { env: fakeEnv });
+    await dbUp(cfg, { env: fakeEnv, lockDir: lockDir(), ...fast, ...options });
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
   } finally {
     printed = spy.mock.calls.map((args) => args.join(' '));
+    warned = errSpy.mock.calls.map((args) => args.join(' '));
     spy.mockRestore();
+    errSpy.mockRestore();
   }
   const raw = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
   const calls = raw.map((c) => (/^\w+ ls /.test(c) ? c.split(' ').slice(0, 2).join(' ') : c));
-  return { error, calls, printed, raw };
+  return { error, calls, printed, warned, raw };
 }
+
+/**
+ * dbUp() in `n` processes at once, as Nx runs the tests of several db-using projects, each with
+ * the cfg and options `argsFor(i)` gives it: each one's exit code and stderr.
+ */
+function dbUpProcesses(n: number, argsFor: (i: number) => object) {
+  const code = `import { dbUp } from ${JSON.stringify(join(DB, 'scripts/db-up.mjs'))};
+const { cfg, ...options } = JSON.parse(process.env.DB_UP_ARGS);
+await dbUp(cfg, options);`;
+  return Promise.all(
+    Array.from({ length: n }, (_, i) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', code], {
+        cwd: DB,
+        env: { ...process.env, DB_UP_ARGS: JSON.stringify(argsFor(i)) },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+      return new Promise<{ status: number | null; stderr: string }>((resolve) =>
+        child.on('close', (status) => resolve({ status, stderr })),
+      );
+    }),
+  );
+}
+
+/** The `compose up` calls a docker log holds. */
+const ups = (log: string) =>
+  readFileSync(log, 'utf8')
+    .split('\n')
+    .filter((call) => call.endsWith(' up -d --wait'));
 
 describe('dbUp', () => {
   it('leaves a server that is not this checkout’s alone (no Docker call), unless DB_UP_FORCE', async () => {
@@ -166,6 +297,12 @@ describe('dbUp', () => {
     expect(calls).toEqual([...LISTS, UP]);
     expect(error).toContain('Docker is not running. Start it and retry.');
     expect(error).toContain('docker said: Cannot connect to the Docker daemon');
+    // a daemon whose socket times out is not running either: no retry of the timeout
+    const timedOut =
+      'Cannot connect to the Docker daemon at unix:///var/run/docker.sock: dial unix /var/run/docker.sock: i/o timeout\n';
+    const again = await run(local(await closedPort()), { up: [{ stderr: timedOut, status: 1 }] });
+    expect(again.calls).toEqual([...LISTS, UP]);
+    expect(again.error).toContain('Docker is not running. Start it and retry.');
   });
 
   it('removes the half-created container when the port is taken', async () => {
@@ -176,23 +313,81 @@ describe('dbUp', () => {
     expect(error).toContain(`Port ${cfg.port} is taken by something else.`);
   });
 
-  it('retries `up` once when a concurrent start created the container first', async () => {
+  it('retries `up`, after a wait, when a start outside the lock created the container first', async () => {
     const stderr =
       'Error response from daemon: Conflict. The container name "/fake-project-postgres-1" is already in use by container "0123abcd".\n';
-    const { error, calls } = await run(local(await closedPort()), {
+    const { error, calls, warned } = await run(local(await closedPort()), {
       up: [{ stderr, status: 1 }, {}],
     });
     expect(calls).toEqual([...LISTS, UP, UP]);
+    expect(warned).toEqual([
+      '[db-up] docker compose up failed (another start created its container first): try 2 of 4 in 0.001 s',
+    ]);
     // the retry succeeded; only the check that the port reaches the server is left
     expect(error).toMatch(/healthy but \d+ does not reach it/);
   });
 
+  // what Docker Hub answered CI's runners (actions runs 37994128478 and 37994452070)
+  const transient = [
+    'Error response from daemon: Head "https://registry-1.docker.io/v2/library/postgres/manifests/18.6-trixie": Get "https://auth.docker.io/token?account=githubactions&scope=repository%3Alibrary%2Fpostgres%3Apull&service=registry.docker.io": context deadline exceeded (Client.Timeout exceeded while awaiting headers)',
+    'Error response from daemon: Head "https://registry-1.docker.io/v2/library/postgres/manifests/18.6-trixie": Get "https://auth.docker.io/token?account=githubactions&scope=repository%3Alibrary%2Fpostgres%3Apull&service=registry.docker.io": net/http: request canceled (Client.Timeout exceeded while awaiting headers)',
+    'Error response from daemon: toomanyrequests: You have reached your unauthenticated pull rate limit. https://www.docker.com/increase-rate-limit',
+    'Error response from daemon: Get "https://registry-1.docker.io/v2/": net/http: TLS handshake timeout',
+    'Error response from daemon: Get "https://registry-1.docker.io/v2/": dial tcp 54.236.113.205:443: i/o timeout',
+    'failed to fetch oauth token: unexpected status from POST request to https://auth.docker.io/token: 504 Gateway Timeout',
+    'Error response from daemon: Get "https://registry-1.docker.io/v2/": read tcp 10.1.0.4:39912->54.236.113.205:443: read: connection reset by peer',
+  ];
+
+  it('retries a pull or start that failed on a network or registry error, then starts the server', async () => {
+    const port = await closedPort();
+    const state = join(tmp, `container-${runs}`);
+    const stop = await fakePostgres(port, 'fake-project', () => existsSync(state));
+    try {
+      const { error, calls, warned } = await run(local(port), {
+        up: [
+          { stderr: `${transient[0]}\n`, status: 1 },
+          { stderr: `${transient[2]}\n`, status: 1 },
+          {},
+        ],
+        env: { FAKE_DOCKER_STATE: state, FAKE_DOCKER_CREATE_MS: '0' },
+        options: { backoffMs: 10 },
+      });
+      expect(error).toBeUndefined();
+      expect(calls).toEqual([...LISTS, UP, UP, UP]);
+      // a growing wait between the tries
+      expect(warned).toEqual([
+        '[db-up] docker compose up failed (context deadline exceeded): try 2 of 4 in 0.01 s',
+        '[db-up] docker compose up failed (toomanyrequests): try 3 of 4 in 0.02 s',
+      ]);
+    } finally {
+      await stop();
+    }
+  });
+
+  it('retries each kind of transient error, and reports it once its tries are used up', async () => {
+    for (const stderr of transient) {
+      const { calls } = await run(local(await closedPort()), { up: [{ stderr, status: 1 }, {}] });
+      expect(calls, stderr).toEqual([...LISTS, UP, UP]);
+    }
+    const failing = Array.from({ length: 4 }, () => ({ stderr: `${transient[1]}\n`, status: 1 }));
+    const { error, calls } = await run(local(await closedPort()), { up: failing });
+    expect(calls).toEqual([...LISTS, UP, UP, UP, UP]);
+    expect(error).toContain(`docker compose up failed (exit 1):\n${transient[1]}`);
+  });
+
   it('reports any other compose failure as is, without retrying', async () => {
-    const { error, calls } = await run(local(await closedPort()), {
-      up: [{ stderr: 'pull access denied\n', status: 18 }],
-    });
-    expect(calls).toEqual([...LISTS, UP]);
-    expect(error).toContain('docker compose up failed (exit 18):\npull access denied');
+    for (const stderr of [
+      "Error response from daemon: pull access denied for postgres, repository does not exist or may require 'docker login'\n",
+      'Error response from daemon: manifest for postgres:18.6-trixie not found: manifest unknown\n',
+      'dependency failed to start: container fake-project-postgres-1 is unhealthy\n',
+    ]) {
+      const { error, calls, warned } = await run(local(await closedPort()), {
+        up: [{ stderr, status: 18 }],
+      });
+      expect(calls).toEqual([...LISTS, UP]);
+      expect(warned).toEqual([]);
+      expect(error).toBe(`[db-up] docker compose up failed (exit 18):\n${stderr}`);
+    }
   });
 
   it('fails when compose reports the server healthy but its port does not reach it', async () => {
@@ -291,10 +486,191 @@ describe('dbUp', () => {
   });
 });
 
+/** A fake server on a free port, which answers once the fake docker's `up` has created it. */
+async function fakeServer() {
+  const port = await closedPort();
+  const state = join(tmp, `container-${runs++}`);
+  const stop = await fakePostgres(port, 'fake-project', () => existsSync(state));
+  const env = { PATH: BIN, FAKE_DOCKER_STATE: state };
+  return { cfg: local(port), env, state, stop };
+}
+
+/** A start lock of fake-project in a fresh directory, held by process `pid`. */
+function heldLock(pid: number) {
+  const dir = lockDir();
+  const file = join(dir, 'db-up-fake-project.lock');
+  writeFileSync(file, JSON.stringify({ pid, project: 'fake-project', token: 'theirs' }));
+  return { dir, file };
+}
+
+// On a push to main, `nx affected` runs the tests of api, core and db at once on a fresh runner,
+// and each one's global setup starts the same server: they raced to create its container, and a
+// retry that lost again failed the run (actions run 38073767504).
+describe('dbUp in several processes at once', () => {
+  it('runs `compose up` once, and every process gets the server', async () => {
+    const { cfg, env, stop } = await fakeServer();
+    const log = join(tmp, `docker-${runs++}.log`);
+    const locks = lockDir();
+    try {
+      const results = await dbUpProcesses(3, () => ({
+        cfg,
+        env: { ...env, FAKE_DOCKER_LOG: log },
+        lockDir: locks,
+        ...fast,
+      }));
+      expect(results).toEqual(Array.from({ length: 3 }, () => ({ status: 0, stderr: '' })));
+      expect(ups(log)).toHaveLength(1);
+      expect(readdirSync(locks)).toEqual([]); // released
+    } finally {
+      await stop();
+    }
+  }, 30_000);
+
+  it('without a lock they share, each loser retries until the container exists', async () => {
+    const { cfg, env, stop } = await fakeServer();
+    const log = join(tmp, `docker-${runs++}.log`);
+    try {
+      // a container that takes a while to create, as on CI's loaded runner, where the old
+      // immediate retry failed on its name again; the retries wait 0.3 + 0.6 + 1.2 s, longer
+      const results = await dbUpProcesses(3, () => ({
+        cfg,
+        env: { ...env, FAKE_DOCKER_LOG: log, FAKE_DOCKER_CREATE_MS: '1000' },
+        lockDir: lockDir(),
+        ...fast,
+        backoffMs: 300,
+      }));
+      expect(results.map((r) => r.status)).toEqual([0, 0, 0]);
+      // (all three start within the second the first one's creation takes, unless the machine
+      // is very busy: then fewer lose)
+      const losers = results.filter((r) => r.stderr.includes('(another start created'));
+      expect(losers.length).toBeGreaterThanOrEqual(1);
+      expect(ups(log).length).toBeGreaterThan(3);
+    } finally {
+      await stop();
+    }
+  }, 30_000);
+
+  it('takes over the lock of a process that has exited, at once', async () => {
+    const { cfg, env, stop } = await fakeServer();
+    const gone = spawnSync(process.execPath, ['-e', '']).pid ?? 0;
+    expect(gone).toBeGreaterThan(0);
+    const lock = heldLock(gone);
+    try {
+      // noticeMs 0: a single wait would print its notice
+      const options = { lockDir: lock.dir, noticeMs: 0 };
+      const { error, calls, warned } = await run(cfg, { env, options });
+      expect({ error, warned }).toEqual({ error: undefined, warned: [] });
+      expect(calls).toEqual([...LISTS, UP]);
+      expect(existsSync(lock.file)).toBe(false); // released
+    } finally {
+      await stop();
+    }
+  }, 30_000);
+
+  it('takes over a lock older than staleMs, whatever its process', async () => {
+    const { cfg, env, stop } = await fakeServer();
+    // a live process (this one), as when the holder's pid was reused or its start hangs
+    const lock = heldLock(process.pid);
+    const old = new Date(Date.now() - fast.staleMs - 1000);
+    utimesSync(lock.file, old, old);
+    try {
+      const options = { lockDir: lock.dir, noticeMs: 0 };
+      const { error, calls, warned } = await run(cfg, { env, options });
+      // at once (no notice of a wait), saying so
+      expect(error).toBeUndefined();
+      expect(warned).toEqual([
+        expect.stringMatching(
+          new RegExp(
+            `^\\[db-up\\] taking over \\S+ from pid ${process.pid} after 6\\d s: its start of fake-project takes too long$`,
+          ),
+        ),
+      ]);
+      expect(calls).toEqual([...LISTS, UP]);
+    } finally {
+      await stop();
+    }
+  }, 30_000);
+
+  it('waits for a live holder, and returns once the server answers, without calling Docker', async () => {
+    const { cfg, env, state, stop } = await fakeServer();
+    const lock = heldLock(process.pid);
+    // the holder's server answers a moment later
+    const started = setTimeout(() => writeFileSync(state, ''), 300);
+    try {
+      const { error, calls } = await run(cfg, { env, options: { lockDir: lock.dir } });
+      expect({ error, calls }).toEqual({ error: undefined, calls: [] });
+      expect(existsSync(lock.file)).toBe(true); // the holder's, left to it
+    } finally {
+      clearTimeout(started);
+      await stop();
+    }
+  }, 30_000);
+
+  it('says what it waits for, and waits no longer than staleMs in all', async () => {
+    const { cfg, env, stop } = await fakeServer();
+    // a live holder whose start hangs: its server never answers
+    const lock = heldLock(process.pid);
+    try {
+      const t0 = Date.now();
+      const options = { lockDir: lock.dir, noticeMs: 100, staleMs: 1000 };
+      const { error, calls, warned } = await run(cfg, { env, options });
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(1000);
+      expect(warned[0]).toMatch(
+        new RegExp(
+          `^\\[db-up\\] waiting for another db-up \\(pid ${process.pid}\\) to start fake-project: \\d+ s so far\\. `,
+        ),
+      );
+      expect(warned[0]).toContain(
+        `Its lock ${lock.file} is taken over once that process exits, or after 1 s.`,
+      );
+      // then it took the lock over and started the server itself
+      expect(warned.at(-1)).toMatch(
+        new RegExp(`^\\[db-up\\] taking over \\S+ from pid ${process.pid} after 1 s: `),
+      );
+      expect({ error, calls }).toEqual({ error: undefined, calls: [...LISTS, UP] });
+    } finally {
+      await stop();
+    }
+  }, 30_000);
+});
+
+const dockerRuns = spawnSync('docker', ['info', '--format', '{{.ID}}']).status === 0;
+
+// The race itself, on Docker: three processes start one fresh compose project at once, with
+// db-up's own timings and lock directory. Before the lock, two of the three `compose up` calls
+// failed on the container's name (and lived only by their one immediate retry).
+describe.runIf(dockerRuns)('dbUp in several processes at once, on Docker', () => {
+  it('creates the container once: no process hits a name conflict', async () => {
+    const project = `db-up-race-${randomBytes(4).toString('hex')}`;
+    const composeFile = join(DB, '../../docker-compose.yml');
+    // its own project and port, never this checkout's; no labels (not owned) and no prune
+    // (commonDir unset): nothing else is touched
+    const port = await closedPort();
+    const cfg = { ...local(port), project, composeFile, ownsProject: false, commonDir: '' };
+    // the real docker, behind a script that logs each call
+    const docker = spawnSync('sh', ['-c', 'command -v docker'], { encoding: 'utf8' }).stdout.trim();
+    const bin = mkdtempSync(join(tmp, 'logging-bin-'));
+    const log = join(tmp, `docker-${runs++}.log`);
+    writeFileSync(join(bin, 'docker'), `#!/bin/sh\necho "$*" >> "${log}"\nexec "${docker}" "$@"\n`);
+    chmodSync(join(bin, 'docker'), 0o755);
+    const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}` };
+    try {
+      const results = await dbUpProcesses(3, () => ({ cfg, env }));
+      expect(results.map((r) => r.status)).toEqual([0, 0, 0]);
+      for (const { stderr } of results) expect(stderr).not.toMatch(/Conflict|another start/);
+      expect(ups(log)).toHaveLength(1);
+    } finally {
+      spawnSync('docker', ['compose', '-p', project, '-f', composeFile, 'down', '-v'], {
+        env: { ...process.env, DB_PORT: String(port), COMPOSE_PROJECT_NAME: project },
+        stdio: 'ignore',
+      });
+    }
+  }, 60_000);
+});
+
 // A volume made before docker-compose.yml labeled it (or with other label values: a moved
 // checkout) no longer matches the file, and Docker cannot relabel it. Compose asks "Recreate (data
 // will be lost)?" and, with no terminal, takes its default, no: db-up must keep it so (no `--yes`).
-const dockerRuns = spawnSync('docker', ['info', '--format', '{{.ID}}']).status === 0;
 describe.runIf(dockerRuns)('a volume made before the labels', () => {
   it('keeps its data when db-up starts the labeled server on it', async () => {
     const composeFile = join(DB, '../../docker-compose.yml');
