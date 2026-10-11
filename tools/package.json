@@ -20,6 +20,7 @@
           "{workspaceRoot}/.agents/vendor.json",
           "{workspaceRoot}/pnpm-workspace.yaml",
           "{workspaceRoot}/.claude/settings.json",
+          "{workspaceRoot}/.claude/agents/**/*",
           "{workspaceRoot}/.claude/workflows/**/*",
           "{workspaceRoot}/AGENTS.md",
           "{workspaceRoot}/apps/web/codegen.ts",
