@@ -6,10 +6,12 @@
 //
 //   update   render every vendored skill from the INSTALLED package: apply its rewrites, write
 //            .agents/skills/<name>/SKILL.md and the package's license files, and pin the installed
-//            version and the upstream file's sha256 in the manifest. After a dependency bump, run
-//            it and review the diff; a rewrite that no longer matches fails it (nothing is written)
+//            version and the upstream file's sha256 in the manifest; remove the copy of a skill
+//            dropped from the manifest. After a dependency bump, run it and review the diff; a
+//            rewrite that no longer matches fails it (nothing is written)
 //   check    fail when a copy differs from its rewritten upstream, the installed package is not
-//            the pinned version, or the upstream text is not the pinned one. `node tools/agents.mjs
+//            the pinned version, the upstream text is not the pinned one, or a copy (or its
+//            .agents/generated.json entry) outlives its skill in the manifest. `node tools/agents.mjs
 //            check` runs it (`pnpm check`, CI, the pre-commit hook), offline
 //
 // .agents/vendor.json:
@@ -37,6 +39,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -46,7 +49,8 @@ import { findArtifact, loadManifest } from './lib/generated.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const MANIFEST = '.agents/vendor.json';
-const UPDATE = '`node tools/vendor-skills.mjs update`';
+const UPDATE_COMMAND = 'node tools/vendor-skills.mjs update';
+const UPDATE = `\`${UPDATE_COMMAND}\``;
 
 const sha256 = (text) => createHash('sha256').update(text).digest('hex');
 const lf = (text) => text.replace(/\r\n/g, '\n');
@@ -61,6 +65,21 @@ export function loadVendorManifest(root) {
 /** The names of the vendored skills (directories of .agents/skills) in `root`. */
 export function vendoredSkills(root) {
   return Object.keys(loadVendorManifest(root)?.skills ?? {});
+}
+
+/**
+ * The text this repo writes into its vendored skills: the `with` of each rewrite in the manifest of
+ * `root`, as { skill, rewrite (its 1-based index), text }. The rest of a copy is upstream's.
+ */
+export function rewriteTexts(root) {
+  const skills = loadVendorManifest(root)?.skills;
+  return Object.entries(isObject(skills) ? skills : {}).flatMap(([skill, entry]) =>
+    (Array.isArray(entry?.rewrites) ? entry.rewrites : []).map((rewrite, i) => ({
+      skill,
+      rewrite: i + 1,
+      text: joined(rewrite?.with),
+    })),
+  );
 }
 
 // ---------- rewrites (pure) ----------
@@ -131,8 +150,11 @@ export function setFrontmatter(text, key, value) {
   const at = lines.findIndex((l) => l.startsWith(`${key}:`));
   if (at === -1) lines.push(line);
   else {
+    // a block scalar or nested value: its indented lines and the blank lines between them, up to
+    // the next key (the blank lines before that key stay)
     let next = at + 1;
-    while (next < lines.length && /^\s+\S/.test(lines[next])) next++; // a folded or nested value
+    while (next < lines.length && /^(?:\s|$)/.test(lines[next])) next++;
+    while (next > at + 1 && !lines[next - 1].trim()) next--;
     if (next === at + 1 && unquote(lines[at].slice(key.length + 1).trim()) === value) return text;
     lines.splice(at, next - at, line);
   }
@@ -176,14 +198,22 @@ export function applyRewrites(text, rewrites = [], where = 'the upstream text') 
   return { text: out, problems };
 }
 
+const CHANGED = `Changed for this repo by the rewrites in ${MANIFEST}.`;
+
 /** The notice every vendored copy carries after its frontmatter. */
 export function notice(skill, pkg) {
   return (
     `<!-- Vendored from ${skill.package}@${pkg.version} (${skill.file}), ${pkg.license}: ` +
-    `.agents/vendor/${skill.package}/. Changed for this repo by the rewrites in ${MANIFEST}. ` +
+    `.agents/vendor/${skill.package}/. ${CHANGED} ` +
     `Do not edit this copy: change its rewrites, then run ${UPDATE}. -->`
   );
 }
+
+/** Whether `text` is a vendored copy: it carries the notice. */
+const isVendoredCopy = (text) =>
+  lf(text)
+    .split('\n')
+    .some((line) => line.startsWith('<!-- Vendored from ') && line.includes(CHANGED));
 
 /** `text` with `line` inserted after its frontmatter (or at the top without one). */
 function afterFrontmatter(text, line) {
@@ -223,22 +253,67 @@ export function findPackage(gitRoot, name, pkg) {
   return dir;
 }
 
-/** Problems with the manifest's shape (each needs its fields, and skills a known package). */
+const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+const isStrings = (value) => Array.isArray(value) && value.every((s) => typeof s === 'string');
+/** A relative path that stays inside its directory (no `..` segment, not absolute). */
+const isInside = (path) =>
+  typeof path === 'string' &&
+  !/^(?:[/\\]|[A-Za-z]:)/.test(path) &&
+  !/(?:^|[/\\])\.\.(?:[/\\]|$)/.test(path);
+/** A skill name as the Agent Skills spec has it: lowercase words joined by `-`. */
+const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * Problems with the manifest's shape: what render and update read must be there and of the right
+ * type (each package and skill its fields, each skill a known package), so they never throw.
+ */
 function shapeProblems(manifest) {
+  if (!isObject(manifest)) return [`${MANIFEST} must hold a JSON object`];
   const problems = [];
+  for (const key of ['packages', 'skills'])
+    if (manifest[key] !== undefined && !isObject(manifest[key]))
+      problems.push(`${MANIFEST}: "${key}" must be an object`);
+  if (problems.length) return problems;
   const packages = manifest.packages ?? {};
-  for (const [name, pkg] of Object.entries(packages))
+  for (const [name, pkg] of Object.entries(packages)) {
+    if (!isObject(pkg)) {
+      problems.push(`${MANIFEST}: package ${name} must be an object`);
+      continue;
+    }
     for (const key of ['version', 'license'])
       if (typeof pkg[key] !== 'string')
         problems.push(`${MANIFEST}: package ${name} needs "${key}"`);
+    if (pkg.from !== undefined && !isInside(pkg.from))
+      problems.push(`${MANIFEST}: package ${name}: "from" must be a directory of the repo`);
+    if (pkg.via !== undefined && !isStrings(pkg.via))
+      problems.push(`${MANIFEST}: package ${name}: "via" must be an array of package names`);
+    if (
+      pkg.licenseFiles !== undefined &&
+      !(isStrings(pkg.licenseFiles) && pkg.licenseFiles.every(isInside))
+    )
+      problems.push(
+        `${MANIFEST}: package ${name}: "licenseFiles" must be an array of paths inside the package`,
+      );
+  }
   for (const [name, skill] of Object.entries(manifest.skills ?? {})) {
-    if (!packages[skill.package])
+    if (!SKILL_NAME.test(name))
+      problems.push(`${MANIFEST}: skill "${name}" is no skill name (lowercase words joined by -)`);
+    if (!isObject(skill)) {
+      problems.push(`${MANIFEST}: skill ${name} must be an object`);
+      continue;
+    }
+    if (typeof skill.package !== 'string' || !isObject(packages[skill.package]))
       problems.push(
         `${MANIFEST}: skill ${name} names package "${skill.package}", which is not in "packages"`,
       );
     if (typeof skill.file !== 'string') problems.push(`${MANIFEST}: skill ${name} needs "file"`);
     if (!Array.isArray(skill.rewrites ?? []))
       problems.push(`${MANIFEST}: skill ${name}: "rewrites" must be an array`);
+    else
+      (skill.rewrites ?? []).forEach((rewrite, i) => {
+        if (!isObject(rewrite))
+          problems.push(`${MANIFEST}: skill ${name}: rewrite ${i + 1} must be an object`);
+      });
   }
   return problems;
 }
@@ -308,13 +383,28 @@ export function render(manifest, gitRoot, { pinned = true } = {}) {
 /** Problems that need no installed package: shape, license notices, generated-file listing. */
 function staticProblems(root, manifest) {
   const problems = shapeProblems(manifest);
+  if (problems.length) return problems;
+  const skills = manifest.skills ?? {};
   const generated = loadManifest(root);
-  for (const name of Object.keys(manifest.skills ?? {})) {
+  for (const name of Object.keys(skills)) {
     if (!findArtifact(generated, `.agents/skills/${name}/SKILL.md`, { ignoreCase: false }))
       problems.push(
         `vendored skill ${name} is not in .agents/generated.json: list \`.agents/skills/${name}/**\` under the artifact whose regen is ${UPDATE} (formatters and hand edits must leave the copy alone)`,
       );
   }
+  // a skill dropped from the manifest: its copy and its generated-file entry stay behind
+  for (const name of orphanCopies(root, manifest))
+    problems.push(
+      `.agents/skills/${name}/ is a vendored copy (its notice says so), but ${MANIFEST} no longer lists skill ${name}: run ${UPDATE}, which removes it`,
+    );
+  for (const artifact of generated.artifacts.filter((a) => a.regen === UPDATE_COMMAND))
+    for (const path of artifact.paths) {
+      const name = path.match(/^\.agents\/skills\/([^/*]+)\//)?.[1];
+      if (name && !Object.hasOwn(skills, name))
+        problems.push(
+          `.agents/generated.json lists ${path} under artifact ${artifact.id}, whose regen is ${UPDATE}, but ${MANIFEST} vendors no skill ${name}: drop the path`,
+        );
+    }
   for (const name of Object.keys(manifest.packages ?? {})) {
     const dir = join(root, '.agents', 'vendor', name);
     if (!existsSync(dir) || readdirSync(dir).length === 0)
@@ -323,6 +413,23 @@ function staticProblems(root, manifest) {
       );
   }
   return problems;
+}
+
+/**
+ * The skills of `root` (.agents/skills/<name>) that are a vendored copy, by their notice, of a
+ * skill `manifest` no longer lists: dropped from it, they would stay behind.
+ */
+function orphanCopies(root, manifest) {
+  const dir = join(root, '.agents', 'skills');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !Object.hasOwn(manifest.skills ?? {}, d.name))
+    .map((d) => d.name)
+    .filter((name) => {
+      const file = join(dir, name, 'SKILL.md');
+      return existsSync(file) && isVendoredCopy(readFileSync(file, 'utf8'));
+    })
+    .toSorted();
 }
 
 /**
@@ -350,14 +457,21 @@ export function vendorProblems(root = ROOT, { gitRoot = root } = {}) {
 
 /**
  * Render every vendored skill from the installed packages and write the copies, the license files
- * and the pins. Writes nothing when a problem stops any of them. Returns { written, problems }.
+ * and the pins, and remove the copies of skills the manifest no longer lists. Writes nothing when a
+ * problem stops any of them. Returns { written, removed, problems }.
  */
 export function update(root = ROOT, { gitRoot = root, oxfmt = nodeBin(root, 'oxfmt') } = {}) {
   const manifest = loadVendorManifest(root);
-  if (!manifest) return { written: [], problems: [`${MANIFEST} does not exist`] };
+  if (!manifest) return { written: [], removed: [], problems: [`${MANIFEST} does not exist`] };
+  // render trusts the shape: check it first
+  const shape = shapeProblems(manifest);
+  if (shape.length) return { written: [], removed: [], problems: shape };
   const rendered = render(manifest, gitRoot, { pinned: false });
-  const problems = [...shapeProblems(manifest), ...rendered.problems];
-  if (problems.length) return { written: [], problems };
+  if (rendered.problems.length) return { written: [], removed: [], problems: rendered.problems };
+  const removed = orphanCopies(root, manifest).map((name) => {
+    rmSync(join(root, '.agents', 'skills', name), { recursive: true, force: true });
+    return `.agents/skills/${name}/`;
+  });
   const written = [];
   for (const [path, text] of Object.entries(rendered.files)) {
     const full = join(root, path);
@@ -382,7 +496,7 @@ export function update(root = ROOT, { gitRoot = root, oxfmt = nodeBin(root, 'oxf
       }
     }
   }
-  return { written, problems: [] };
+  return { written, removed, problems: [] };
 }
 
 // ---------- CLI ----------
@@ -394,12 +508,16 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     if (problems.length) process.exitCode = 1;
     else console.log(`vendor: ${vendoredSkills(ROOT).length} vendored skills match their upstream`);
   } else if (mode === 'update') {
-    const { written, problems } = update();
+    const { written, removed, problems } = update();
     for (const p of problems) console.error(`✗ ${p}`);
     if (problems.length) process.exitCode = 1;
-    else if (!written.length) console.log('vendor: already up to date');
+    else if (!written.length && !removed.length) console.log('vendor: already up to date');
     else {
       for (const p of written) console.log(`vendor: wrote ${p}`);
+      for (const p of removed)
+        console.log(
+          `vendor: removed ${p} (no longer in ${MANIFEST}; drop it from .agents/generated.json)`,
+        );
       console.log(
         'vendor: review the diff, then run `pnpm agents:sync` (the .claude/skills copies)',
       );

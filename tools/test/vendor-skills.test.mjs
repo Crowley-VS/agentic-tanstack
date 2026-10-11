@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { check } from '../agents.mjs';
@@ -43,6 +43,8 @@ const REWRITES = [
   { pattern: '(?<![\\w./-])demo-cli(?= )', with: 'pnpm exec demo cli' },
   { section: '## Install', with: ['## Install', '', 'Pinned: `pnpm exec demo cli`.'] },
 ];
+
+const REWRITES_SKILL = { package: 'demo-pkg', file: 'skills/demo/SKILL.md', rewrites: REWRITES };
 
 /** A repo with one vendored skill (`demo`) of package `demo-pkg`, installed at `version`. */
 function vendorRepo({ version = '1.0.0', upstream = UPSTREAM, rewrites = REWRITES } = {}) {
@@ -101,6 +103,18 @@ describe('rewrites', () => {
     );
     expect(setFrontmatter(text, 'license', 'MIT')).toContain("  v: 1\nlicense: 'MIT'\n---\n");
     expect(setFrontmatter('# no frontmatter\n', 'name', 'x')).toBeUndefined();
+  });
+
+  it('replaces a block scalar with blank lines in it whole, and keeps the blank line before the next key', () => {
+    const text = '---\nname: x\ndescription: |\n  a\n\n  b\nother: 1\n---\nbody';
+    expect(setFrontmatter(text, 'description', 'new')).toBe(
+      "---\nname: x\ndescription: 'new'\nother: 1\n---\nbody",
+    );
+    expect(setFrontmatter(text.replace('  b\n', '  b\n\n'), 'description', 'new')).toBe(
+      "---\nname: x\ndescription: 'new'\n\nother: 1\n---\nbody",
+    );
+    // the last key: up to the end of the frontmatter
+    expect(setFrontmatter('---\nd: >\n  a\n\n  b\n---\n', 'd', 'new')).toBe("---\nd: 'new'\n---\n");
   });
 
   it('applies replace, pattern, section and frontmatter rewrites in order', () => {
@@ -293,6 +307,84 @@ describe('vendored skills', () => {
         '.agents/vendor.json: skill s: "rewrites" must be an array',
       ]),
     );
+  });
+
+  it('update checks the manifest shape before it renders, and writes nothing on a problem', () => {
+    const cases = [
+      // each would make render throw
+      {
+        skill: { ...REWRITES_SKILL, rewrites: {} },
+        problem: 'skill demo: "rewrites" must be an array',
+      },
+      { skill: { ...REWRITES_SKILL, file: undefined }, problem: 'skill demo needs "file"' },
+      {
+        skill: { ...REWRITES_SKILL, rewrites: [null] },
+        problem: 'skill demo: rewrite 1 must be an object',
+      },
+      { skill: null, problem: 'skill demo must be an object' },
+    ];
+    for (const { skill, problem } of cases) {
+      const root = vendorRepo();
+      const manifest = loadVendorManifest(root);
+      writeFile(root, '.agents/vendor.json', { ...manifest, skills: { demo: skill } });
+      expect(update(root, { oxfmt: undefined })).toEqual({
+        written: [],
+        removed: [],
+        problems: [`.agents/vendor.json: ${problem}`],
+      });
+      expect(existsSync(join(root, '.agents/skills/demo/SKILL.md'))).toBe(false);
+    }
+    const root = vendorRepo();
+    const { packages } = loadVendorManifest(root);
+    for (const [manifest, problem] of [
+      [[], '.agents/vendor.json must hold a JSON object'],
+      [{ skills: [] }, '.agents/vendor.json: "skills" must be an object'],
+      [
+        { packages: { 'demo-pkg': { ...packages['demo-pkg'], via: 'x' } } },
+        '.agents/vendor.json: package demo-pkg: "via" must be an array of package names',
+      ],
+      [
+        { packages: { 'demo-pkg': { ...packages['demo-pkg'], licenseFiles: ['../../x'] } } },
+        '.agents/vendor.json: package demo-pkg: "licenseFiles" must be an array of paths inside the package',
+      ],
+      [
+        { packages, skills: { '../x': { ...REWRITES_SKILL } } },
+        '.agents/vendor.json: skill "../x" is no skill name (lowercase words joined by -)',
+      ],
+    ]) {
+      writeFile(root, '.agents/vendor.json', manifest);
+      expect(update(root, { oxfmt: undefined }).problems).toEqual([problem]);
+      expect(vendorProblems(root)).toEqual([problem]);
+    }
+  });
+
+  it('removes the copy of a skill dropped from the manifest, and check fails until then', () => {
+    const root = vendorRepo();
+    updated(root);
+    // a skill this repo wrote itself has no notice: never touched
+    writeFile(root, '.agents/skills/own/SKILL.md', '---\nname: own\ndescription: x\n---\n');
+    const manifest = loadVendorManifest(root);
+    writeFile(root, '.agents/vendor.json', { ...manifest, skills: {} });
+    expect(vendorProblems(root)).toEqual([
+      expect.stringMatching(
+        /^\.agents\/skills\/demo\/ is a vendored copy \(its notice says so\), but \.agents\/vendor\.json no longer lists skill demo: run `node tools\/vendor-skills\.mjs update`, which removes it$/,
+      ),
+      expect.stringMatching(
+        /^\.agents\/generated\.json lists \.agents\/skills\/demo\/\*\* under artifact vendored-skills, .* vendors no skill demo: drop the path$/,
+      ),
+    ]);
+    expect(update(root, { oxfmt: undefined })).toEqual({
+      written: [],
+      removed: ['.agents/skills/demo/'],
+      problems: [],
+    });
+    expect(existsSync(join(root, '.agents/skills/demo'))).toBe(false);
+    expect(existsSync(join(root, '.agents/skills/own/SKILL.md'))).toBe(true);
+    expect(vendorProblems(root)).toEqual([
+      expect.stringMatching(/^\.agents\/generated\.json lists /),
+    ]);
+    writeFile(root, '.agents/generated.json', { artifacts: [] });
+    expect(vendorProblems(root)).toEqual([]);
   });
 
   it('has nothing to check without a manifest', () => {
