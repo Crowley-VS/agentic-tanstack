@@ -199,7 +199,7 @@ Agents never log in, create tokens or read secrets. In `.claude/settings.json` e
 command asks first: deploys (`railway up` even signs you in when you are not), `config apply`,
 variable and domain changes, all of it. So do the Railway plugin's API script (`railway-api.sh`,
 which calls Railway's API with your login) and its MCP server's tools. The plugin's own hook
-approves its commands, but a hook cannot skip an ask rule; `tools/test/railway-permissions.test.mjs`
+approves its commands, but a hook cannot skip an ask rule; `tools/test/permissions.test.mjs`
 keeps the rules. An agent may edit `.railway/railway.ts` and run
 `pnpm nx run railway-iac:test` freely; it shows you `railway config plan` and applies only when
 you approve. Variable values are redacted in plans; `--show-values`, `--decrypt-variables` and
