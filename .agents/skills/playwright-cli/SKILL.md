@@ -417,10 +417,10 @@ pnpm exec playwright cli show --annotate
 
 ## Specific tasks
 
-Playwright ships more guides with this skill, for the installed version: the `references/`
-folder next to the `Agent skill:` path that `pnpm exec playwright cli --help` prints (request
-mocking, running code, sessions, storage state, test generation, tracing, video, element
-attributes). They spell commands `playwright-cli …` and `npx playwright …`: run them as
-`pnpm exec playwright cli …` and `pnpm exec playwright …`.
+Playwright ships more guides with this skill, for the installed version: request mocking, running
+code, sessions, storage state, test generation, tracing, video and element attributes. They are in
+`node_modules/.pnpm/playwright-core@<version>/node_modules/playwright-core/lib/tools/skills/playwright-cli/references/`
+(`<version>`: what `pnpm exec playwright --version` prints), and spell commands `playwright-cli …`
+and `npx playwright …`: run them as `pnpm exec playwright cli …` and `pnpm exec playwright …`.
 
 Run and debug this repo's e2e specs through Nx, never `npx playwright test`: skill `e2e-test`.

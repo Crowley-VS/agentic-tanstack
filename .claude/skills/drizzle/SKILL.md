@@ -1,6 +1,6 @@
 ---
 name: drizzle
-description: 'Load before reading or editing a Drizzle file (anything importing from `drizzle-orm/*`), touching `drizzle.config.ts`, running drizzle-kit or handling its output. Says how drizzle-kit runs in this repo: only through the db project''s Nx targets.'
+description: 'Load before reading or editing a Drizzle file (anything importing `drizzle-orm` or a subpath of it), touching `drizzle.config.ts`, running drizzle-kit or handling its output. Says how drizzle-kit runs in this repo: only through the db project''s Nx targets.'
 metadata:
   revision: 12
 ---
