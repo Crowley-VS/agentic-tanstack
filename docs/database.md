@@ -37,3 +37,12 @@ Tests that touch the database use `testDb()` from `@acme/db/testing` (their Vite
 `dbTestConfig()`): each test file gets its own database, a fresh clone of the migrated template,
 and its tests share it. Assume nothing about rows other tests write. The e2e database is separate
 again: `docs/e2e.md`.
+
+Their global setup starts the server as `pnpm db:up` does (`packages/db/scripts/db-up.mjs`), and
+Nx runs the tests of several such projects at once (every one of them on a push to main). So one
+process starts it: the first takes a lock file, `db-up-<compose project>.lock` in the temp
+directory, and the others wait until its server answers, saying what they wait for after 5 s. A
+lock whose process has exited is taken over at once; none is waited on for more than 10 minutes.
+A `compose up` that fails on a network or registry error (a timeout, Docker Hub's
+`toomanyrequests`, a reset connection) runs again, up to 4 times in all, 2, 4 and 8 s apart; any
+other failure is reported at once. CI starts the server in a step of its own before `pnpm check`.

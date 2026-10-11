@@ -59,6 +59,14 @@ jobs:
       # Sets NX_BASE/NX_HEAD so `pnpm check` only runs affected projects.
       - uses: nrwl/nx-set-shas@v5
 
+      # The tests' Postgres (docker-compose.yml), started once before `pnpm check`: the image is
+      # pulled here, once (db-up retries a registry or network failure), and a failure to start it
+      # fails this step rather than the tests of every project that uses the database. Their
+      # global setup then finds it running, as locally after `pnpm db:up`.
+      - name: Start Postgres
+        run: pnpm db:up
+        timeout-minutes: 5
+
       # Same definition of done as local development and agents.
       - run: pnpm check
 

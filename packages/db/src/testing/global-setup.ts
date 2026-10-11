@@ -1,8 +1,9 @@
 // Vitest globalSetup for projects whose tests touch the database. Starts this checkout's Postgres
-// (fast no-op when running), (re)builds this checkout's template database (`test_template`, or
-// `test_template_<hash>` in a worktree) only when the migrations changed, and sweeps clones left
-// behind by crashed runs. Each test FILE then gets its own clone (see setup-file.ts): ~10 ms,
-// fully isolated, parallel-safe.
+// (fast no-op when running; when Nx runs several such projects at once, one process starts it and
+// the others wait for it, scripts/db-up.mjs), (re)builds this checkout's template database
+// (`test_template`, or `test_template_<hash>` in a worktree) only when the migrations changed, and
+// sweeps clones left behind by crashed runs. Each test FILE then gets its own clone (see
+// setup-file.ts): ~10 ms, fully isolated, parallel-safe.
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
