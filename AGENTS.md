@@ -148,4 +148,6 @@ Task skills (`.agents/skills`), each with its steps, commands and checks:
 - Upgrading Nx and its plugins: `nx-upgrade`.
 - Vendored (upstream skills, commands rewritten for this repo): `playwright-cli` (drive a browser from the shell: snapshot, click, console), `drizzle`, `drizzle-generate`, `drizzle-hints`.
 
+Subagents (`.claude/agents`): `reviewer` (read-only review of a change against these rules: file, line, rule) and `db-migrations` (a schema change and its migration). How the agent setup works (plugins, hooks, permissions, opt-ins): `docs/agents.md`.
+
 <!-- stack:end -->

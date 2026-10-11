@@ -19,3 +19,4 @@ Each checkout runs its own Postgres container and Nx daemon. Before deleting a w
 [docs/local-resources.md](docs/local-resources.md).
 
 Agents and humans follow the same rules: see [AGENTS.md](AGENTS.md) (Claude Code reads it through `CLAUDE.md`).
+How the agent setup works (skills, subagents, plugins, permissions, opt-ins): [docs/agents.md](docs/agents.md).
