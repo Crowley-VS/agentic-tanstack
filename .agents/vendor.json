@@ -93,9 +93,9 @@
       "sha256": "fc50cd2083bf5c064e2bc8874407845380ebea0c2b019fc978c82568f8a8f226",
       "rewrites": [
         {
-          "why": "upstream's is over the 300-character limit, and drizzle-kit runs only through Nx here",
+          "why": "upstream's is over the 300-character limit, and drizzle-kit runs only through `pnpm db:generate` and Nx here",
           "frontmatter": "description",
-          "with": "Load before reading or editing a Drizzle file (anything importing `drizzle-orm` or a subpath of it), touching `drizzle.config.ts`, running drizzle-kit or handling its output. Says how drizzle-kit runs in this repo: only through the db project's Nx targets."
+          "with": "Load before reading or editing a Drizzle file (anything importing `drizzle-orm` or a subpath of it), touching `drizzle.config.ts`, running drizzle-kit or handling its output. Says how drizzle-kit runs in this repo: `pnpm db:generate` and the db project's Nx targets."
         },
         {
           "why": "the staleness check is replaced by the vendor check; this repo's rules win",
@@ -115,19 +115,21 @@
           ]
         },
         {
-          "why": "no drizzle MCP server here; drizzle-kit runs from packages/db through Nx, never npx",
+          "why": "no drizzle MCP server here; drizzle-kit runs in packages/db through `pnpm db:generate` and Nx, never npx",
           "section": "## Surface selection",
           "with": [
             "## Surface selection",
             "",
             "drizzle-kit exposes its verbs (`generate`, `push`, `pull`, `up`, `check`, `export`) over a CLI,",
             "an SDK and an MCP server; all three return the same JSON envelope and take the same `hints`",
-            "array. Here only the CLI runs, in `packages/db` (its `drizzle.config.ts`), through the db",
-            "project's Nx targets. No drizzle MCP server is configured.",
+            "array. Here only the CLI runs, in `packages/db` (its `drizzle.config.ts`): `generate` through",
+            "`pnpm db:generate`, `check` through the db project's Nx target. No drizzle MCP server is",
+            "configured.",
             "",
-            "- `pnpm nx run db:db-generate --args=\"--name=<what>\"`: a new migration from the schema (skill",
-            "  `db-migration`). Add `--output json` inside `--args` for the envelope, and `--explain` for a dry",
-            "  run that writes nothing: `pnpm nx run db:db-generate --args=\"--output json --explain\"`.",
+            "- `pnpm db:generate <what>`: a new migration from the schema (skill `db-migration`). It takes one",
+            "  name (letters, digits, `_` and `-`) and only `--custom`, `--output json|text`, `--explain` (a dry",
+            "  run that writes nothing) and `--hints-file <file>`; it refuses anything else. The envelope of a",
+            "  dry run: `pnpm db:generate <what> --output json --explain`.",
             "- `pnpm nx run db:db-check`: drizzle-kit's consistency check of `packages/db/migrations`",
             "  (`pnpm nx run db:test` runs it first).",
             "- `push`, `pull`, `up` and `export` are not used: every schema change is a generated, reviewed",
@@ -144,34 +146,44 @@
       "sha256": "5296feb186212d3b9c0e4869f38ebdc06a3929a3f02daa5d2ad6ae3c0d89c6ff",
       "rewrites": [
         {
-          "why": "upstream's is over the 300-character limit; ours names the Nx command",
+          "why": "upstream's is over the 300-character limit; ours names the command",
           "frontmatter": "description",
-          "with": "Create a new drizzle migration by diffing the schema against the latest snapshot. Load before generating a migration, after a Drizzle schema edit when the next step is its SQL, or to read drizzle-kit generate output. Here: `pnpm nx run db:db-generate --args=\"--name=<what>\"`."
+          "with": "Create a new drizzle migration by diffing the schema against the latest snapshot. Load before generating a migration, after a Drizzle schema edit when the next step is its SQL, or to read drizzle-kit generate output. Here: `pnpm db:generate <what>`."
         },
         {
           "why": "points at this repo's rules and at the drizzle-kit skills that are not vendored",
           "replace": "If the `drizzle` skill has not been loaded yet this session, load it first — it carries the staleness check and the MCP-vs-CLI surface-selection rule that govern every drizzle-kit invocation.",
-          "with": "Load skill `drizzle` first: it says how drizzle-kit runs here (through Nx, in `packages/db`). Skill `db-migration` has this repo's steps and wins where they differ: always pass `--name`, read the SQL, never edit a migration git tracks. The drizzle-kit skills named below that this repo does not vendor, `drizzle-output-modes` and `drizzle-responses-and-errors`: `pnpm exec intent load drizzle-kit#<name>`."
+          "with": "Load skill `drizzle` first: it says how drizzle-kit runs here (`pnpm db:generate`, in `packages/db`). Skill `db-migration` has this repo's steps and wins where they differ: always name the migration, read the SQL, never edit a migration git tracks. The drizzle-kit skills named below that this repo does not vendor, `drizzle-output-modes` and `drizzle-responses-and-errors`: `pnpm exec intent load drizzle-kit#<name>`."
         },
         {
-          "why": "the CLI form, through the db project's Nx target",
+          "why": "the CLI form: `pnpm db:generate` takes the migration's name and only these flags",
           "replace": "drizzle-kit generate --output json [--config drizzle.config.ts] [--dialect <d>] [--schema <path>] [--out <dir>] [--explain] [--hints '<json>' | --hints-file ./hints.json]",
-          "with": "pnpm nx run db:db-generate --args=\"--name=<what> --output json [--explain] [--hints-file <file>]\""
+          "with": "pnpm db:generate <what> --output json [--explain] [--hints-file <file>]"
+        },
+        {
+          "why": "`pnpm db:generate` runs in packages/db and refuses --config",
+          "replace": "- `--config` — path to `drizzle.config.ts` (default: `drizzle.config.ts` at CWD).",
+          "with": "- `--config` — path to `drizzle.config.ts` (default: `drizzle.config.ts` at CWD). Never here: `pnpm db:generate` runs in `packages/db`, with its `drizzle.config.ts`, and refuses the flag."
         },
         {
           "why": "packages/db/drizzle.config.ts sets them",
           "replace": "- `--dialect`, `--schema`, `--out` — override the corresponding `defineConfig` fields.",
-          "with": "- `--dialect`, `--schema`, `--out` — override the corresponding `defineConfig` fields. Never here: `packages/db/drizzle.config.ts` sets them."
+          "with": "- `--dialect`, `--schema`, `--out` — override the corresponding `defineConfig` fields. Never here: `packages/db/drizzle.config.ts` sets them, and `pnpm db:generate` refuses them."
         },
         {
-          "why": "the examples, through the db project's Nx target (it passes packages/db/drizzle.config.ts)",
+          "why": "`pnpm db:generate` takes hints only from a file",
+          "replace": "- `--hints` — inline JSON array of hint resolutions (see the `drizzle-hints` skill).",
+          "with": "- `--hints` — inline JSON array of hint resolutions (see the `drizzle-hints` skill). Not through `pnpm db:generate`: use `--hints-file`."
+        },
+        {
+          "why": "the examples, through `pnpm db:generate` (it runs in packages/db, with its drizzle.config.ts)",
           "replace": "drizzle-kit generate --output json --config drizzle.config.ts",
-          "with": "pnpm nx run db:db-generate --args=\"--name=<what> --output json\""
+          "with": "pnpm db:generate <what> --output json"
         },
         {
-          "why": "the error example, through the db project's Nx target",
+          "why": "the error example: `pnpm db:generate` refuses --config, so the config can only be missing",
           "replace": "drizzle-kit generate --output json --config missing.ts",
-          "with": "pnpm nx run db:db-generate --args=\"--name=<what> --output json --config missing.ts\""
+          "with": "pnpm db:generate <what> --output json   # when packages/db/drizzle.config.ts is missing"
         },
         {
           "why": "drizzle-migrations is not vendored or loadable here (it recommends push)",
@@ -193,22 +205,22 @@
         {
           "why": "this repo's expand/contract rule wins over answering a rename_or_create",
           "replace": "If the `drizzle` skill has not been loaded yet this session, load it first — it carries the staleness check and the MCP-vs-CLI surface-selection rule that govern every drizzle-kit invocation.",
-          "with": "Load skill `drizzle` first: it says how drizzle-kit runs here. **This repo's rule wins over this skill** (skill `db-migration`, step 5): a `missing_hints` with a `rename_or_create` from `pnpm nx run db:db-generate` means the schema change drops one entity and adds another in one step. Do not answer it with a `rename` or `create` hint: split the change into an expand migration and a later contract migration, each deployed on its own. Use this skill to read what drizzle-kit asks. The drizzle-kit skills it names that this repo does not vendor: `pnpm exec intent load drizzle-kit#<name>`."
+          "with": "Load skill `drizzle` first: it says how drizzle-kit runs here. **This repo's rule wins over this skill** (skill `db-migration`, step 5): a `missing_hints` with a `rename_or_create` from `pnpm db:generate` means the schema change drops one entity and adds another in one step. Do not answer it with a `rename` or `create` hint: split the change into an expand migration and a later contract migration, each deployed on its own. Use this skill to read what drizzle-kit asks. The drizzle-kit skills it names that this repo does not vendor: `pnpm exec intent load drizzle-kit#<name>`."
         },
         {
-          "why": "the CLI form, through the db project's Nx target; push is not used here",
+          "why": "the CLI form, through `pnpm db:generate`; push is not used here",
           "replace": "Run `drizzle-kit generate --output json` / `push --output json` (CLI)",
-          "with": "Run `pnpm nx run db:db-generate --args=\"--name=<what> --output json\"` (CLI; `push` is not used here)"
+          "with": "Run `pnpm db:generate <what> --output json` (CLI; `push` is not used here)"
         },
         {
-          "why": "inline JSON does not survive Nx's --args",
+          "why": "`pnpm db:generate` takes hints only from a file",
           "replace": "Watch shell quoting; the JSON has to survive your shell intact.",
-          "with": "Watch shell quoting; the JSON has to survive your shell intact. Through Nx's `--args` it does not: use `--hints-file`."
+          "with": "Watch shell quoting; the JSON has to survive your shell intact. `pnpm db:generate` refuses `--hints`: use `--hints-file`."
         },
         {
-          "why": "the CLI example, through the db project's Nx target (a file path is relative to packages/db)",
+          "why": "the CLI example, through `pnpm db:generate` (it reads the file from the repo root)",
           "replace": "drizzle-kit push --output json --config drizzle.config.ts --hints-file ./hints.json",
-          "with": "pnpm nx run db:db-generate --args=\"--name=<what> --output json --hints-file <file>\"   # <file>: relative to packages/db"
+          "with": "pnpm db:generate <what> --output json --hints-file <file>   # <file>: relative to the repo root"
         }
       ]
     }

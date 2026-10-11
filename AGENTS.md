@@ -106,7 +106,7 @@ Without Docker, `pnpm nx affected -t test --exclude=tag:needs-db` skips the `nee
 
 - Boundaries (full list in `eslint.config.mjs`): `scope:shared` → shared; `scope:tooling` → tooling; `scope:web` → web, shared; `scope:api` → api, server, shared; `scope:server` → server, shared; `type:util` → util only, and no frameworks, Drizzle or `pg`.
 - **Writes go through `packages/core`**, which validates again and throws domain errors (`NotFoundError`). Reads use Drizzle's relational queries (in the API: the Pothos Drizzle plugin), which load nested data in one statement.
-- **Migrations**: edit `packages/db/src/schema/*`, run `pnpm nx run db:db-generate --args="--name=<what>"` and commit the result. The guard hook blocks edits to a migration git tracks (staged or committed); only a new, untracked one may change.
+- **Migrations**: edit `packages/db/src/schema/*`, run `pnpm db:generate <what>` and commit the result. The guard hook blocks edits to a migration git tracks (staged or committed); only a new, untracked one may change.
 - **API** (`docs/api.md`): the schema has no side effects at import; the API is private and locked down by default (tests pin each default); expected failures are data (union members, selected by `__typename`); its Vitest config aliases `graphql` to one copy.
 - **Server-only code lives in `*.server.ts`** (env, API client, BFF): a client import of one fails the build, and so does server code in the client bundle. The browser reaches the API only through the same-origin `/api/graphql`.
 - **Web data** (`docs/web.md`): only through `execute()` with a `graphql()` document. Loaders `await ensure…()` and return nothing; components `useSuspense…` the same query options. Forms copy `apps/web/src/components/note-form.tsx`.

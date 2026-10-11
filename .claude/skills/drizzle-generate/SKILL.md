@@ -1,6 +1,6 @@
 ---
 name: drizzle-generate
-description: 'Create a new drizzle migration by diffing the schema against the latest snapshot. Load before generating a migration, after a Drizzle schema edit when the next step is its SQL, or to read drizzle-kit generate output. Here: `pnpm nx run db:db-generate --args="--name=<what>"`.'
+description: 'Create a new drizzle migration by diffing the schema against the latest snapshot. Load before generating a migration, after a Drizzle schema edit when the next step is its SQL, or to read drizzle-kit generate output. Here: `pnpm db:generate <what>`.'
 metadata:
   version: "1.0.0"
 ---
@@ -9,29 +9,29 @@ metadata:
 
 # Drizzle generate
 
-Load skill `drizzle` first: it says how drizzle-kit runs here (through Nx, in `packages/db`). Skill `db-migration` has this repo's steps and wins where they differ: always pass `--name`, read the SQL, never edit a migration git tracks. The drizzle-kit skills named below that this repo does not vendor, `drizzle-output-modes` and `drizzle-responses-and-errors`: `pnpm exec intent load drizzle-kit#<name>`.
+Load skill `drizzle` first: it says how drizzle-kit runs here (`pnpm db:generate`, in `packages/db`). Skill `db-migration` has this repo's steps and wins where they differ: always name the migration, read the SQL, never edit a migration git tracks. The drizzle-kit skills named below that this repo does not vendor, `drizzle-output-modes` and `drizzle-responses-and-errors`: `pnpm exec intent load drizzle-kit#<name>`.
 
 The CLI flag `--output json` and the SDK `generate(...)` function emit the same discriminated-union envelope, and the envelope (not the stdout text) is what the agent decodes. Output format and interactivity are separate axes: `--output json` selects the machine-readable envelope and is always non-interactive, so pass it whenever an agent calls the CLI. Under the default `--output text` the CLI prompts only when stdin is a TTY; in a non-TTY it prints the missing-decisions report and exits 2 (it never hangs prompting). See the `drizzle-output-modes` skill for the two modes and the interactivity rule. The SDK runs in JSON mode internally with no flag needed at the call site. This skill assumes a working Drizzle schema and a `drizzle.config.ts` already exist; it does not author schemas.
 
 ## CLI form
 
 ```bash
-pnpm nx run db:db-generate --args="--name=<what> --output json [--explain] [--hints-file <file>]"
+pnpm db:generate <what> --output json [--explain] [--hints-file <file>]
 ```
 
 Flag surface:
 
-- `--config` — path to `drizzle.config.ts` (default: `drizzle.config.ts` at CWD).
-- `--dialect`, `--schema`, `--out` — override the corresponding `defineConfig` fields. Never here: `packages/db/drizzle.config.ts` sets them.
+- `--config` — path to `drizzle.config.ts` (default: `drizzle.config.ts` at CWD). Never here: `pnpm db:generate` runs in `packages/db`, with its `drizzle.config.ts`, and refuses the flag.
+- `--dialect`, `--schema`, `--out` — override the corresponding `defineConfig` fields. Never here: `packages/db/drizzle.config.ts` sets them, and `pnpm db:generate` refuses them.
 - `--output json` — switches stdout to one JSON line carrying the envelope and is always non-interactive. Use it for agent / CI / scripted contexts. Under the default `--output text` the CLI prompts only on a TTY and otherwise prints the missing-decisions report (exit 2).
 - `--explain` — dry-run mode. Returns planned SQL statements and computed hints instead of writing a migration file.
-- `--hints` — inline JSON array of hint resolutions (see the `drizzle-hints` skill).
+- `--hints` — inline JSON array of hint resolutions (see the `drizzle-hints` skill). Not through `pnpm db:generate`: use `--hints-file`.
 - `--hints-file` — same payload as `--hints`, read from a JSON file. Use for long hint sets.
 
 Minimal example:
 
 ```bash
-pnpm nx run db:db-generate --args="--name=<what> --output json"
+pnpm db:generate <what> --output json
 # → {"status":"ok","dialect":"postgresql","migration_path":"drizzle/0001_name/migration.sql"}
 ```
 
@@ -82,20 +82,20 @@ Per-dialect quirks (postgresql, mysql, sqlite, mssql, cockroach, singlestore) �
 
 ```bash
 # Happy path
-pnpm nx run db:db-generate --args="--name=<what> --output json"
+pnpm db:generate <what> --output json
 # → {"status":"ok","dialect":"postgresql","migration_path":"drizzle/0001_init/migration.sql"}
 
 # Idempotent re-run on an up-to-date schema
-pnpm nx run db:db-generate --args="--name=<what> --output json"
+pnpm db:generate <what> --output json
 # → {"status":"no_changes","dialect":"postgresql"}
 
 # Ambiguous diff — caller must supply hints and retry
-pnpm nx run db:db-generate --args="--name=<what> --output json"
+pnpm db:generate <what> --output json
 # → {"status":"missing_hints","unresolved":[{"type":"rename_or_create","kind":"column","entity":["public","users","email_v2"]}]}
 # (resolution loop: see the drizzle-hints skill)
 
 # Hard error
-pnpm nx run db:db-generate --args="--name=<what> --output json --config missing.ts"
+pnpm db:generate <what> --output json   # when packages/db/drizzle.config.ts is missing
 # → {"status":"error","error":{"code":"config_file_not_found_error","path":"missing.ts"}}
 ```
 

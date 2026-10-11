@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { allowedTools, parseFrontmatter } from '../agents.mjs';
+import { allowedTools, parseFrontmatter, unsafeAllowRule } from '../agents.mjs';
 import { findPackage } from '../vendor-skills.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
@@ -393,5 +393,34 @@ describe('what the browser CLI may do without a prompt', () => {
     for (const command of EXACT) expect(commands[command.split(' ')[0]], command).toBeDefined();
     for (const [command, options] of Object.entries(WILDCARD))
       expect(Object.keys(commands[command]?.flags ?? {}).toSorted(), command).toEqual(options);
+  });
+});
+
+// `pnpm db:generate` checks every argument before anything runs and starts drizzle-kit without a
+// shell (packages/db/scripts/db-generate.mjs), so a wildcard rule for it approves nothing else. A
+// rule for the db:db-generate Nx target would approve any command: its --args reach a shell.
+describe('pnpm db:generate', () => {
+  const RULE = 'Bash(pnpm db:generate *)';
+  // A human adds RULE to .claude/settings.json (agents cannot edit it); until then a migration
+  // asks in the default mode. Once it is in, set this to `true`: the test then pins the rule.
+  const APPLIED = permissions.allow.includes(RULE);
+  const CALLS = [
+    'Bash(pnpm db:generate add_tags)',
+    'Bash(pnpm db:generate backfill_tags --custom)',
+    'Bash(pnpm db:generate add_tags --output json --explain)',
+    'Bash(pnpm db:generate add_tags --output json --hints-file .agents/ignore/hints.json)',
+  ];
+
+  it('is a wildcard rule that approves nothing beyond the script', () => {
+    expect(unsafeAllowRule(RULE)).toBeUndefined();
+    expect(unsafeAllowRule('Bash(pnpm nx run db:db-generate *)')).toMatch(/any shell command/);
+  });
+  it.each(CALLS)('never asks for %s', (call) => expect(asks(call)).toBe(false));
+  it.each(CALLS)('allows %s once the rule is in settings.json', (call) =>
+    expect(allows(call)).toBe(APPLIED),
+  );
+  it('approves no other command', () => {
+    for (const call of ['Bash(pnpm db:generatex)', 'Bash(pnpm db:migrate x)', 'Bash(pnpm x)'])
+      expect(matches([RULE], call, { skipAssignments: false }), call).toBe(false);
   });
 });

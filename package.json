@@ -18,6 +18,7 @@
     "agents:nx-check": "node tools/check.mjs --nx-agents",
     "prepare": "node tools/agents.mjs install-hooks",
     "db:up": "nx run db:db-up",
+    "db:generate": "node packages/db/scripts/db-generate.mjs",
     "db:migrate": "nx run db:db-migrate",
     "db:seed": "nx run db:db-seed",
     "db:reset": "nx run db:db-reset",
