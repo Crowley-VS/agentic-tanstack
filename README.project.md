@@ -10,6 +10,7 @@ test -f .env || cp .env.example .env   # a fresh clone: then set the values it l
 pnpm install # also installs the git hooks (lefthook): format + lint staged files, keep agent config in sync
 pnpm check   # the definition of done: lint, formatting, module boundaries, typecheck, tests, generated files, agent config
 pnpm ports   # this checkout's ports and database URLs (every git worktree gets its own)
+node scripts/setup-agents.mjs   # once per machine: the Claude Code plugins this repo enables, and what they need
 ```
 
 Each checkout runs its own Postgres container and Nx daemon. Before deleting a worktree, run
