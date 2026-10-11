@@ -15,6 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   adopt,
+  allowedTools,
   check,
   checkStaged,
   codeOf,
@@ -114,6 +115,35 @@ describe('parseFrontmatter', () => {
   });
   it('returns null without frontmatter', () => {
     expect(parseFrontmatter('# nothing')).toBeNull();
+  });
+  it('reads a block scalar with blank lines whole, and a block sequence as an array', () => {
+    const fm = parseFrontmatter(
+      [
+        '---',
+        'name: a',
+        'description: |-',
+        '  one',
+        '',
+        '  two',
+        '',
+        'allowed-tools:',
+        '  - Bash(git log *)',
+        "  - 'Read'",
+        'other:',
+        '- x',
+        'metadata:',
+        '  v: 1',
+        '---',
+        'body',
+      ].join('\n'),
+    );
+    expect(fm).toEqual({
+      name: 'a',
+      description: 'one two',
+      'allowed-tools': ['Bash(git log *)', 'Read'],
+      other: ['x'],
+      metadata: '',
+    });
   });
 });
 
@@ -318,6 +348,7 @@ describe('sync --stage (pre-commit)', () => {
     for (const f of [
       'lefthook.yml',
       'tools/agents.mjs',
+      'tools/vendor-skills.mjs',
       'tools/lib/generated.mjs',
       'tools/lib/bin.mjs',
       'tools/lib/file-types.mjs',
@@ -823,6 +854,49 @@ describe('check', () => {
     expect(problems).not.toContain('nx show');
   });
 
+  it("checks a skill's allowed-tools like allow rules (they approve while the skill runs)", () => {
+    expect(allowedTools('Read Bash(git add *), Bash(pnpm exec x cli open)  Grep')).toEqual([
+      'Read',
+      'Bash(git add *)',
+      'Bash(pnpm exec x cli open)',
+      'Grep',
+    ]);
+    expect(allowedTools(undefined)).toEqual([]);
+    expect(allowedTools(['Bash(git add *)', 'Read'])).toEqual(['Bash(git add *)', 'Read']);
+    expect(allowedTools('[Bash(git add *), "Read"]')).toEqual(['Bash(git add *)', 'Read']);
+    const tools = 'Read Bash(git log *) Bash(pnpm exec playwright cli goto *)';
+    const root = repo({
+      '.agents/skills/verify/SKILL.md': skill('verify').replace(
+        '---\n\n',
+        `allowed-tools: '${tools}'\n---\n\n`,
+      ),
+    });
+    sync(root);
+    expect(check(root)).toEqual([
+      expect.stringMatching(
+        /^skill "verify": allowed-tools approves Bash\(git log \*\), which also approves writing any file/,
+      ),
+    ]);
+  });
+
+  it('checks allowed-tools written as a YAML list, a flow sequence or a block scalar', () => {
+    const lists = [
+      'allowed-tools:\n  - Read\n  - Bash(git log *)\n',
+      'allowed-tools:\n- "Bash(git log *)"\n',
+      'allowed-tools: [Read, "Bash(git log *)"]\n',
+      'allowed-tools: >\n  Read\n\n  Bash(git log *)\n',
+    ];
+    for (const tools of lists) {
+      const root = repo({
+        '.agents/skills/verify/SKILL.md': skill('verify').replace('---\n\n', `${tools}---\n\n`),
+      });
+      sync(root);
+      expect(check(root), tools).toEqual([
+        expect.stringMatching(/^skill "verify": allowed-tools approves Bash\(git log \*\), which/),
+      ]);
+    }
+  });
+
   it("this repository's allow rules approve no hidden writes or commands", () => {
     const settings = JSON.parse(readFileSync(join(REPO, '.claude/settings.json'), 'utf8'));
     expect(settings.permissions.allow.filter((r) => unsafeAllowRule(r))).toEqual([]);
@@ -1181,6 +1255,58 @@ describe('check: the paths and pnpm commands skills name', () => {
         'Delete `migrations.json` and `tmp/out.log`, not `other.json`.',
     );
     expect(referenceProblems(root)).toEqual([expect.stringContaining('names `other.json`')]);
+  });
+
+  it('skips the paths upstream wrote in a vendored skill (.agents/vendor.json), never its pnpm commands', () => {
+    // upstream's examples name upstream's files; the vendor check pins that text instead
+    const upstream = 'Edit `examples/0001/setup.sql` and `auth.json`; run `pnpm exec nope`.';
+    const root = skillRepo('Ours names `auth.json`.', {
+      '.agents/skills/demo/SKILL.md': `${skill('demo')}\n${upstream}\n`,
+      '.agents/vendor.json': {
+        packages: { up: { version: '1.0.0', license: 'MIT' } },
+        skills: { demo: { package: 'up', file: 'SKILL.md', rewrites: [] } },
+      },
+    });
+    const named = check(root).filter((p) => p.startsWith('.agents/skills/'));
+    expect(named).toEqual([
+      expect.stringMatching(/^\.agents\/skills\/demo\/SKILL\.md runs `pnpm exec nope`/),
+      expect.stringMatching(/^\.agents\/skills\/verify\/SKILL\.md names `auth\.json`/),
+    ]);
+  });
+
+  it("checks the paths this repo writes into a vendored skill: its rewrites' text", () => {
+    const rewrites = [
+      { frontmatter: 'description', with: 'Edit `tools/ports.mjs` or `tools/gone.mjs`.' },
+      {
+        section: '## Setup',
+        with: [
+          '## Setup',
+          '',
+          '```bash',
+          'node scripts/missing.mjs',
+          '```',
+          'Upstream: `auth.json`.',
+        ],
+      },
+      // a path the skill's own steps create
+      { replace: 'x', with: '`out/new.json` <!-- agents:unchecked out/new.json -->' },
+    ];
+    const root = skillRepo('', {
+      '.agents/skills/demo/SKILL.md': `${skill('demo')}\nUpstream names \`examples/x.sql\`.\n`,
+      '.agents/vendor.json': {
+        packages: { up: { version: '1.0.0', license: 'MIT' } },
+        skills: { demo: { package: 'up', file: 'SKILL.md', rewrites } },
+      },
+    });
+    expect(check(root).filter((p) => p.includes(' names `'))).toEqual([
+      expect.stringMatching(
+        /^\.agents\/vendor\.json \(skill demo, rewrite 1\) names `tools\/gone\.mjs`, which is not in the repo: renamed or deleted\? Update the rewrite, then run `node tools\/vendor-skills\.mjs update`/,
+      ),
+      expect.stringMatching(
+        /^\.agents\/vendor\.json \(skill demo, rewrite 2\) names `scripts\/missing\.mjs`/,
+      ),
+      expect.stringMatching(/^\.agents\/vendor\.json \(skill demo, rewrite 2\) names `auth\.json`/),
+    ]);
   });
 
   it('checks `pnpm exec` and bare binaries against node_modules/.bin once installed', () => {

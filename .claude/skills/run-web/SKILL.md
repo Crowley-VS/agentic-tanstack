@@ -44,6 +44,13 @@ curl -sS -H 'content-type: application/json' \
 - A page: the server-rendered HTML holds the loaders' data, so after `pnpm db:seed`,
   `curl -fsS "$WEB/" | grep -ao 'Seed note [0-9]*' | head -1` prints the newest seed note (`-a`:
   grep calls the page binary; the seed's titles: `SEED` in `apps/web-e2e/src/fixtures.ts`).
+- A page in a real browser, hydrated (skill `playwright-cli`):
+  `pnpm exec playwright cli open --browser=chromium`, then
+  `pnpm exec playwright cli goto <web URL>` (from `pnpm ports`) and
+  `pnpm exec playwright cli snapshot`: the board, as roles and names with refs (after
+  `pnpm db:seed`, the newest seed note comes first). `find "Seed note"` searches it; `click <ref>`,
+  `fill <ref> "<text>"`, `console` and `requests` act on and inspect the page. Each write it makes
+  counts against the dev rate limit.
 
 ## 3. The production build
 
@@ -63,7 +70,8 @@ When SSR, the build or production settings matter, `pnpm dev` is not enough:
 ## 4. Stop what you started
 
 - Stop each server you started (its background task), then check that its health URL no longer
-  answers.
+  answers. Close a browser you opened: `pnpm exec playwright cli close-all`, then
+  `pnpm exec playwright cli list` shows none open.
 - `pnpm teardown` before you leave or delete a worktree: it stops this checkout's Postgres and Nx
   daemon (data kept) and removes its image stack. Skip it while a server you did not start (the
   user's `pnpm dev`) still runs here (`docs/local-resources.md`).

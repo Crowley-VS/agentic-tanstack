@@ -49,6 +49,8 @@ catalog:
   '@pothos/plugin-validation': ^4.3.4
   # exact, with tailwindcss: @tailwindcss/vite depends on that exact tailwindcss version
   '@tailwindcss/vite': 4.3.3
+  # exact: pre-1.0; its CLI (`pnpm exec intent`) loads the skills TanStack packages ship
+  '@tanstack/intent': 0.5.5
   '@tanstack/react-query': ^5.104.0
   # react-start pins react-router exactly: bump both together, or two routers get installed
   # (react-router-ssr-query is from the same release train)

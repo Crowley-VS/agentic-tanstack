@@ -3,6 +3,10 @@
 # Generated files: collapsed in GitHub diffs, never edited by hand. The block below is rendered from
 # .agents/generated.json by `pnpm agents:sync` (add new artifacts there, not here).
 # agents:generated:start
+.agents/skills/playwright-cli/** linguist-generated=true
+.agents/skills/drizzle/** linguist-generated=true
+.agents/skills/drizzle-generate/** linguist-generated=true
+.agents/skills/drizzle-hints/** linguist-generated=true
 .claude/skills/** linguist-generated=true
 packages/db/migrations/** linguist-generated=true
 packages/graphql/schema.graphql linguist-generated=true

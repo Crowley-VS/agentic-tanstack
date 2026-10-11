@@ -1,0 +1,13 @@
+The skills drizzle, drizzle-generate and drizzle-hints in .agents/skills are changed copies of
+files of drizzle-kit 1.0.0-rc.4 (skills/<name>/SKILL.md in its npm package), by Drizzle Team:
+https://github.com/drizzle-team/drizzle-orm/tree/beta/drizzle-kit/skills
+Each copy says that it was changed; .agents/vendor.json lists the changes.
+
+They are used under the Apache License, Version 2.0, the license of the repository drizzle-kit is
+built from (https://github.com/drizzle-team/drizzle-orm/blob/main/LICENSE; it has no NOTICE
+file). Its full text is in LICENSE-Apache-2.0, next to this file. They are not covered by this
+repository's MIT license.
+
+drizzle-kit's package.json declares the MIT license instead, but the package ships no license
+file and no copyright line. Following the Apache License also meets the MIT license's terms (keep
+the notice; no warranty), so these copies are licensed correctly under either reading.

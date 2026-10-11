@@ -4,6 +4,10 @@
   "printWidth": 100,
   "ignorePatterns": [
     "pnpm-lock.yaml",
+    ".agents/skills/playwright-cli/**",
+    ".agents/skills/drizzle/**",
+    ".agents/skills/drizzle-generate/**",
+    ".agents/skills/drizzle-hints/**",
     ".claude/skills/**",
     "packages/db/migrations/**",
     "packages/graphql/schema.graphql",

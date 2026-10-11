@@ -6,11 +6,12 @@
 // is cached, but its inputs hold what defines targets (every package.json and project.json,
 // nx.json, the plugins' config files) and .agents/skills, so changing either runs it again.
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { codeOf, pathTokens, pnpmCommands } from '../agents.mjs';
 import { nodeBin } from '../lib/bin.mjs';
+import { findPackage } from '../vendor-skills.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 /** The skills: directories with a SKILL.md (a stray file, such as macOS's .DS_Store, is none). */
@@ -119,5 +120,67 @@ describe('the skills, together', () => {
     expect(namedTargets(code, new Set(Object.keys(nxTargets()))).length).toBeGreaterThan(0);
     expect(pathTokens(code).length).toBeGreaterThan(0);
     expect(pnpmCommands(code).length).toBeGreaterThan(0);
+  }, 60_000);
+});
+
+/** Run the bin `name` of package `pkg` installed at the root, as the skills' `pnpm exec` does. */
+function run(pkg, name, args) {
+  const bin = nodeBin(REPO, pkg, name);
+  expect(bin, `${pkg} is not installed: run \`pnpm install\``).toBeDefined();
+  const [cmd = '', ...pre] = bin ?? [];
+  return execFileSync(cmd, [...pre, ...args], { cwd: REPO, encoding: 'utf8' });
+}
+
+describe('the CLIs the vendored skills and AGENTS.md run', () => {
+  it('`pnpm exec playwright cli` is the pinned Playwright, shipping the vendored skill', () => {
+    // the skill's commands are `pnpm exec playwright cli <command>`: no @playwright/cli package
+    const help = run('@playwright/test', 'playwright', ['cli', '--help']);
+    expect(help).toMatch(/^\s+snapshot \[target\]/m);
+    expect(help).toMatch(/^\s+attach \[name\]/m);
+    const { packages, skills } = JSON.parse(
+      readFileSync(join(REPO, '.agents/vendor.json'), 'utf8'),
+    );
+    const { version } = packages['playwright-core'];
+    expect(run('@playwright/test', 'playwright', ['--version'])).toContain(version);
+    const dir = findPackage(REPO, 'playwright-core', packages['playwright-core']);
+    expect(dir, 'playwright-core is not installed: run `pnpm install`').toBeDefined();
+    expect(existsSync(join(dir ?? '', skills['playwright-cli'].file))).toBe(true);
+  });
+
+  it('the playwright-cli skill names the folder of its references, whatever the environment', () => {
+    // `playwright cli --help` prints the skill's path only under Claude Code or Copilot CLI
+    // (CLAUDECODE, COPILOT_CLI): the skill names the folder itself, for every agent and human
+    const { packages } = JSON.parse(readFileSync(join(REPO, '.agents/vendor.json'), 'utf8'));
+    const folder = codeOfSkill('playwright-cli').find((c) =>
+      c.endsWith('/lib/tools/skills/playwright-cli/references/'),
+    );
+    expect(folder, 'the skill names no references folder').toBeDefined();
+    const named = join(
+      REPO,
+      (folder ?? '').replace('<version>', packages['playwright-core'].version),
+    );
+    const dir = findPackage(REPO, 'playwright-core', packages['playwright-core']) ?? '';
+    expect(existsSync(named), `${named} does not exist`).toBe(true);
+    expect(realpathSync(named)).toBe(
+      realpathSync(join(dir, 'lib/tools/skills/playwright-cli/references')),
+    );
+    expect(readdirSync(named)).toContain('request-mocking.md');
+  });
+
+  it('`pnpm exec intent` lists and loads the allowed skills, not the vendored ones', () => {
+    const { skills, warnings } = JSON.parse(run('@tanstack/intent', 'intent', ['list', '--json']));
+    const uses = skills.map((s) => s.use);
+    expect(warnings).toEqual([]);
+    expect(uses).toContain('@tanstack/router-core#router-core');
+    expect(uses).toContain('@tanstack/start-client-core#start-core');
+    // the drizzle-kit references the vendored drizzle skills point at, and none of the vendored
+    // ones (their unrewritten upstream would run drizzle-kit directly)
+    expect(uses.filter((u) => u.startsWith('drizzle-kit#'))).toEqual([
+      'drizzle-kit#drizzle-output-modes',
+      'drizzle-kit#drizzle-responses-and-errors',
+    ]);
+    expect(
+      run('@tanstack/intent', 'intent', ['load', '@tanstack/router-core#router-core']),
+    ).toMatch(/^---\nname: router-core\n/);
   }, 60_000);
 });

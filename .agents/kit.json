@@ -15,6 +15,8 @@
     "tools/test/generated.test.mjs",
     "tools/test/hooks.test.mjs",
     "tools/test/agents.test.mjs",
+    "tools/vendor-skills.mjs",
+    "tools/test/vendor-skills.test.mjs",
     "lefthook.yml",
     ".worktreeinclude",
     "tools/pr-review.mjs",

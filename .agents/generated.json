@@ -2,6 +2,18 @@
   "$comment": "Single source of truth for generated files. Read by the guard hook, `pnpm regen`, the drift check, the pre-commit formatter filter, eslint.config.mjs, and `node tools/agents.mjs sync` (which renders the oxfmt/oxlint ignores, the linguist-generated block of .gitattributes and the Claude Edit deny rules). Add an entry whenever a tool starts generating files; never hand-edit a listed path.",
   "artifacts": [
     {
+      "id": "vendored-skills",
+      "paths": [
+        ".agents/skills/playwright-cli/**",
+        ".agents/skills/drizzle/**",
+        ".agents/skills/drizzle-generate/**",
+        ".agents/skills/drizzle-hints/**"
+      ],
+      "regen": "node tools/vendor-skills.mjs update",
+      "protect": "tracked",
+      "description": "third-party skills rendered from the installed packages and the rewrites in .agents/vendor.json (change the rewrites, then regenerate; never edit a copy). Listed before claude-skills, so `pnpm regen` copies them after rendering"
+    },
+    {
       "id": "claude-skills",
       "paths": [".claude/skills/**"],
       "regen": "pnpm agents:sync",

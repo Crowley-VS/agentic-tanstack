@@ -72,6 +72,9 @@ catalogs:
     '@tailwindcss/vite':
       specifier: 4.3.3
       version: 4.3.3
+    '@tanstack/intent':
+      specifier: 0.5.5
+      version: 0.5.5
     '@tanstack/react-query':
       specifier: ^5.104.0
       version: 5.104.0
@@ -236,6 +239,9 @@ importers:
       '@playwright/test':
         specifier: 'catalog:'
         version: 1.63.0
+      '@tanstack/intent':
+        specifier: 'catalog:'
+        version: 0.5.5
       '@types/node':
         specifier: 'catalog:'
         version: 24.19.0
@@ -3411,6 +3417,11 @@ packages:
   '@tanstack/history@1.162.4':
     resolution: {integrity: sha512-utTS5L2OkeYUzXGohL1Z8sefu1GLNOJcxe8Hd6iIdc/Xo1K1nDB2JEp4iSFhvYh33xKC9V91TxrS8qfrpoKobQ==}
     engines: {node: '>=20.19'}
+
+  '@tanstack/intent@0.5.5':
+    resolution: {integrity: sha512-Ei5RqUWgV96HrezTEyDbScy0wZN+17dNo59Am8/3ncv0YIaIxApkiX5LkM488wxe4a1Imdi09nhjFxblxwLMSQ==}
+    engines: {node: '>=20.12.0'}
+    hasBin: true
 
   '@tanstack/query-core@5.104.0':
     resolution: {integrity: sha512-JrC2r/JQlXt7khBSdUpsgxNvybzOg+aITa+ARRMlP2AFo93Y8vIqz077rp+e61mJetSZ0T6AJbwW1JHer1vrPQ==}
@@ -10070,6 +10081,8 @@ snapshots:
       vite: 8.3.1(@types/node@24.19.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0)
 
   '@tanstack/history@1.162.4': {}
+
+  '@tanstack/intent@0.5.5': {}
 
   '@tanstack/query-core@5.104.0': {}
 
