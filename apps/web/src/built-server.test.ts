@@ -1,10 +1,19 @@
 // The production build run as a process, the way the image runs it (`node .output/server/index.mjs`;
 // web:test depends on web:build). On SIGTERM it finishes what is in flight and exits 0, and every
 // JSON line stays a line of its own where stdout and stderr are read as one stream, as Railway
-// reads them: Nitro's server (srvx) then counts down on stderr on a line it never ends.
+// reads them: Nitro's server (srvx) then counts down on stderr on a line it leaves open until the
+// server has closed.
 import { type ChildProcess, spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs';
-import { createServer as createHttpServer, type Server } from 'node:http';
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +22,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const ENTRY = fileURLToPath(new URL('../.output/server/index.mjs', import.meta.url));
 const SHUTDOWN = 'SIGTERM: finishing in-flight requests, then exiting';
+
+/** What afterEach undoes, the last step first; each step is told whether the test failed. */
+const cleanup: ((failed: boolean) => void)[] = [];
+afterEach(({ task }) => {
+  const failed = task.result?.state === 'fail';
+  for (const step of cleanup.splice(0).toReversed()) step(failed);
+});
 
 async function freePort(): Promise<number> {
   const server = createServer().listen(0, '127.0.0.1');
@@ -34,26 +50,24 @@ async function fakeApi(delayMs: number) {
     }, delayMs);
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  cleanup.push(() => server.close());
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : 0;
-  return { server, port, received: () => received };
+  return { port, received: () => received };
 }
-
-const cleanup: (() => void)[] = [];
-afterEach(() => {
-  for (const step of cleanup.splice(0).toReversed()) step();
-});
 
 /**
  * The built server on a free port, in production mode, with stdout and stderr on one file: the
- * order the process wrote them in, as one stream (what a platform that merges them sees).
+ * order the process wrote them in, as one stream (what a platform that merges them sees). With
+ * `separate`, each has a file of its own, and `lines()` are stdout's.
  */
-async function startWeb(api: { server: Server; port: number }) {
+async function startWeb(api: { port: number }, { separate = false } = {}) {
   if (!existsSync(ENTRY)) throw new Error(`${ENTRY} is missing: run pnpm nx run web:build`);
   const port = await freePort();
   const dir = mkdtempSync(join(tmpdir(), 'web-built-server-'));
-  const file = join(dir, 'output.log');
-  const fd = openSync(file, 'w');
+  const file = join(dir, separate ? 'stdout.log' : 'output.log');
+  const out = openSync(file, 'w');
+  const err = separate ? openSync(join(dir, 'stderr.log'), 'w') : out;
   // only these variables: srvx handles SIGTERM only without CI and TEST (Vitest sets TEST)
   const child: ChildProcess = spawn(process.execPath, [ENTRY], {
     env: {
@@ -66,13 +80,22 @@ async function startWeb(api: { server: Server; port: number }) {
       API_HOST: '127.0.0.1',
       API_PORT: String(api.port),
     },
-    stdio: ['ignore', fd, fd],
+    stdio: ['ignore', out, err],
   });
-  closeSync(fd);
+  closeSync(out);
+  if (err !== out) closeSync(err);
   const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
   cleanup.push(
-    () => rmSync(dir, { recursive: true, force: true }),
-    () => api.server.close(),
+    (failed) => {
+      // what the server wrote, for a failed test (it never got healthy, exited, joined a line…),
+      // one JSON string per line: srvx's `\x1b[2K\r` would wipe a line on a terminal
+      if (failed)
+        for (const name of readdirSync(dir)) {
+          const lines = readFileSync(join(dir, name), 'utf8').split('\n');
+          console.error(`${name}:\n${lines.map((line) => JSON.stringify(line)).join('\n')}`);
+        }
+      rmSync(dir, { recursive: true, force: true });
+    },
     () => child.kill('SIGKILL'),
   );
   const url = `http://127.0.0.1:${port}`;
@@ -93,6 +116,14 @@ async function startWeb(api: { server: Server; port: number }) {
   return { child, url, exited, lines, records, broken };
 }
 
+/** A request the stand-in API holds while the server shuts down. */
+const graphqlQuery = (url: string) =>
+  fetch(`${url}/api/graphql`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: '{ readOnly }' }),
+  });
+
 describe('the built server on SIGTERM', () => {
   it("writes its shutdown record on a line of its own, ahead of srvx's countdown, and exits 0", async () => {
     const web = await startWeb(await fakeApi(0));
@@ -106,17 +137,15 @@ describe('the built server on SIGTERM', () => {
     const countdown = web.lines().findIndex((line) => line.includes('Stopping server gracefully'));
     const record = web.lines().findIndex((line) => line.includes(SHUTDOWN));
     expect(countdown).toBeGreaterThan(record);
+    // its write started with a newline: an empty line before it, since the line before had ended
+    expect(web.lines()[record - 1]).toBe('');
     expect(web.lines().join('\n')).toContain('Server closed successfully.');
   }, 30_000);
 
   it('finishes a request in flight with connection: close, its record on a line of its own', async () => {
     const api = await fakeApi(1500);
     const web = await startWeb(api);
-    const inFlight = fetch(`${web.url}/api/graphql`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: '{ readOnly }' }),
-    });
+    const inFlight = graphqlQuery(web.url);
     await expect.poll(() => api.received()).toBe(1); // the BFF is waiting for the API
     const signalled = performance.now();
     web.child.kill('SIGTERM');
@@ -138,5 +167,29 @@ describe('the built server on SIGTERM', () => {
         }),
       ]),
     );
+  }, 30_000);
+
+  it('starts its shutdown record and each later one on stdout with a newline: whole in any merge order', async () => {
+    const api = await fakeApi(500);
+    const web = await startWeb(api, { separate: true });
+    const inFlight = graphqlQuery(web.url);
+    await expect.poll(() => api.received()).toBe(1);
+    web.child.kill('SIGTERM');
+    expect((await inFlight).status).toBe(200);
+    expect(await web.exited).toBe(0);
+    const stdout = web.lines();
+    const from = stdout.findIndex((line) => line.includes(SHUTDOWN));
+    const fromSigterm = stdout
+      .map((line, i) => ({ line, before: stdout[i - 1] }))
+      .slice(from)
+      .filter(({ line }) => line.startsWith('{'));
+    expect(fromSigterm.map(({ line }): unknown => JSON.parse(line))).toEqual([
+      expect.objectContaining({ level: 'info', message: SHUTDOWN }),
+      expect.objectContaining({
+        message: expect.stringMatching(/^200 POST \/api\/graphql \d+ms$/),
+      }),
+    ]);
+    // each write was `\n{…}\n`: an empty line before each record, since the line before ended
+    expect(fromSigterm.map(({ before }) => before)).toEqual(['', '']);
   }, 30_000);
 });

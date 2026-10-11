@@ -114,10 +114,10 @@ describe('sigtermFlag', () => {
     expect(draining()).toBe(false);
     proc.emit('SIGTERM');
     expect(draining()).toBe(true);
-    expect(lines()).toEqual(['[web] SIGTERM: finishing in-flight requests, then exiting']);
+    expect(lines()).toEqual(['\n[web] SIGTERM: finishing in-flight requests, then exiting']);
   });
 
-  it("writes its line before srvx's countdown, and every later line on a line of its own", async () => {
+  it("writes its line before srvx's countdown, it and every later line starting with a newline", async () => {
     vi.resetModules();
     const fresh = await import('./request-log.server');
     const proc = new EventEmitter();
@@ -127,11 +127,32 @@ describe('sigtermFlag', () => {
     proc.on('SIGTERM', () => seenBySrvx.push(lines()));
     const draining = fresh.sigtermFlag(proc);
     proc.emit('SIGTERM');
-    expect(seenBySrvx).toEqual([['[web] SIGTERM: finishing in-flight requests, then exiting']]);
+    expect(seenBySrvx).toEqual([['\n[web] SIGTERM: finishing in-flight requests, then exiting']]);
     // a request that finishes during the drain: its line starts with a newline, which ends
     // srvx's open line where stdout and stderr are one stream
     await fresh.logRequest(request('/'), answer(new Response()), { ...options, draining });
     expect(lines()[1]).toMatch(/^\n\[web\] 200 GET \/ \d+ms /);
+  });
+
+  it('writes the SIGTERM line in JSON as a newline, then one JSON object', async () => {
+    vi.stubEnv('LOG_FORMAT', 'json'); // production's format
+    vi.resetModules();
+    const fresh = await import('./request-log.server');
+    const proc = new EventEmitter();
+    proc.on('SIGTERM', () => {});
+    fresh.sigtermFlag(proc);
+    proc.emit('SIGTERM');
+    // `\n{…}`, then console.log's `\n`: whole whether the platform reads stdout or stderr first
+    expect(lines()).toHaveLength(1);
+    const [line = ''] = lines();
+    expect(line.split('\n')).toEqual(['', expect.stringMatching(/^\{.*\}$/)]);
+    expect(JSON.parse(line.slice(1))).toEqual(
+      expect.objectContaining({
+        level: 'info',
+        app: 'web',
+        message: 'SIGTERM: finishing in-flight requests, then exiting',
+      }),
+    );
   });
 
   it('adds no listener when nothing else handles SIGTERM (CI or TEST set: Node exits at once)', () => {

@@ -24,17 +24,18 @@ export const HEALTH_PATH = '/api/health';
  * process at once. So this listens only next to another listener: one of its own would cancel
  * that default, and the process would ignore SIGTERM.
  *
- * It listens ahead of srvx, whose countdown on stderr starts a line it never ends: the SIGTERM
- * line is written before it, and every line after it starts on a line of its own
- * (newlineBeforeEachLine, log.server.ts).
+ * It listens ahead of srvx, whose countdown on stderr starts a line it leaves open until the server
+ * has closed: the SIGTERM line is written before it, and it and every line after it start with a
+ * newline (newlineBeforeEachLine, log.server.ts), so each stays whole in whatever order a platform
+ * reads stdout and stderr.
  */
 export function sigtermFlag(proc: EventEmitter = process): () => boolean {
   let received = false;
   if (proc.listenerCount('SIGTERM') > 0)
     proc.prependOnceListener('SIGTERM', () => {
       received = true;
-      log().info('SIGTERM: finishing in-flight requests, then exiting');
       newlineBeforeEachLine();
+      log().info('SIGTERM: finishing in-flight requests, then exiting');
     });
   return () => received;
 }

@@ -140,9 +140,11 @@ once the server has closed (`\rStopping server gracefully (5s)...`, then
 written while srvx's is open joins it, and Railway keeps the two as one error-level text line, the
 JSON in it lost (so went the SIGTERM line and the in-flight requests' lines, before). So the
 request middleware listens for SIGTERM ahead of srvx, and from then on each line starts with a
-newline (`src/server/log.server.ts`): at worst an empty line between two lines.
+newline, the SIGTERM line included (`src/server/log.server.ts`): each line then stays whole in
+whatever order the platform reads the two streams, at worst with an empty line between two lines.
 `src/built-server.test.ts` runs the production build with both streams on one file and checks
-every line.
+every line, and with each stream on its own file and checks that each line on stdout from SIGTERM
+on starts with a newline.
 
 ## The client's IP
 

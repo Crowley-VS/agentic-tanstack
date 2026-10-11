@@ -31,11 +31,13 @@ export function logError(message: string, err: unknown): void {
 }
 
 /**
- * From now on, each line starts with a newline. Called once SIGTERM's line is out
+ * From now on, each line starts with a newline. Called on SIGTERM, before its line
  * (request-log.server.ts): srvx (Nitro's server) then counts down on stderr until the server has
- * closed, rewriting a line it never ends (`\rStopping server gracefully (5s)...`). A platform that
- * reads stdout and stderr as one stream (Railway) would add the next line to it: one error-level
- * text line, and the JSON line in it lost. At worst this leaves an empty line between two lines.
+ * closed, rewriting a line it leaves open until then (`\rStopping server gracefully (5s)...`). A
+ * platform that reads stdout and stderr as one stream (Railway) would add the next line to it: one
+ * error-level text line, and the JSON line in it lost. Starting with a newline, and ending with
+ * one, a line stays whole whichever of the two streams the platform reads first. At worst this
+ * leaves an empty line between two lines.
  */
 export function newlineBeforeEachLine(): void {
   lineStart = '\n';
