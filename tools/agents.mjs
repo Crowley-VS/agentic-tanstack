@@ -538,47 +538,102 @@ export function unsafeAllowRule(rule) {
 // ---------- check: what skills name ----------
 /** File extensions that make a code token a file name even without a `/` (`index.test.ts`). */
 const FILE_EXTENSION = /\.(?:[cm]?[jt]sx?|json|md|sql|graphql|ya?ml|css|html|sh|toml)$/;
-/** pnpm's own commands (`pnpm help -a`): `pnpm <one of these>` is no package.json script. */
+/**
+ * Code tokens shaped like a path that name something else: git refs and ranges (`origin/main`,
+ * `refs/heads/x`, `main...HEAD`), MIME types (`application/json`), ratios and rates (`3/3`,
+ * `10/60s`) and product names (`Node.js`).
+ */
+const NOT_A_PATH = new RegExp(
+  [
+    String.raw`^(?:origin|upstream|refs)/`,
+    String.raw`(?:^|/)(?:[^/]+\.\.[^/]*|\.\.[^/]+)(?:/|$)`,
+    String.raw`^(?:application|audio|font|image|message|model|multipart|text|video)/[\w.-]+$`,
+    String.raw`^\d+/`,
+    String.raw`^[A-Z][a-z\d]*\.js$`,
+  ].join('|'),
+);
+/**
+ * pnpm's own commands (`pnpm help -a`) and those it passes to npm (`view`, `version`, `whoami`…):
+ * `pnpm <one of these>` is no package.json script. The ones that run a script are SCRIPT_RUNNERS.
+ */
 const PNPM_COMMANDS = new Set(
   (
-    'add approve-builds audit bin c cat-file cat-index clean config create dedupe deploy dlx ' +
-    'doctor env exec fetch find-hash help i ignored-builds import init install install-test it ' +
-    'licenses link list ln ls outdated pack patch patch-commit patch-remove prune publish rb ' +
-    'rebuild remove rm root rt run runtime self-update server setup stage start store t test ' +
-    'unlink up update why'
+    'add approve-builds audit bin c cache cat-file cat-index clean config create dedupe deploy ' +
+    'dlx doctor env exec fetch find-hash help i ignored-builds import init install licenses link ' +
+    'list ln ls outdated pack patch patch-commit patch-remove prune publish rb rebuild remove rm ' +
+    'root rt run runtime self-update server setup stage store unlink up update why ' +
+    'access adduser bugs deprecate dist-tag docs edit info login logout owner ping pkg prefix ' +
+    'profile repo s se search set-script show star stars team token unpublish unstar v version ' +
+    'view whoami'
   ).split(' '),
 );
+/** pnpm commands that run a root package.json script, and the script they run. */
+const SCRIPT_RUNNERS = new Map([
+  ['t', 'test'],
+  ['test', 'test'],
+  ['it', 'test'],
+  ['install-test', 'test'],
+  ['start', 'start'],
+]);
 
 /**
- * The code in a Markdown text: every line of a fenced block, and every inline code span outside
- * them (a span may wrap onto the next line).
+ * The code in a Markdown text (`code`): every line of a fenced block, and every inline code span
+ * outside them. Spans are read as CommonMark reads them, within one block (a paragraph, list
+ * item, heading or table row; a span may wrap onto its next line): a run of backticks opens one,
+ * the next run of the same length closes it (`` `a` `` holds `a`), and a run that nothing closes
+ * is text. So a stray backtick changes at most its own block, as it renders; `stray` holds the
+ * line of each such run, as the spans around it may be paired wrongly.
  */
-export function codeOf(markdown) {
+export function markdownCode(markdown) {
   const code = [];
-  const prose = [];
+  const stray = [];
+  const blocks = [{ line: 1, lines: [] }];
   let fence = '';
-  for (const line of markdown.split(/\r?\n/)) {
+  markdown.split(/\r?\n/).forEach((line, i) => {
     const marker = line.match(/^\s*(`{3,}|~{3,})/)?.[1];
     if (fence) {
       if (
         marker?.[0] === fence[0] &&
         marker.length >= fence.length &&
         !line.trim().slice(marker.length)
-      )
+      ) {
         fence = '';
-      else code.push(line);
+        blocks.push({ line: i + 2, lines: [] });
+      } else code.push(line);
     } else if (marker) fence = marker;
-    else prose.push(line);
+    else {
+      // a blank line ends a block; a list item, heading, quote or table row starts one
+      if (!line.trim() || /^\s*(?:[-*+]\s|\d+[.)]\s|#{1,6}(?:\s|$)|>|\|)/.test(line))
+        blocks.push({ line: i + 1, lines: [] });
+      blocks.at(-1).lines.push(line);
+    }
+  });
+  for (const { line, lines } of blocks) {
+    const block = lines.join('\n');
+    const runs = [...block.matchAll(/`+/g)];
+    for (let i = 0; i < runs.length; i++) {
+      const close = runs.findIndex((run, j) => j > i && run[0].length === runs[i][0].length);
+      if (close === -1) {
+        stray.push(line + block.slice(0, runs[i].index).split('\n').length - 1);
+        continue;
+      }
+      code.push(
+        block.slice(runs[i].index + runs[i][0].length, runs[close].index).replace(/\n/g, ' '),
+      );
+      i = close;
+    }
   }
-  for (const m of prose.join('\n').matchAll(/`([^`]+)`/g)) code.push(m[1].replace(/\n/g, ' '));
-  return code;
+  return { code, stray };
 }
+
+/** The code in a Markdown text (markdownCode). */
+export const codeOf = (markdown) => markdownCode(markdown).code;
 
 /**
  * The tokens of `code` that name a repo path: a `/` or a file extension, and nothing a path
  * would not hold (quotes, calls, `=`, `:`, `{}`, `@scope/` packages). `<placeholder>`, `*` and
  * `**` stand for parts of it. Left out: absolute, home, `$VAR` and `./`-relative paths, flags,
- * and URLs without a scheme (`github.com/x`), none of which names a file of this repo.
+ * URLs without a scheme (`github.com/x`), none of which names a file of this repo, and NOT_A_PATH.
  */
 export function pathTokens(code) {
   return code
@@ -590,6 +645,7 @@ export function pathTokens(code) {
         !/[<>]/.test(token.replace(/<[\w.-]+>/g, '')) &&
         !/^(?:[/~$-]|\.\.?\/)/.test(token) &&
         !/^[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}\//i.test(token) &&
+        !NOT_A_PATH.test(token) &&
         (token.includes('/') || FILE_EXTENSION.test(token)),
     );
 }
@@ -643,16 +699,30 @@ function withDirectories(files) {
 
 /** The paths git ignores in `gitRoot`, of those given (none when it is no git work tree). */
 function ignoredPaths(gitRoot, paths) {
+  const checkIgnore = (list) =>
+    spawnSync('git', ['check-ignore', '--no-index', '--stdin', '-z'], {
+      cwd: gitRoot,
+      input: list.join('\0'),
+      encoding: 'utf8',
+    });
   if (!paths.length) return new Set();
-  const res = spawnSync('git', ['check-ignore', '--no-index', '--stdin', '-z'], {
-    cwd: gitRoot,
-    input: paths.join('\0'),
-    encoding: 'utf8',
-  });
-  return new Set(res.status === 0 ? lines0(res.stdout) : []);
+  const res = checkIgnore(paths);
+  // 0: some are ignored, 1: none is
+  if (res.status === 0 || res.status === 1) return new Set(lines0(res.stdout));
+  // one path git cannot check (outside the repo: `apps/../../x`) fails them all: one at a time
+  return new Set(
+    paths.filter((p) => {
+      const one = checkIgnore([p]);
+      return one.status === 0 && lines0(one.stdout).includes(p);
+    }),
+  );
 }
 
-/** The tokens a skill file lists in `<!-- agents:unchecked a b -->` comments. */
+/**
+ * The tokens a skill file lists in `<!-- agents:unchecked a b -->` comments: paths the check
+ * skips (a file the skill's own steps create, a token that is no path), and the names of `pnpm
+ * <name>` commands it does not know.
+ */
 const uncheckedTokens = (markdown) =>
   new Set(
     [...markdown.matchAll(/<!--\s*agents:unchecked\s+([\s\S]*?)-->/g)].flatMap((m) =>
@@ -694,22 +764,33 @@ export function skillReferences(root, { files, gitRoot = root }) {
   const problems = [];
   for (const file of skillFiles) {
     const text = readFileSync(join(root, file), 'utf8');
-    const code = codeOf(text);
+    const { code, stray } = markdownCode(text);
     const unchecked = uncheckedTokens(text);
     for (const token of new Set(pathTokens(code)))
       if (!unchecked.has(token) && !exists(token)) missing.push([file, token]);
     for (const [name, kind] of pnpmCommands(code)) {
+      if (unchecked.has(name)) continue;
+      // `pnpm test` runs the `test` script; `pnpm start` the `start` script, else `node server.js`
+      const runs = kind === 'pnpm' && SCRIPT_RUNNERS.get(name);
+      if (runs && !hasScript(runs) && !(runs === 'start' && existsSync(join(root, 'server.js'))))
+        problems.push(
+          `${file} runs \`pnpm ${name}\`, which runs the root package.json script "${runs}": there is none`,
+        );
       if (kind === 'run' && !hasScript(name))
         problems.push(
           `${file} runs \`pnpm run ${name}\`: the root package.json has no such script`,
         );
       if (kind === 'exec' && !isBin(name))
         problems.push(`${file} runs \`pnpm exec ${name}\`: node_modules/.bin has no \`${name}\``);
-      if (kind === 'pnpm' && !hasScript(name) && !PNPM_COMMANDS.has(name) && !isBin(name))
+      if (kind === 'pnpm' && !runs && !hasScript(name) && !PNPM_COMMANDS.has(name) && !isBin(name))
         problems.push(
-          `${file} runs \`pnpm ${name}\`, which is no root package.json script, pnpm command or installed binary: renamed or removed? Update the skill`,
+          `${file} runs \`pnpm ${name}\`, which is no root package.json script, pnpm command or installed binary: renamed or removed? Update the skill (a command this check does not know: \`<!-- agents:unchecked ${name} -->\`)`,
         );
     }
+    for (const line of stray)
+      problems.push(
+        `${file} has a backtick on line ${line} that nothing closes: a stray backtick in that paragraph pairs its code spans wrongly, so they go unchecked. Close it, or write a literal one as code (\`\` \` \`\`)`,
+      );
   }
   const ignored = ignoredPaths(
     gitRoot,
@@ -718,7 +799,7 @@ export function skillReferences(root, { files, gitRoot = root }) {
   for (const [file, token] of missing)
     if (!ignored.has(token))
       problems.push(
-        `${file} names \`${token}\`, which is not in the repo: renamed or deleted? Update the skill (a path that starts with a top-level directory is read from the root; a file the skill's own steps create: \`<!-- agents:unchecked ${token} -->\`)`,
+        `${file} names \`${token}\`, which is not in the repo: renamed or deleted? Update the skill (a path that starts with a top-level directory is read from the root; a file the skill's own steps create, or a token that is no repo path: \`<!-- agents:unchecked ${token} -->\`)`,
       );
   return [...new Set(problems)];
 }
@@ -729,18 +810,24 @@ function workflowName(text) {
 }
 
 /**
- * Every file on disk git would commit (tracked or new, not ignored), or undefined when `root` is
- * no git work tree (a source archive: nothing tells repo files from local ones there).
+ * Every file on disk git would commit (tracked or new, not ignored), or undefined when `root` has
+ * no `.git` (a source archive: nothing tells repo files from local ones there). Any git failure
+ * in a work tree (git missing, a `safe.directory` refusal, a broken worktree link) throws: the
+ * paths skills name would go unchecked.
  */
 function workingFiles(root) {
+  if (!existsSync(join(root, '.git'))) return undefined;
   try {
     return lines0(
       git(root, ['ls-files', '-co', '--exclude-standard', '-z'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
+        stdio: ['ignore', 'pipe', 'pipe'],
       }),
     ).filter((f) => existsSync(join(root, f))); // a tracked file moved away is gone
-  } catch {
-    return undefined;
+  } catch (err) {
+    const why = String(err.stderr ?? '').trim() || err.message;
+    throw new Error(`git cannot list the repo's files, to check the paths skills name: ${why}`, {
+      cause: err,
+    });
   }
 }
 
@@ -1016,9 +1103,16 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       for (const p of unresolved) console.warn(`! ${p}`);
       break;
     }
-    case 'check':
-      report(rest.includes('--staged') ? checkStaged() : check(), 'agents: config OK');
+    case 'check': {
+      let problems;
+      try {
+        problems = rest.includes('--staged') ? checkStaged() : check();
+      } catch (err) {
+        problems = [err.message]; // fails closed: what it could not check is no pass
+      }
+      report(problems, 'agents: config OK');
       break;
+    }
     case 'adopt': {
       const adopted = adopt();
       console.log(

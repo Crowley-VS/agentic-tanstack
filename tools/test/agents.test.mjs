@@ -20,6 +20,7 @@ import {
   codeOf,
   healIndex,
   installHooks,
+  markdownCode,
   parseFrontmatter,
   pathPattern,
   pathTokens,
@@ -495,6 +496,30 @@ describe('sync --stage (pre-commit)', () => {
     expect(existsSync(join(root, '.git/hooks/pre-commit'))).toBe(true);
   }, 30_000);
 
+  it('the pre-commit refuses a commit of only package.json that drops a script a skill runs', () => {
+    const root = lefthookRepo({ install: true });
+    writeFile(
+      root,
+      '.agents/skills/demo/SKILL.md',
+      `${skill('demo')}\nSeed it: \`pnpm db:seed\`.\n`,
+    );
+    writeFile(root, 'package.json', { scripts: { 'db:seed': 'true' } });
+    sync(root);
+    git(root, 'add', '-A');
+    commit(root);
+    writeFile(root, 'package.json', { scripts: { 'db:sed': 'true' } }); // renamed
+    git(root, 'add', 'package.json');
+    const res = spawnSync('git', ['commit', '-q', '-m', 'test'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: hookEnv(),
+    });
+    expect(res.status).not.toBe(0);
+    expect(`${res.stdout}${res.stderr}`).toMatch(
+      /staged: \.agents\/skills\/demo\/SKILL\.md runs `pnpm db:seed`, which is no root package\.json script/,
+    );
+  }, 30_000);
+
   it('the lefthook pre-commit commits no copy of an untracked or unstaged skill source', () => {
     const root = lefthookRepo();
     writeFile(root, '.agents/skills/draft/SKILL.md', skill('draft')); // untracked
@@ -949,6 +974,34 @@ describe('check: the paths and pnpm commands skills name', () => {
     ]);
   });
 
+  it('pairs backtick runs of one length within one block, as CommonMark does', () => {
+    const md = [
+      'A stray ` here, then `apps/a.ts`', // the stray one pairs with the next run
+      '',
+      'The next paragraph is not affected: `apps/b.ts`, `` `c` ``, ``d`e`` and `pnpm foo`.',
+      '- a list item ` with a stray one',
+      '- the next item `apps/e.ts`',
+      '```',
+      'x ` y',
+      '```',
+      'After a fence: `apps/f.ts`.',
+    ].join('\n');
+    expect(markdownCode(md)).toEqual({
+      code: [
+        'x ` y',
+        ' here, then ',
+        'apps/b.ts',
+        ' `c` ',
+        'd`e',
+        'pnpm foo',
+        'apps/e.ts',
+        'apps/f.ts',
+      ],
+      stray: [1, 4], // the line of each run that nothing closes
+    });
+    expect(codeOf(md)).toEqual(markdownCode(md).code);
+  });
+
   it('takes the tokens that name repo paths, never commands, code, routes, flags or URLs', () => {
     const code = [
       'Edit apps/web/src/a.ts and notes.test.ts (src/gql, *.browser.test.tsx); run node tools/x.mjs;',
@@ -956,6 +1009,9 @@ describe('check: the paths and pnpm commands skills name', () => {
       "../up.ts ~/.claude/x.json $HOME/x.ts --config=a/b.ts https://x.co/a.ts github.com/o/r 'x/y'",
       'packages/db/migrations/<timestamp>_<what>/migration.sql 2>/dev/null <a/b> <x/y.ts',
       'apps/*/Dockerfile .agents/ignore/plans/YYYY-MM-DD-<feature>.md src/routes/$id.tsx',
+      // shaped like paths, naming something else: git refs and ranges, MIME types, ratios, products
+      'git rebase origin/main; git diff upstream/main...HEAD refs/heads/x main...feature/x',
+      'application/json text/plain Cache: 3/3 hit, 10/60s; Node.js Next.js D3.js AGENTS.md',
     ];
     expect(pathTokens(code)).toEqual([
       'apps/web/src/a.ts',
@@ -965,6 +1021,7 @@ describe('check: the paths and pnpm commands skills name', () => {
       'apps/*/Dockerfile',
       '.agents/ignore/plans/YYYY-MM-DD-<feature>.md',
       'src/routes/$id.tsx',
+      'AGENTS.md',
     ]);
   });
 
@@ -1051,6 +1108,71 @@ describe('check: the paths and pnpm commands skills name', () => {
     expect(check(root)).toEqual([]);
     writeFile(root, '.gitignore', 'node_modules/\n');
     expect(referenceProblems(root)).toHaveLength(3);
+  });
+
+  it('a path that leaves the repo is reported alone, without turning off the ignored-path skip', () => {
+    // git check-ignore fails the whole batch (exit 128) on a path outside the repo
+    const root = skillRepo('Plans: `.agents/ignore/plans/x.md`; see `apps/../../outside.ts`.', {
+      '.gitignore': 'node_modules/\n.agents/ignore/\n',
+    });
+    expect(referenceProblems(root)).toEqual([
+      expect.stringMatching(/names `apps\/\.\.\/\.\.\/outside\.ts`, which is not in the repo/),
+    ]);
+  });
+
+  it('fails closed when git cannot list the repo files, and skips paths only without .git', () => {
+    const root = skillRepo('Read `docs/missing.md`.');
+    // a broken worktree link: git fails, and the check must not pass the paths unchecked
+    rmSync(join(root, '.git'), { recursive: true });
+    writeFile(root, '.git', `gitdir: ${join(root, 'gone')}\n`);
+    expect(() => check(root)).toThrow(/git cannot list the repo's files.*not a git repository/s);
+    // a source archive (no .git): nothing tells repo files from local ones, so paths go unchecked
+    rmSync(join(root, '.git'));
+    expect(referenceProblems(root)).toEqual([]);
+  });
+
+  it('reports a stray backtick, which may pair the code spans around it wrongly', () => {
+    // body lines 8-9: the stray one (line 8) pairs with the next, which leaves the last one open
+    const root = skillRepo(
+      'Press the ` key.\nEdit `apps/web/src/notes.test.ts` then `pnpm db:seed`.',
+    );
+    expect(referenceProblems(root)).toEqual([
+      expect.stringMatching(
+        /^\.agents\/skills\/verify\/SKILL\.md has a backtick on line 9 that nothing closes/,
+      ),
+    ]);
+    writeFile(
+      root,
+      '.agents/skills/verify/SKILL.md',
+      `${skill('verify')}\nPress the \`\` \` \`\` key. Edit \`apps/web/src/notes.test.ts\`.\n`,
+    );
+    sync(root);
+    expect(check(root)).toEqual([]);
+  });
+
+  it('checks `pnpm test` and `pnpm start` against the scripts they run, and knows npm commands', () => {
+    const root = skillRepo(
+      '`pnpm test`, `pnpm t`, `pnpm it`, `pnpm start`; `pnpm view nx version`, `pnpm info nx`,\n' +
+        '`pnpm cache delete nx`, `pnpm version`, `pnpm whoami`, `pnpm login`.',
+    );
+    expect(referenceProblems(root)).toEqual([
+      expect.stringMatching(/runs `pnpm test`, which runs the root package.json script "test"/),
+      expect.stringMatching(/runs `pnpm t`, which runs the root package.json script "test"/),
+      expect.stringMatching(/runs `pnpm it`, which runs the root package.json script "test"/),
+      expect.stringMatching(/runs `pnpm start`, which runs the root package.json script "start"/),
+    ]);
+    writeFile(root, 'package.json', { scripts: { test: 'vitest' } });
+    writeFile(root, 'server.js', ''); // `pnpm start` without a start script runs it
+    expect(referenceProblems(root)).toEqual([]);
+  });
+
+  it('skips a `pnpm <name>` the skill lists in an agents:unchecked comment', () => {
+    const root = skillRepo(
+      '<!-- agents:unchecked frobnicate -->\n`pnpm frobnicate` and `pnpm nope`.',
+    );
+    expect(referenceProblems(root)).toEqual([
+      expect.stringMatching(/runs `pnpm nope`, which is no root package.json script/),
+    ]);
   });
 
   it('skips the paths a skill lists in an agents:unchecked comment, and only those', () => {
