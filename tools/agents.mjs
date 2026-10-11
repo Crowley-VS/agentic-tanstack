@@ -43,7 +43,12 @@ import { fileURLToPath } from 'node:url';
 import { nodeBin } from './lib/bin.mjs';
 import { isScript } from './lib/file-types.mjs';
 import { findArtifact, loadManifest, toRepoPath } from './lib/generated.mjs';
-import { vendoredSkills, vendorProblems } from './vendor-skills.mjs';
+import {
+  MANIFEST as VENDOR_MANIFEST,
+  rewriteTexts,
+  vendoredSkills,
+  vendorProblems,
+} from './vendor-skills.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -148,22 +153,52 @@ function listFiles(dir, base = dir) {
   });
 }
 
-/** Parse the YAML frontmatter keys/values we care about (single-line and folded `>`/`|` values). */
+const unquoted = (value) => value.replace(/^["']|["']$/g, '');
+
+/**
+ * Parse the YAML frontmatter keys/values we care about: one-line values, block scalars (`>`, `|`:
+ * folded to one line, blank lines included) and block sequences (`key:`, then `- item` lines: an
+ * array of the items).
+ */
 export function parseFrontmatter(text) {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!m) return null;
   const out = {};
   const lines = m[1].split(/\r?\n/);
+  // the lines after line `i` that hold its value: indented, blank or `item`, up to the next key
+  const valueLines = (i, item) => {
+    const own = [];
+    for (
+      let j = i + 1;
+      j < lines.length && (/^(?:\s|$)/.test(lines[j]) || item.test(lines[j]));
+      j++
+    )
+      own.push(lines[j]);
+    while (own.length && !own.at(-1).trim()) own.pop();
+    return own;
+  };
   for (let i = 0; i < lines.length; i++) {
     const kv = lines[i].match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
     if (!kv) continue;
-    let [, key, value] = kv;
-    if (value === '>' || value === '|' || value === '>-' || value === '|-') {
-      const parts = [];
-      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) parts.push(lines[++i].trim());
-      value = parts.join(' ');
-    }
-    out[key] = value.replace(/^["']|["']$/g, '');
+    const [, key, value] = kv;
+    if (/^[>|][-+1-9]*$/.test(value)) {
+      const own = valueLines(i, /^\s/);
+      i += own.length;
+      out[key] = unquoted(
+        own
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .join(' '),
+      );
+    } else if (value === '' && /^\s*-(?:\s|$)/.test(lines[i + 1] ?? '')) {
+      // a sequence may sit at the key's own indentation
+      const own = valueLines(i, /^-(?:\s|$)/);
+      i += own.length;
+      out[key] = own
+        .map((l) => l.match(/^\s*-\s*(.*)$/)?.[1]?.trim())
+        .filter(Boolean)
+        .map(unquoted);
+    } else out[key] = unquoted(value);
   }
   return out;
 }
@@ -538,11 +573,15 @@ export function unsafeAllowRule(rule) {
 }
 
 /**
- * The rules of a one-line `allowed-tools` frontmatter value: space- or comma-separated, a rule's
- * parentheses may hold spaces (`Read Bash(git add *), Grep` → Read, Bash(git add *), Grep).
+ * The rules of an `allowed-tools` frontmatter value (parseFrontmatter): space- or comma-separated
+ * on one line, a flow sequence (`[a, b]`) or the items of a block sequence (an array); a rule's
+ * parentheses may hold spaces (`Read Bash(git add *), "Grep"` → Read, Bash(git add *), Grep).
+ * @param {string | unknown[]} [value]
+ * @returns {string[]}
  */
 export function allowedTools(value = '') {
-  return value.match(/[^\s,()]+(?:\([^)]*\))?/g) ?? [];
+  if (Array.isArray(value)) return value.flatMap((item) => allowedTools(String(item)));
+  return value.match(/[^\s,()'"[\]]+(?:\([^)]*\))?/g) ?? [];
 }
 
 // ---------- check: what skills name ----------
@@ -747,9 +786,10 @@ const uncheckedTokens = (markdown) =>
  * installed). Only code is read: fenced blocks and inline code spans. Three kinds of path are left
  * out: those git ignores (plans, personal settings, build output: whoever follows the skill makes
  * them), those a skill lists in an `<!-- agents:unchecked <path> … -->` comment (a file its own
- * steps create, such as a tool's temp file), and all paths of a vendored skill (.agents/vendor.json):
- * upstream's examples name upstream's files, and the vendor check pins that text instead. The pnpm
- * commands of a vendored skill are checked like any other.
+ * steps create, such as a tool's temp file), and the paths upstream wrote in a vendored skill
+ * (.agents/vendor.json): its examples name upstream's files, and the vendor check pins that text.
+ * What this repo writes into a vendored skill, the `with` text of its rewrites, is read like skill
+ * markdown instead, and the pnpm commands of a vendored copy are checked like any other.
  */
 export function skillReferences(root, { files, gitRoot = root }) {
   const skillFiles = listFiles(join(root, '.agents', 'skills'))
@@ -773,15 +813,19 @@ export function skillReferences(root, { files, gitRoot = root }) {
   const hasScript = (name) => Object.hasOwn(scripts, name);
 
   const vendored = new Set(vendoredSkills(root));
-  const missing = []; // [file, token]
+  const missing = []; // [file, token, how to fix it]
   const problems = [];
+  /** Note each path token of markdown `text` (from `where`) that names nothing in the repo. */
+  const checkPaths = (where, text, code, fix) => {
+    const unchecked = uncheckedTokens(text);
+    for (const token of new Set(pathTokens(code)))
+      if (!unchecked.has(token) && !exists(token)) missing.push([where, token, fix]);
+  };
   for (const file of skillFiles) {
     const text = readFileSync(join(root, file), 'utf8');
     const { code, stray } = markdownCode(text);
     const unchecked = uncheckedTokens(text);
-    const paths = vendored.has(file.split('/')[2]) ? [] : pathTokens(code);
-    for (const token of new Set(paths))
-      if (!unchecked.has(token) && !exists(token)) missing.push([file, token]);
+    if (!vendored.has(file.split('/')[2])) checkPaths(file, text, code, 'Update the skill');
     for (const [name, kind] of pnpmCommands(code)) {
       if (unchecked.has(name)) continue;
       // `pnpm test` runs the `test` script; `pnpm start` the `start` script, else `node server.js`
@@ -806,14 +850,21 @@ export function skillReferences(root, { files, gitRoot = root }) {
         `${file} has a backtick on line ${line} that nothing closes: a stray backtick in that paragraph pairs its code spans wrongly, so they go unchecked. Close it, or write a literal one as code (\`\` \` \`\`)`,
       );
   }
+  for (const { skill, rewrite, text } of rewriteTexts(root))
+    checkPaths(
+      `${VENDOR_MANIFEST} (skill ${skill}, rewrite ${rewrite})`,
+      text,
+      codeOf(text),
+      'Update the rewrite, then run `node tools/vendor-skills.mjs update`',
+    );
   const ignored = ignoredPaths(
     gitRoot,
     missing.map(([, token]) => token),
   );
-  for (const [file, token] of missing)
+  for (const [file, token, fix] of missing)
     if (!ignored.has(token))
       problems.push(
-        `${file} names \`${token}\`, which is not in the repo: renamed or deleted? Update the skill (a path that starts with a top-level directory is read from the root; a file the skill's own steps create, or a token that is no repo path: \`<!-- agents:unchecked ${token} -->\`)`,
+        `${file} names \`${token}\`, which is not in the repo: renamed or deleted? ${fix} (a path that starts with a top-level directory is read from the root; a file the skill's own steps create, or a token that is no repo path: \`<!-- agents:unchecked ${token} -->\`)`,
       );
   return [...new Set(problems)];
 }
