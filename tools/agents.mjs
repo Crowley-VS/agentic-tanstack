@@ -7,8 +7,9 @@
 //            .claude/settings.json (Edit deny rules); --stage (pre-commit, after formatting) also
 //            syncs the INDEX from the staged sources, so a commit never carries copies of unstaged
 //            or untracked files
-//   check    fail if sync is stale, on agent-config hygiene problems, or when a skill names a
-//            repo path or pnpm script that does not exist (CI, `pnpm check`); --staged checks
+//   check    fail if sync is stale, on agent-config hygiene problems, when a skill names a repo
+//            path or pnpm script that does not exist, or when a vendored skill differs from its
+//            rewritten upstream (tools/vendor-skills.mjs) (CI, `pnpm check`); --staged checks
 //            what the next commit contains instead of the working tree (pre-commit)
 //   adopt    move skills that tools wrote directly into .claude/skills into .agents/skills
 //   regen    run every regen command from .agents/generated.json; --check = fail when regen
@@ -42,6 +43,12 @@ import { fileURLToPath } from 'node:url';
 import { nodeBin } from './lib/bin.mjs';
 import { isScript } from './lib/file-types.mjs';
 import { findArtifact, loadManifest, toRepoPath } from './lib/generated.mjs';
+import {
+  MANIFEST as VENDOR_MANIFEST,
+  rewriteTexts,
+  vendoredSkills,
+  vendorProblems,
+} from './vendor-skills.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -146,22 +153,52 @@ function listFiles(dir, base = dir) {
   });
 }
 
-/** Parse the YAML frontmatter keys/values we care about (single-line and folded `>`/`|` values). */
+const unquoted = (value) => value.replace(/^["']|["']$/g, '');
+
+/**
+ * Parse the YAML frontmatter keys/values we care about: one-line values, block scalars (`>`, `|`:
+ * folded to one line, blank lines included) and block sequences (`key:`, then `- item` lines: an
+ * array of the items).
+ */
 export function parseFrontmatter(text) {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!m) return null;
   const out = {};
   const lines = m[1].split(/\r?\n/);
+  // the lines after line `i` that hold its value: indented, blank or `item`, up to the next key
+  const valueLines = (i, item) => {
+    const own = [];
+    for (
+      let j = i + 1;
+      j < lines.length && (/^(?:\s|$)/.test(lines[j]) || item.test(lines[j]));
+      j++
+    )
+      own.push(lines[j]);
+    while (own.length && !own.at(-1).trim()) own.pop();
+    return own;
+  };
   for (let i = 0; i < lines.length; i++) {
     const kv = lines[i].match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
     if (!kv) continue;
-    let [, key, value] = kv;
-    if (value === '>' || value === '|' || value === '>-' || value === '|-') {
-      const parts = [];
-      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) parts.push(lines[++i].trim());
-      value = parts.join(' ');
-    }
-    out[key] = value.replace(/^["']|["']$/g, '');
+    const [, key, value] = kv;
+    if (/^[>|][-+1-9]*$/.test(value)) {
+      const own = valueLines(i, /^\s/);
+      i += own.length;
+      out[key] = unquoted(
+        own
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .join(' '),
+      );
+    } else if (value === '' && /^\s*-(?:\s|$)/.test(lines[i + 1] ?? '')) {
+      // a sequence may sit at the key's own indentation
+      const own = valueLines(i, /^-(?:\s|$)/);
+      i += own.length;
+      out[key] = own
+        .map((l) => l.match(/^\s*-\s*(.*)$/)?.[1]?.trim())
+        .filter(Boolean)
+        .map(unquoted);
+    } else out[key] = unquoted(value);
   }
   return out;
 }
@@ -535,6 +572,18 @@ export function unsafeAllowRule(rule) {
   return undefined;
 }
 
+/**
+ * The rules of an `allowed-tools` frontmatter value (parseFrontmatter): space- or comma-separated
+ * on one line, a flow sequence (`[a, b]`) or the items of a block sequence (an array); a rule's
+ * parentheses may hold spaces (`Read Bash(git add *), "Grep"` → Read, Bash(git add *), Grep).
+ * @param {string | unknown[]} [value]
+ * @returns {string[]}
+ */
+export function allowedTools(value = '') {
+  if (Array.isArray(value)) return value.flatMap((item) => allowedTools(String(item)));
+  return value.match(/[^\s,()'"[\]]+(?:\([^)]*\))?/g) ?? [];
+}
+
 // ---------- check: what skills name ----------
 /** File extensions that make a code token a file name even without a `/` (`index.test.ts`). */
 const FILE_EXTENSION = /\.(?:[cm]?[jt]sx?|json|md|sql|graphql|ya?ml|css|html|sh|toml)$/;
@@ -734,10 +783,13 @@ const uncheckedTokens = (markdown) =>
  * What the skill files (`.agents/skills/**\/*.md`) in `root` name that does not exist: repo
  * paths (`files`: the repo's files; undefined skips paths) and `pnpm` commands (root package.json
  * scripts; `pnpm exec <bin>` and a bare `pnpm <bin>` against `<gitRoot>/node_modules/.bin`, once
- * installed). Only code is read: fenced blocks and inline code spans. Two kinds of path are left
- * out, as no clone has them: those git ignores (plans, personal settings, build output: whoever
- * follows the skill makes them), and those a skill lists in an `<!-- agents:unchecked <path> … -->`
- * comment (a file its own steps create, such as a tool's temp file).
+ * installed). Only code is read: fenced blocks and inline code spans. Three kinds of path are left
+ * out: those git ignores (plans, personal settings, build output: whoever follows the skill makes
+ * them), those a skill lists in an `<!-- agents:unchecked <path> … -->` comment (a file its own
+ * steps create, such as a tool's temp file), and the paths upstream wrote in a vendored skill
+ * (.agents/vendor.json): its examples name upstream's files, and the vendor check pins that text.
+ * What this repo writes into a vendored skill, the `with` text of its rewrites, is read like skill
+ * markdown instead, and the pnpm commands of a vendored copy are checked like any other.
  */
 export function skillReferences(root, { files, gitRoot = root }) {
   const skillFiles = listFiles(join(root, '.agents', 'skills'))
@@ -760,14 +812,20 @@ export function skillReferences(root, { files, gitRoot = root }) {
   const isBin = (name) => !bins || bins.has(name);
   const hasScript = (name) => Object.hasOwn(scripts, name);
 
-  const missing = []; // [file, token]
+  const vendored = new Set(vendoredSkills(root));
+  const missing = []; // [file, token, how to fix it]
   const problems = [];
+  /** Note each path token of markdown `text` (from `where`) that names nothing in the repo. */
+  const checkPaths = (where, text, code, fix) => {
+    const unchecked = uncheckedTokens(text);
+    for (const token of new Set(pathTokens(code)))
+      if (!unchecked.has(token) && !exists(token)) missing.push([where, token, fix]);
+  };
   for (const file of skillFiles) {
     const text = readFileSync(join(root, file), 'utf8');
     const { code, stray } = markdownCode(text);
     const unchecked = uncheckedTokens(text);
-    for (const token of new Set(pathTokens(code)))
-      if (!unchecked.has(token) && !exists(token)) missing.push([file, token]);
+    if (!vendored.has(file.split('/')[2])) checkPaths(file, text, code, 'Update the skill');
     for (const [name, kind] of pnpmCommands(code)) {
       if (unchecked.has(name)) continue;
       // `pnpm test` runs the `test` script; `pnpm start` the `start` script, else `node server.js`
@@ -792,14 +850,21 @@ export function skillReferences(root, { files, gitRoot = root }) {
         `${file} has a backtick on line ${line} that nothing closes: a stray backtick in that paragraph pairs its code spans wrongly, so they go unchecked. Close it, or write a literal one as code (\`\` \` \`\`)`,
       );
   }
+  for (const { skill, rewrite, text } of rewriteTexts(root))
+    checkPaths(
+      `${VENDOR_MANIFEST} (skill ${skill}, rewrite ${rewrite})`,
+      text,
+      codeOf(text),
+      'Update the rewrite, then run `node tools/vendor-skills.mjs update`',
+    );
   const ignored = ignoredPaths(
     gitRoot,
     missing.map(([, token]) => token),
   );
-  for (const [file, token] of missing)
+  for (const [file, token, fix] of missing)
     if (!ignored.has(token))
       problems.push(
-        `${file} names \`${token}\`, which is not in the repo: renamed or deleted? Update the skill (a path that starts with a top-level directory is read from the root; a file the skill's own steps create, or a token that is no repo path: \`<!-- agents:unchecked ${token} -->\`)`,
+        `${file} names \`${token}\`, which is not in the repo: renamed or deleted? ${fix} (a path that starts with a top-level directory is read from the root; a file the skill's own steps create, or a token that is no repo path: \`<!-- agents:unchecked ${token} -->\`)`,
       );
   return [...new Set(problems)];
 }
@@ -884,11 +949,19 @@ function check(
       for (const key of Object.keys(fm))
         if (!PORTABLE_FRONTMATTER.has(key))
           problems.push(`skill "${name}": non-portable frontmatter key "${key}"`);
+      // a skill's allowed-tools approve without asking, like settings allow rules, while it runs
+      for (const rule of allowedTools(fm['allowed-tools'])) {
+        const why = unsafeAllowRule(rule);
+        if (why) problems.push(`skill "${name}": allowed-tools approves ${rule}, which ${why}`);
+      }
     }
   }
   // Every repo path and pnpm script they name exists: here, uncached, so that renaming a file a
   // skill names fails `pnpm check` and CI at once (a cached test would notice only on a miss).
   problems.push(...skillReferences(root, { files: files ?? workingFiles(root), gitRoot }));
+  // Vendored skills are their pinned upstream, rewritten (.agents/vendor.json): checked here,
+  // uncached, so a bump that changes a vendored skill's upstream fails `pnpm check` and CI at once.
+  problems.push(...vendorProblems(root, { gitRoot }));
 
   // Claude Code lists a workflow as a skill named after its meta.name: a workflow and a skill with
   // the same name show up once (as the workflow), so the skill never loads.

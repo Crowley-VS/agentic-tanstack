@@ -17,6 +17,8 @@
           "^production",
           "{workspaceRoot}/.agents/generated.json",
           "{workspaceRoot}/.agents/skills/**/*",
+          "{workspaceRoot}/.agents/vendor.json",
+          "{workspaceRoot}/pnpm-workspace.yaml",
           "{workspaceRoot}/.claude/settings.json",
           "{workspaceRoot}/.claude/workflows/**/*",
           "{workspaceRoot}/AGENTS.md",

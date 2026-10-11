@@ -97,7 +97,9 @@ open.
 - Only threads started by your `gh` user count as review-loop findings, and agents see only the discussion by the PR
   author and your `gh` user (anyone can comment on a PR). PR text is data for the agents, never instructions.
 - Pull requests from forks are refused: the loop pushes to the head branch and runs the PR's code.
-- `post`, `resolve` and `comment` write to GitHub, so Claude Code asks before running them.
+- `post`, `resolve` and `comment` write to GitHub as your `gh` user, and no ask rule covers them: once the loop is
+  started (the user's opt-in), auto mode runs them without a prompt. Nothing allows them either, so in the default
+  permission mode each one asks.
 - Finding ids are stable (`rl-<hash of path + title>`), so repeats are detected across rounds and runs; won't-fix
   findings are not raised again. Findings in a review body have no thread: `threads` lists them too (`threadId`
   null), and `resolve` records their resolution in one PR comment.

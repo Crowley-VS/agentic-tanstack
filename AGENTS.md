@@ -65,6 +65,8 @@ Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI 
 - **API shape** → `packages/graphql/schema.graphql`, printed from `apps/api/src/graphql` by `pnpm nx run api:print-schema` (run it after every schema edit).
 - **Pages and params** → `apps/web/src/routeTree.gen.ts`, generated from `apps/web/src/routes` by `pnpm nx run web:generate-routes` (after adding or renaming a route file).
 - **Operation types** → `apps/web/src/gql`, generated from the `graphql()` calls in `apps/web/src` by `pnpm nx run web:codegen` (`pnpm dev` runs it on save).
+- **TanStack library docs** (Router, Start) → the skills its installed packages ship, for these versions: `pnpm exec intent list`, then `pnpm exec intent load <package>#<skill>` (allowed in `package.json#intent.skills`).
+- Never run `intent install` or `intent hooks`: they write download-latest runners into agent config.
 
 <!-- stack:end -->
 
@@ -95,7 +97,7 @@ Without Docker, `pnpm nx affected -t test --exclude=tag:needs-db` skips the `nee
 
 - **Generated files are read-only.** `.agents/generated.json` lists them and the command that regenerates each: edit the source, then run it (or `pnpm regen`).
 - **Module boundaries** (`eslint` target): a project's tags decide what it may import (the stack's rules are below).
-- **Skills**: edit `.agents/skills/<name>/SKILL.md`, then `pnpm agents:sync` (`.claude/skills` holds generated copies).
+- **Skills**: edit `.agents/skills/<name>/SKILL.md`, then `pnpm agents:sync` (`.claude/skills` holds generated copies). A vendored skill (`.agents/vendor.json`) is upstream's text: change its rewrites there, then `node tools/vendor-skills.mjs update`.
 - **Secrets**: never read or print `.env*` files; add a new variable to `.env.example` and the app's env schema.
 
 <!-- kit:end -->
@@ -144,5 +146,6 @@ Task skills (`.agents/skills`), each with its steps, commands and checks:
 - Run the app and see a change work (dev, BFF, production build, images): `run-web`.
 - Before saying "done" (the checks each change needs, the evidence): `verify`.
 - Upgrading Nx and its plugins: `nx-upgrade`.
+- Vendored (upstream skills, commands rewritten for this repo): `playwright-cli` (drive a browser from the shell: snapshot, click, console), `drizzle`, `drizzle-generate`, `drizzle-hints`.
 
 <!-- stack:end -->
