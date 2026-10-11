@@ -43,6 +43,7 @@ server answers, saying what they wait for after 5 s. A lock whose process has ex
 over at once; none is waited on for more than 10 minutes. A `compose up` that fails on a network
 or registry error (a timeout, Docker Hub's `toomanyrequests`, a reset connection) runs again, up
 to 4 times in all, 2, 4 and 8 s apart; any other failure is reported at once. When the start
-fails anyway, the processes that waited for it fail with its error, without tries of their own.
-CI starts the server in a step of its own before `pnpm check`, when a project tagged `needs-db`
-is affected.
+fails anyway, the processes that waited on its lock fail with its error, without tries of their
+own; a later start tries again. What a failed or killed start leaves in `db-up-<uid>`, and what
+removes it: `docs/local-resources.md`. CI starts the server in a step of its own before
+`pnpm check`, when a project tagged `needs-db` is affected.

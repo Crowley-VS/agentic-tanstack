@@ -9,18 +9,23 @@
 // git common dir (shared by all its worktrees) and the checkout's directory, and
 // docker-compose.stack.yml its containers and images. A compose project is an orphan when every
 // labeled resource of it names a checkout directory that no longer exists and no container of it
-// runs from a directory that still does. An image goes on its own labels (findOrphanImages).
+// runs from a directory that still does. A project that belongs to a process rather than to a
+// checkout (a test's, in a temp directory that outlives a killed run) also carries
+// `dev-checkout.owner`, `<pid>@<host name>`: it is an orphan once that process has exited, whether
+// or not its directories still exist. An image goes on its own labels (findOrphanImages).
 // Docker's own label filter picks the candidates, and findOrphans checks the label again: other
 // repositories' resources and live checkouts' are never touched, and unlabeled ones only as part
 // of an orphaned project.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { hostname } from 'node:os';
 
 export const LABELS = {
   commonDir: 'dev-checkout.git-common-dir',
   root: 'dev-checkout.root',
   project: 'com.docker.compose.project',
   workingDir: 'com.docker.compose.project.working_dir',
+  owner: 'dev-checkout.owner',
 };
 const KINDS = {
   containers: ['container', 'ls', '-a', '--no-trunc'],
@@ -45,22 +50,58 @@ export function parseListing(stdout) {
     });
 }
 
+/** True while process `pid` runs (EPERM: it runs as another user). */
+export function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+/**
+ * True unless `owner` (an owner label's value, `<pid>@<host name>`) names a process of this
+ * machine that has exited. Another host's process (a container's: its own pids, its own host
+ * name) and a value that is no owner count as running: not ours to judge.
+ */
+export function ownerRunning(owner, host = hostname()) {
+  const [, pid, on] = /^(\d+)@(.+)$/.exec(owner) ?? [];
+  return !pid || on !== host || alive(Number(pid));
+}
+
+/**
+ * A labeled resource (or image) whose checkout is gone: the process its owner label names has
+ * exited, or, without one, the directory its root label names no longer exists (no root: an
+ * unknown checkout, which counts as live).
+ */
+const checkoutGone = (r, { exists, running }) =>
+  r.owner ? !running(r.owner) : Boolean(r.root) && !exists(r.root);
+
 /**
  * Pure: the compose projects of this repository (`commonDir`) whose checkouts are gone, and their
- * containers, volumes and networks. `exists(dir)` tells whether a directory exists.
+ * containers, volumes and networks. `exists(dir)` tells whether a directory exists, and
+ * `running(owner)` whether an owner label's process runs (ownerRunning).
  */
-export function findOrphans({ containers, volumes, networks }, { commonDir, exists }) {
+export function findOrphans(
+  { containers, volumes, networks },
+  { commonDir, exists, running = ownerRunning },
+) {
   const none = { projects: [], containers: [], volumes: [], networks: [] };
   if (!commonDir) return none;
   const ours = [...containers, ...volumes].filter((r) => r.commonDir === commonDir && r.project);
   const projects = new Map(); // project -> its checkout directory, or null once one is live
   for (const r of ours) {
-    const live = !r.root || exists(r.root); // an unknown checkout counts as live
+    const live = !checkoutGone(r, { exists, running });
     projects.set(r.project, live || projects.get(r.project) === null ? null : r.root);
   }
-  // a container started from a directory that still exists (with or without our labels) is live
+  // a container started from a directory that still exists (with or without our labels) is live,
+  // unless it names its owner: then that process alone decides
   for (const c of containers)
-    if (projects.has(c.project) && (!c.workingDir || exists(c.workingDir)))
+    if (
+      projects.has(c.project) &&
+      (c.owner ? running(c.owner) : !c.workingDir || exists(c.workingDir))
+    )
       projects.set(c.project, null);
   const gone = new Map([...projects].filter(([, root]) => root !== null));
   if (gone.size === 0) return none;
@@ -78,13 +119,15 @@ export function findOrphans({ containers, volumes, networks }, { commonDir, exis
  * labels: a stack's images may outlive its containers (built alone, or after a `down` that kept
  * them). Not those of a `live` compose project, one whose containers or volumes findOrphans keeps.
  */
-export function findOrphanImages(images, { commonDir, exists, live = new Set() }) {
+export function findOrphanImages(
+  images,
+  { commonDir, exists, running = ownerRunning, live = new Set() },
+) {
   if (!commonDir) return [];
   return images.filter(
     (image) =>
       image.commonDir === commonDir &&
-      image.root &&
-      !exists(image.root) &&
+      checkoutGone(image, { exists, running }) &&
       !live.has(image.project),
   );
 }
@@ -106,6 +149,13 @@ function docker(args, env) {
     );
   return res.stdout;
 }
+
+/** True while Docker has the `kind` (container, network, volume, image) named `id`. */
+const present = (kind, id, env) =>
+  spawnSync('docker', [kind, 'inspect', id], { env, stdio: 'ignore' }).status === 0;
+
+/** Wait `ms`, blocking (pruneOrphans is synchronous). */
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /** The resources of one kind that carry `label` (`key` or `key=value`), with the labels we read. */
 function list(kind, label, env) {
@@ -145,10 +195,13 @@ function listImages(label, env) {
 /**
  * Remove this repository's orphaned containers, networks, volumes and images (in that order: a
  * network, volume or image in use cannot go). Returns what findOrphans and findOrphanImages
- * found, plus `failed`: the removals Docker refused. Throws (`err.docker`) when Docker cannot
- * list its resources.
+ * found, plus `failed`: the removals Docker refused of what it still has a moment later. Throws
+ * (`err.docker`) when Docker cannot list its resources.
  */
-export function pruneOrphans({ commonDir }, { env = process.env, exists = existsSync } = {}) {
+export function pruneOrphans(
+  { commonDir },
+  { env = process.env, exists = existsSync, running = ownerRunning } = {},
+) {
   const failed = [];
   const none = { projects: [], containers: [], volumes: [], networks: [] };
   let candidates = new Set();
@@ -158,8 +211,10 @@ export function pruneOrphans({ commonDir }, { env = process.env, exists = exists
     // calls): only their projects can go, whatever happens below
     const mine = `${LABELS.commonDir}=${commonDir}`;
     const labeled = [...list('containers', mine, env), ...list('volumes', mine, env)];
-    candidates = new Set(labeled.filter((r) => r.root && !exists(r.root)).map((r) => r.project));
-    gone = findOrphanImages(listImages(mine, env), { commonDir, exists });
+    candidates = new Set(
+      labeled.filter((r) => checkoutGone(r, { exists, running })).map((r) => r.project),
+    );
+    gone = findOrphanImages(listImages(mine, env), { commonDir, exists, running });
     for (const image of gone) if (image.project) candidates.add(image.project);
   }
   if (candidates.size === 0 && gone.length === 0) return { ...none, images: [], failed };
@@ -167,14 +222,14 @@ export function pruneOrphans({ commonDir }, { env = process.env, exists = exists
   const of = (kind) => list(kind, LABELS.project, env).filter((r) => candidates.has(r.project));
   const [containers, volumes, networks] =
     candidates.size === 0 ? [[], [], []] : [of('containers'), of('volumes'), of('networks')];
-  const found = findOrphans({ containers, volumes, networks }, { commonDir, exists });
+  const found = findOrphans({ containers, volumes, networks }, { commonDir, exists, running });
   // a project whose containers or volumes stay is live, and so are its images
   const orphaned = new Set(found.projects.map((p) => p.project));
   const live = new Set(
     [...containers, ...volumes].map((r) => r.project).filter((p) => !orphaned.has(p)),
   );
-  const images = findOrphanImages(gone, { commonDir, exists, live });
-  const remove = (args, ids) => {
+  const images = findOrphanImages(gone, { commonDir, exists, running, live });
+  const remove = (kind, args, ids) => {
     if (ids.length === 0) return;
     try {
       docker([...args, ...ids], env);
@@ -183,13 +238,21 @@ export function pruneOrphans({ commonDir }, { env = process.env, exists = exists
       const lines = String(err.stderr ?? err.message)
         .split('\n')
         .filter((line) => line.trim() && !/no such (container|volume|image)|not found/i.test(line));
+      // or going: another remover has it at this moment (a test's reaper, another prune), and
+      // Docker refuses this one in its own words ("already in progress", "active endpoints", or
+      // a bare "exit status 1"); what is gone a moment later was no refusal
+      for (let i = 0; lines.length && i < 10; i++) {
+        if (!ids.some((id) => present(kind, id, env))) return;
+        pause(200);
+      }
       if (lines.length) failed.push(`docker ${args.join(' ')}: ${lines.join('; ')}`);
     }
   };
-  remove(['rm', '--force', '--volumes'], found.containers);
-  remove(['network', 'rm'], found.networks);
-  remove(['volume', 'rm'], found.volumes);
+  remove('container', ['rm', '--force', '--volumes'], found.containers);
+  remove('network', ['network', 'rm'], found.networks);
+  remove('volume', ['volume', 'rm'], found.volumes);
   remove(
+    'image',
     ['image', 'rm'],
     images.flatMap((image) => image.refs),
   );

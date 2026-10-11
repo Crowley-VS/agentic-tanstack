@@ -12,17 +12,19 @@ up. Details behind `pnpm teardown` and `pnpm prune:orphans`.
 | dev / e2e servers                                        | whoever started them | `pnpm dev`, `serve-e2e`, a background task      | whoever started them                                                    |
 | production-image stack (containers, network, its images) | checkout             | `web-e2e:stack-up`, `e2e-stack`, `docker-build` | `web-e2e:stack-down` (`e2e-stack` runs it), `teardown`, `prune:orphans` |
 | Docker's build cache                                     | machine (shared)     | every image build, of any checkout or project   | `docker builder prune`, by hand (below)                                 |
+| `db-up`'s start lock files (`<tmp>/db-up-<uid>`, below)  | checkout             | a `db-up` start that was killed or failed       | the next start that works, `pnpm teardown`, `pnpm prune:orphans`        |
 
 ## `pnpm teardown`: release what this checkout started
 
 Removes this checkout's production-image stack (`node tools/stack-down.mjs`, what
 `web-e2e:stack-down` runs: its containers, network and images, `docs/deployment.md`), then stops
 its Nx daemon (`nx daemon --stop`) and its Postgres container
-(`node packages/db/scripts/db-up.mjs down`). The stack goes first, without Nx (no project graph to
-compute, no daemon to start), and the rest runs even when that fails. It keeps the Postgres volume,
-so a checkout's dev data survives (`pnpm db:up` brings it back); `pnpm db:reset` is what deletes
-data. It is idempotent and takes well under a second when nothing runs, Docker stopped or missing
-included; about 2 s with a stack to remove.
+(`node packages/db/scripts/db-up.mjs down`, which also removes what its starts left in the lock
+directory, below). The stack goes first, without Nx (no project graph to compute, no daemon to
+start), and the rest runs even when that fails. It keeps the Postgres volume, so a checkout's dev
+data survives (`pnpm db:up` brings it back); `pnpm db:reset` is what deletes data. It is
+idempotent and takes well under a second when nothing runs, Docker stopped or missing included;
+about 2 s with a stack to remove.
 
 Run it before you delete a worktree. Servers you started yourself (`pnpm dev`, a background
 `serve-e2e`) are yours to stop first. The review loop's agents do both as their last step, before
@@ -54,19 +56,33 @@ another fails (the command then exits non-zero):
   same way, of exited processes: package.json `{}` and Nx's copy of `pnpm-workspace.yaml` (and of
   `.npmrc`, if the workspace has one), nothing else. Nx writes them before it installs a package
   there; which command leaves them empty is not traced yet (one agent session left 16).
+- **`db-up`'s start lock files** that nothing uses any more (`cleanLocks` in
+  `packages/db/scripts/db-up.mjs`), whichever repository's: the locks of starts whose process has
+  exited (or older than 10 minutes), the locks a takeover moved aside whose process has exited,
+  and the failure records of checkouts that are gone. It prints each file it removed.
 - **This repository's Docker resources** whose checkout directory no longer exists: containers
   (running or not), volumes, networks and images (`packages/db/scripts/orphans.mjs`), of the dev
-  Postgres and of the production-image stack alike. It prints each compose project it removed and
-  the directory it belonged to.
+  Postgres and of the production-image stack alike, and those of a test's project whose process
+  has exited (below). It prints each compose project it removed and the directory it belonged to.
 
 `pnpm db:up` (and everything that starts the database through it) runs the Docker part on its own
 whenever it has to start the server, since it calls Docker then anyway: a deleted worktree's
 container may hold a port that the port registry has since handed to a new worktree. When the
-server already runs, `db:up` makes no Docker call at all. While it starts the server it holds a
-lock file in the temp directory (`db-up-<uid>/db-up-<compose project>.lock`, `docs/database.md`)
-and removes it when done; one left by a `db-up` that was killed is taken over by the next. A start
-that failed leaves `db-up-<compose project>.failed` beside it, its error for the processes that
-waited, which the next start that works removes.
+server already runs, `db:up` makes no Docker call at all.
+
+While it starts the server, `db-up` holds a lock file in the temp directory
+(`db-up-<uid>/db-up-<compose project>.lock`, `docs/database.md`) and removes it when done. What
+else that directory may hold, and what removes it:
+
+- a lock left by a `db-up` that was killed: the next start takes it over; `pnpm teardown` (its own
+  project's) and `pnpm prune:orphans` remove it once its process has exited;
+- `db-up-<compose project>.lock.<pid>.<uuid>`, a lock a takeover moved aside, left only when that
+  process was killed in that moment: `teardown` (its own project's) and `prune:orphans` remove it
+  once that process has exited;
+- `db-up-<compose project>.failed`, a failed start's error for the processes that waited on its
+  lock (and only those: a start that did not wait for it ignores it): the next start that works
+  removes it, `teardown` removes its own project's, and `prune:orphans` those of deleted
+  checkouts (each record names the checkout that wrote it).
 
 ### How it knows what is this repository's
 
@@ -84,6 +100,15 @@ builds (`tools/dev-ports.mjs` fills them in for the checkout's own stack project
 outlive their containers (built alone, or kept by a `down`), so their own labels decide: one
 labeled with this repository and a checkout directory that is gone is removed, tagged or not,
 unless its compose project stays (a container of it runs from a live checkout).
+
+A test that starts a real compose project of its own (`packages/db/src/db-up.test.ts`) does so as
+a checkout in its temp directory, and also labels it `dev-checkout.owner` (`<pid>@<host name>`,
+the test's process): such a project is an orphan once that process has exited, whether or not its
+directories still exist. The test file removes what it started in its hooks, and a reaper process
+of its own does it when the run ends without them (Ctrl-C: Vitest exits without running them;
+Nx kills the task's whole process tree); if even that one is killed, the next prune does. Another
+machine's owner (a container sharing the Docker daemon: other pids, another host name) is never
+judged.
 
 `db-up` labels only a checkout's own compose project. When `COMPOSE_PROJECT_NAME` names another
 one (to point several checkouts at one Postgres server, say), what it creates carries empty labels,

@@ -3,11 +3,13 @@
 // checkout/worktree with names and ports from tools/dev-ports.mjs.
 //
 //   node scripts/db-up.mjs          start it (~1 s cold; ~10 ms when it is already running: no Docker call)
-//   node scripts/db-up.mjs down     stop it (data kept); succeeds when Docker is not running, and
-//                                   leaves a project that is not this checkout's own running
+//   node scripts/db-up.mjs down     stop it (data kept), and remove its start lock's leftovers
+//                                   (cleanLocks); succeeds when Docker is not running, and leaves a
+//                                   project that is not this checkout's own running
 //   node scripts/db-up.mjs prune    remove the containers, volumes and networks of this repository's
-//                                   deleted checkouts (scripts/orphans.mjs); `up` does it too
-//                                   whenever it has to start the server
+//                                   deleted checkouts (scripts/orphans.mjs; `up` does it too
+//                                   whenever it has to start the server), and the start locks'
+//                                   leftovers of exited processes and deleted checkouts
 //   node scripts/db-up.mjs reset    delete it and its data, then start fresh
 //   node scripts/db-up.mjs psql     open psql on the dev database; arguments after `psql` go to
 //                                   psql (`-c "select …"` runs one query, also without a terminal)
@@ -24,11 +26,13 @@ import { randomUUID } from 'node:crypto';
 import {
   closeSync,
   constants,
+  existsSync,
   fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -42,7 +46,9 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { describePruned, pruneOrphans } from './orphans.mjs';
+import { alive, describePruned, pruneOrphans } from './orphans.mjs';
+
+export { alive };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -192,32 +198,26 @@ const TIMINGS = {
 /** The start locks' directory: this user's own, in the temp directory. */
 const defaultLockDir = () => join(tmpdir(), `db-up-${process.getuid?.() ?? 'user'}`);
 
-/** True while process `pid` runs (EPERM: it runs as another user). */
-export function alive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === 'EPERM';
-  }
+/**
+ * Check that `dir` is a directory only this user can write to. Anywhere others can write, another
+ * user could leave a lock there that holds every db-up back (a live pid) or hangs it (a FIFO).
+ * Where uids do not exist (Windows), the temp directory is the user's own already.
+ */
+function checkPrivateDir(dir) {
+  const st = lstatSync(dir);
+  const uid = process.getuid?.();
+  if (!st.isDirectory() || (uid !== undefined && (st.uid !== uid || (st.mode & 0o022) !== 0)))
+    throw new Error('not a directory only this user can write to');
 }
 
-/**
- * Make `dir` (its parent must exist), or check it: a directory only this user can write to.
- * Anywhere others can write, another user could leave a lock there that holds every db-up back (a
- * live pid) or hangs it (a FIFO). Where uids do not exist (Windows), the temp directory is the
- * user's own already.
- */
+/** Make `dir` (its parent must exist), or check it, as checkPrivateDir does. */
 function privateDir(dir) {
   try {
     mkdirSync(dir, { mode: 0o700 });
   } catch (err) {
     if (err.code !== 'EEXIST') throw err;
   }
-  const st = lstatSync(dir);
-  const uid = process.getuid?.();
-  if (!st.isDirectory() || (uid !== undefined && (st.uid !== uid || (st.mode & 0o022) !== 0)))
-    throw new Error('not a directory only this user can write to');
+  checkPrivateDir(dir);
 }
 
 /**
@@ -238,13 +238,14 @@ function readLock(file) {
 
 /**
  * Remove the lock `file` if it still holds `stale`, the text judged stale; true if this call
- * removed it. It is moved aside first, which only one of several waiters that judged it stale
- * can do: a lock another waiter has taken in its place since is put back (with its age), not
- * removed. (Only if yet another waiter takes the free place in that moment do two hold it: then
- * composeUp's retry of the name conflict covers them.)
+ * removed it. It is moved aside first (`<file>.<pid>.<uuid>`: a process killed before it removed
+ * it leaves it to cleanLocks), which only one of several waiters that judged it stale can do: a
+ * lock another waiter has taken in its place since is put back (with its age), not removed. (Only
+ * if yet another waiter takes the free place in that moment do two hold it: then composeUp's
+ * retry of the name conflict covers them.)
  */
 export function takeOver(file, stale) {
-  const aside = `${file}.${randomUUID()}`;
+  const aside = `${file}.${process.pid}.${randomUUID()}`;
   try {
     renameSync(file, aside);
   } catch (err) {
@@ -263,23 +264,39 @@ export function takeOver(file, stale) {
   }
 }
 
+const seconds = (ms) => `${Math.round(ms / 1000)} s`;
+
+/** A lock's process id and token (neither while it is being written, empty). */
+function lockOwner(text) {
+  try {
+    const { pid, token } = JSON.parse(text);
+    return { pid: Number.isInteger(pid) && pid > 0 ? pid : undefined, token };
+  } catch {
+    return {};
+  }
+}
+
 /**
  * One start of `cfg.project` at a time, across processes: an exclusive lock file
- * (`<lockDir>/db-up-<project>.lock`, created with O_EXCL, holding its process id). Resolves to
- * the lock once this process holds it, or to undefined as soon as the server answers while it
- * waits (another process started it). It waits on no one lock for longer than staleMs, and says
- * what it waits for after noticeMs. Without a usable lock file (a lock directory that is missing,
- * unwritable or not this user's alone, a lock that is no regular file) it starts unlocked:
- * composeUp's retry of the name conflict then covers a concurrent start.
+ * (`<lockDir>/db-up-<project>.lock`, created with O_EXCL, holding its process id and a token of
+ * its own). Resolves to the lock once this process holds it, or to undefined as soon as the
+ * server answers while it waits (another process started it). It waits on no one lock for longer
+ * than staleMs, and says what it waits for after noticeMs. Without a usable lock file (a lock
+ * directory that is missing, unwritable or not this user's alone, a lock that is no regular file)
+ * it starts unlocked: composeUp's retry of the name conflict then covers a concurrent start.
  *
- * The lock's `failure` is what the start before this one recorded when it failed
- * (`db-up-<project>.failed`, beside the lock); `release(failure)` records this start's failure
- * for the processes that wait (or clears the record), then removes the lock if it is still ours.
+ * A start that fails records its error beside the lock (`db-up-<project>.failed`) with its lock's
+ * token. The lock's `failure` is that record if this process waited on that very lock: the start
+ * it waited for failed. A record of a start it did not wait for (an earlier run's, one that failed
+ * before this process came) is no reason to fail, whatever the clocks say. `release(reason)`
+ * records this start's failure (`reason`; a record this process failed by stays as it is) or
+ * clears the record once a start works, then removes the lock if it is still ours.
  */
 async function startLock(cfg, { lockDir, staleMs, pollMs, noticeMs }) {
   const file = join(lockDir, `db-up-${cfg.project}.lock`);
   const record = join(lockDir, `db-up-${cfg.project}.failed`);
-  const mine = JSON.stringify({ pid: process.pid, project: cfg.project, token: randomUUID() });
+  const token = randomUUID();
+  const mine = JSON.stringify({ pid: process.pid, project: cfg.project, token });
   const unlocked = (path, err) => {
     console.error(
       `[db-up] starting ${cfg.project} without its lock (${path}: ${err.code ?? err.message})`,
@@ -294,6 +311,7 @@ async function startLock(cfg, { lockDir, staleMs, pollMs, noticeMs }) {
   const t0 = Date.now();
   let notice = t0 + noticeMs;
   let waitingOn; // the lock this process waits on ({ text, since }): a new one restarts its clock
+  const waitedOn = new Set(); // the tokens of all the locks it has waited on
   for (;;) {
     let fd;
     try {
@@ -312,18 +330,24 @@ async function startLock(cfg, { lockDir, staleMs, pollMs, noticeMs }) {
       closeSync(fd);
       let failure;
       try {
-        failure = JSON.parse(readFileSync(record, 'utf8'));
+        const failed = JSON.parse(readFileSync(record, 'utf8'));
+        if (waitedOn.has(failed.token)) failure = failed;
       } catch {
         // no start has failed since the last one that worked
       }
       return {
         failure,
-        release(failed) {
+        release(reason) {
           try {
             // still ours: a waiter may have taken it over (staleMs) while this start hung
             if (readFileSync(file, 'utf8') !== mine) return;
-            if (failed) writeFileSync(record, JSON.stringify(failed));
-            else rmSync(record, { force: true });
+            if (!reason) rmSync(record, { force: true });
+            // with the checkout that wrote it: `prune` removes the records of deleted checkouts
+            else if (!failure)
+              writeFileSync(
+                record,
+                JSON.stringify({ pid: process.pid, token, root: cfg.root, reason }),
+              );
             unlinkSync(file);
           } catch {
             // gone already
@@ -341,7 +365,8 @@ async function startLock(cfg, { lockDir, staleMs, pollMs, noticeMs }) {
     if (waitingOn?.text !== held.text) waitingOn = { text: held.text, since: Date.now() };
     const waited = Date.now() - waitingOn.since;
     // read between its creation and its write (empty), the lock is judged by its age alone
-    const pid = Number(/^\{"pid":(\d+),/.exec(held.text)?.[1]) || undefined;
+    const { pid, token: theirs } = lockOwner(held.text);
+    if (theirs) waitedOn.add(theirs);
     const exited = pid !== undefined && !alive(pid);
     if (exited || held.age > staleMs || waited > staleMs) {
       let removed;
@@ -359,15 +384,78 @@ async function startLock(cfg, { lockDir, staleMs, pollMs, noticeMs }) {
     }
     if (await answers(cfg)) return undefined;
     if (Date.now() >= notice) {
+      // the whole wait (behind earlier starts too), then this lock's own age, which staleMs bounds
       console.error(
         `[db-up] waiting for another db-up (pid ${pid ?? '?'}) to start ${cfg.project}: ` +
-          `${Math.round((Date.now() - t0) / 1000)} s so far. Its lock ${file} is taken over ` +
-          `once that process exits, or after ${Math.round(staleMs / 1000)} s.`,
+          `${seconds(Date.now() - t0)} so far. Its lock ${file} is taken over once that process ` +
+          `exits, or once it is ${seconds(staleMs)} old (now ${seconds(Math.max(held.age, waited))}).`,
       );
       notice = Date.now() + 30_000;
     }
     await sleep(pollMs);
   }
+}
+
+// the files of the lock directory, each with its compose project (whose name has no dot): a start
+// lock, a lock a takeover moved aside (with that process's pid, a uuid), a failed start's record
+const LOCK = /^db-up-([^.]+)\.lock$/;
+const ASIDE =
+  /^db-up-([^.]+)\.lock\.(?:(\d+)\.)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const RECORD = /^db-up-([^.]+)\.failed$/;
+
+/**
+ * Remove what starts left in the lock directory, never a file a running process still uses: locks
+ * a takeover moved aside whose process has exited (killed in that moment), locks whose process
+ * has exited or that are older than staleMs (a killed or hung start's, which the next start would
+ * take over), and the failure records of checkouts that are gone (a record serves only the
+ * processes that waited for that start, and the next start that works removes it). With
+ * `project`, only that project's files, and its failure record whatever its checkout (`down`).
+ * Returns the names of the files it removed: none where the directory is missing or not this
+ * user's alone.
+ */
+export function cleanLocks({
+  lockDir = defaultLockDir(),
+  project,
+  staleMs = TIMINGS.staleMs,
+  exists = existsSync,
+} = {}) {
+  let names;
+  try {
+    checkPrivateDir(lockDir);
+    names = readdirSync(lockDir).toSorted();
+  } catch {
+    return [];
+  }
+  const ofProject = (match) => match && (project === undefined || match[1] === project);
+  const removed = [];
+  for (const name of names) {
+    const file = join(lockDir, name);
+    const aside = ASIDE.exec(name);
+    const lock = LOCK.exec(name);
+    const record = RECORD.exec(name);
+    try {
+      if (ofProject(aside)) {
+        if (aside[2] && alive(Number(aside[2]))) continue; // a takeover under way
+        unlinkSync(file);
+      } else if (ofProject(lock)) {
+        const held = readLock(file);
+        const { pid } = lockOwner(held.text);
+        if ((pid === undefined || alive(pid)) && held.age <= staleMs) continue;
+        if (!takeOver(file, held.text)) continue; // taken since
+      } else if (ofProject(record)) {
+        if (project === undefined) {
+          // the checkout that wrote it (none: an earlier version's record, of no use)
+          const { root } = JSON.parse(readLock(file).text);
+          if (root && exists(root)) continue;
+        }
+        unlinkSync(file);
+      } else continue;
+      removed.push(name);
+    } catch {
+      // removed meanwhile, or no regular file, or a record half written (the next prune's)
+    }
+  }
+  return removed;
 }
 
 // `compose up` failures that db-up explains itself, never retried
@@ -409,7 +497,6 @@ async function composeUp(cfg, env, { attempts, backoffMs }) {
  * `options` override TIMINGS and `lockDir` (default: `db-up-<uid>` in the temp directory).
  */
 export async function dbUp(cfg = resolveDb(), { env = process.env, ...options } = {}) {
-  const since = Date.now();
   const timings = { ...TIMINGS, lockDir: defaultLockDir(), ...options };
   // this checkout's server: on this machine, on its port (a Postgres URL without one means 5432)
   const ours = (url) => isLocalUrl(url) && Number(new URL(url).port || 5432) === cfg.port;
@@ -418,17 +505,16 @@ export async function dbUp(cfg = resolveDb(), { env = process.env, ...options } 
   if (await answers(cfg)) return cfg;
   const lock = await startLock(cfg, timings);
   if (!lock) return cfg; // started by the process this one waited for
-  // the start this process waited for failed (a registry that keeps failing, Docker stopped):
-  // the same failure, without another round of tries
-  const failed = lock.failure && lock.failure.at >= since ? lock.failure : undefined;
-  let failure;
+  let reason;
   try {
-    return await start(cfg, env, timings, failed);
+    // the start this process waited for failed (a registry that keeps failing, Docker stopped):
+    // the same failure, without another round of tries
+    return await start(cfg, env, timings, lock.failure);
   } catch (err) {
-    if (err.dbUp) failure = failed ?? { pid: process.pid, at: Date.now(), reason: err.reason };
+    if (err.dbUp) reason = err.reason;
     throw err;
   } finally {
-    lock.release(failure);
+    lock.release(reason);
   }
 }
 
@@ -489,6 +575,9 @@ async function main([mode = 'up', ...args]) {
       );
       return;
     }
+    // what its starts left in the lock directory (a failed start's record, a killed one's lock),
+    // Docker or not
+    cleanLocks({ project: cfg.project });
     // nothing runs without Docker, so nothing to stop
     const res = compose(cfg, ['down'], { stdio: ['ignore', 'inherit', 'pipe'] });
     if (noDocker(res)) {
@@ -498,6 +587,15 @@ async function main([mode = 'up', ...args]) {
     process.stderr.write(res.stderr ?? '');
     process.exitCode = res.status ?? 1;
   } else if (mode === 'prune') {
+    // the start locks' leftovers first: they need no Docker
+    const files = cleanLocks();
+    if (files.length) {
+      const what = `${files.length} start lock file${files.length === 1 ? '' : 's'}`;
+      console.log(
+        `[db-up] removed ${what} of exited processes and deleted checkouts from ${defaultLockDir()}:`,
+      );
+      for (const name of files) console.log(`[db-up]   ${name}`);
+    }
     let pruned;
     try {
       pruned = pruneOrphans(cfg);
@@ -507,7 +605,7 @@ async function main([mode = 'up', ...args]) {
       return;
     }
     const lines = describePruned(pruned);
-    for (const line of lines.length ? lines : ['no leftovers of deleted checkouts'])
+    for (const line of lines.length || files.length ? lines : ['no leftovers of deleted checkouts'])
       console.log(`[db-up] ${line}`);
     for (const line of pruned.failed) console.error(`[db-up] could not prune: ${line}`);
     if (pruned.failed.length) process.exitCode = 1;
