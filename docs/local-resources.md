@@ -63,8 +63,10 @@ another fails (the command then exits non-zero):
 whenever it has to start the server, since it calls Docker then anyway: a deleted worktree's
 container may hold a port that the port registry has since handed to a new worktree. When the
 server already runs, `db:up` makes no Docker call at all. While it starts the server it holds a
-lock file in the temp directory (`db-up-<compose project>.lock`, `docs/database.md`) and removes
-it when done; one left by a `db-up` that was killed is taken over by the next.
+lock file in the temp directory (`db-up-<uid>/db-up-<compose project>.lock`, `docs/database.md`)
+and removes it when done; one left by a `db-up` that was killed is taken over by the next. A start
+that failed leaves `db-up-<compose project>.failed` beside it, its error for the processes that
+waited, which the next start that works removes.
 
 ### How it knows what is this repository's
 

@@ -13,20 +13,27 @@
 //                                   psql (`-c "select …"` runs one query, also without a terminal)
 //   node scripts/db-up.mjs studio   Drizzle Studio on this checkout's studio port
 //
-// Also imported by the Vitest global setup (`dbUp()`) and the migrate/seed scripts (`resolveDb()`,
-// `isLocalUrl()`). Several processes may start the same server at once (Nx runs the tests of every
-// db-using project in parallel, each one's global setup calls `dbUp()`): one runs `compose up`
-// while the others wait for its server (startLock), and a pull or start that fails on a network
-// or registry error is tried again (composeUp).
+// Also imported by the Vitest global setup (`dbUp()`, `alive()`) and the migrate/seed scripts
+// (`resolveDb()`, `isLocalUrl()`). Several processes may start the same server at once (Nx runs
+// the tests of several db-using projects in parallel, each one's global setup calls `dbUp()`): one
+// runs `compose up` while the others wait for its server (startLock), a pull or start that fails on
+// a network or registry error is tried again (composeUp), and a start that fails anyway fails the
+// processes that waited for it too, without tries of their own.
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   closeSync,
+  constants,
+  fstatSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
-  statSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -114,7 +121,7 @@ async function answers({ adminUrl, project }) {
 }
 
 function fail(message) {
-  throw Object.assign(new Error(`[db-up] ${message}`), { dbUp: true });
+  throw Object.assign(new Error(`[db-up] ${message}`), { dbUp: true, reason: message });
 }
 
 // stdout too is piped by default: `up` prints nothing useful there, only compose's question about a
@@ -161,12 +168,14 @@ function pruneQuietly(cfg, env) {
 
 /**
  * dbUp's timings (options of dbUp, which the tests shorten):
- * - lockDir: where each compose project's start lock lives. The temp directory: every process of
- *   this user on this machine shares it (macOS's per-user TMPDIR and Windows' %TEMP% included),
- *   and the processes that race are an Nx run's tasks, which share their environment;
+ * - lockDir: where each compose project's start lock lives: `db-up-<uid>` in the temp directory,
+ *   a directory only this user can write to. Every process of this user on this machine shares
+ *   it (macOS's per-user TMPDIR and Windows' %TEMP% included), and the processes that race are an
+ *   Nx run's tasks, which share their environment;
  * - staleMs: a lock is taken over once its process has exited (Ctrl-C, a crash), at once, or once
- *   it is older than this (a reused pid, a start that hangs), and a waiter waits no longer than
- *   this in all. More than the longest start: a slow pull, its retries, the health check's wait;
+ *   it is older than this or this process has waited on it this long (a reused pid, a start that
+ *   hangs). Each lock is judged on its own: one another waiter has just taken gets the whole time.
+ *   More than the longest start: a slow pull, its retries, the health check's wait;
  * - pollMs: how often a waiter checks for the server and the lock;
  * - noticeMs: how long a waiter waits before it says what for (then every 30 s);
  * - attempts, backoffMs: `compose up` runs at most `attempts` times when it fails on a transient
@@ -180,8 +189,11 @@ const TIMINGS = {
   backoffMs: 2_000,
 };
 
+/** The start locks' directory: this user's own, in the temp directory. */
+const defaultLockDir = () => join(tmpdir(), `db-up-${process.getuid?.() ?? 'user'}`);
+
 /** True while process `pid` runs (EPERM: it runs as another user). */
-function alive(pid) {
+export function alive(pid) {
   try {
     process.kill(pid, 0);
     return true;
@@ -191,29 +203,103 @@ function alive(pid) {
 }
 
 /**
+ * Make `dir` (its parent must exist), or check it: a directory only this user can write to.
+ * Anywhere others can write, another user could leave a lock there that holds every db-up back (a
+ * live pid) or hangs it (a FIFO). Where uids do not exist (Windows), the temp directory is the
+ * user's own already.
+ */
+function privateDir(dir) {
+  try {
+    mkdirSync(dir, { mode: 0o700 });
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+  }
+  const st = lstatSync(dir);
+  const uid = process.getuid?.();
+  if (!st.isDirectory() || (uid !== undefined && (st.uid !== uid || (st.mode & 0o022) !== 0)))
+    throw new Error('not a directory only this user can write to');
+}
+
+/**
+ * The lock's text and age, both of the one file opened: never through a link, and never blocked
+ * on a FIFO (anything but a regular file is unusable).
+ */
+function readLock(file) {
+  // (where a flag does not exist, Windows, `|` takes its undefined for 0)
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw new Error('not a regular file');
+    return { text: readFileSync(fd, 'utf8'), age: Date.now() - st.mtimeMs };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Remove the lock `file` if it still holds `stale`, the text judged stale; true if this call
+ * removed it. It is moved aside first, which only one of several waiters that judged it stale
+ * can do: a lock another waiter has taken in its place since is put back (with its age), not
+ * removed. (Only if yet another waiter takes the free place in that moment do two hold it: then
+ * composeUp's retry of the name conflict covers them.)
+ */
+export function takeOver(file, stale) {
+  const aside = `${file}.${randomUUID()}`;
+  try {
+    renameSync(file, aside);
+  } catch (err) {
+    if (err.code === 'ENOENT') return false; // released, or another waiter took it over
+    throw err;
+  }
+  try {
+    if (readFileSync(aside, 'utf8') === stale) return true;
+    linkSync(aside, file);
+    return false;
+  } catch (err) {
+    if (err.code === 'EEXIST') return false;
+    throw err;
+  } finally {
+    rmSync(aside, { force: true });
+  }
+}
+
+/**
  * One start of `cfg.project` at a time, across processes: an exclusive lock file
  * (`<lockDir>/db-up-<project>.lock`, created with O_EXCL, holding its process id). Resolves to
- * the function that releases it once this process holds it, or to undefined as soon as the
- * server answers while it waits (another process started it). It never waits for longer than
- * staleMs, and says what it waits for after noticeMs. Without a usable lock file (an unwritable
- * temp directory, another user's stale lock) it starts unlocked: composeUp's retry of the name
- * conflict then covers a concurrent start.
+ * the lock once this process holds it, or to undefined as soon as the server answers while it
+ * waits (another process started it). It waits on no one lock for longer than staleMs, and says
+ * what it waits for after noticeMs. Without a usable lock file (a lock directory that is missing,
+ * unwritable or not this user's alone, a lock that is no regular file) it starts unlocked:
+ * composeUp's retry of the name conflict then covers a concurrent start.
+ *
+ * The lock's `failure` is what the start before this one recorded when it failed
+ * (`db-up-<project>.failed`, beside the lock); `release(failure)` records this start's failure
+ * for the processes that wait (or clears the record), then removes the lock if it is still ours.
  */
 async function startLock(cfg, { lockDir, staleMs, pollMs, noticeMs }) {
   const file = join(lockDir, `db-up-${cfg.project}.lock`);
+  const record = join(lockDir, `db-up-${cfg.project}.failed`);
   const mine = JSON.stringify({ pid: process.pid, project: cfg.project, token: randomUUID() });
-  const unlocked = (err) => {
-    console.error(`[db-up] starting ${cfg.project} without its lock (${file}: ${err.code ?? err})`);
-    return () => {};
+  const unlocked = (path, err) => {
+    console.error(
+      `[db-up] starting ${cfg.project} without its lock (${path}: ${err.code ?? err.message})`,
+    );
+    return { failure: undefined, release() {} };
   };
+  try {
+    privateDir(lockDir);
+  } catch (err) {
+    return unlocked(lockDir, err);
+  }
   const t0 = Date.now();
   let notice = t0 + noticeMs;
+  let waitingOn; // the lock this process waits on ({ text, since }): a new one restarts its clock
   for (;;) {
     let fd;
     try {
       fd = openSync(file, 'wx');
     } catch (err) {
-      if (err.code !== 'EEXIST') return unlocked(err);
+      if (err.code !== 'EEXIST') return unlocked(file, err);
     }
     if (fd !== undefined) {
       try {
@@ -221,50 +307,60 @@ async function startLock(cfg, { lockDir, staleMs, pollMs, noticeMs }) {
       } catch (err) {
         closeSync(fd);
         rmSync(file, { force: true }); // an empty lock would hold the others back for staleMs
-        return unlocked(err);
+        return unlocked(file, err);
       }
       closeSync(fd);
-      return () => {
-        try {
-          // still ours: a waiter may have taken it over (staleMs) while this start hung
-          if (readFileSync(file, 'utf8') === mine) unlinkSync(file);
-        } catch {
-          // gone already
-        }
+      let failure;
+      try {
+        failure = JSON.parse(readFileSync(record, 'utf8'));
+      } catch {
+        // no start has failed since the last one that worked
+      }
+      return {
+        failure,
+        release(failed) {
+          try {
+            // still ours: a waiter may have taken it over (staleMs) while this start hung
+            if (readFileSync(file, 'utf8') !== mine) return;
+            if (failed) writeFileSync(record, JSON.stringify(failed));
+            else rmSync(record, { force: true });
+            unlinkSync(file);
+          } catch {
+            // gone already
+          }
+        },
       };
     }
     let held;
     try {
-      const text = readFileSync(file, 'utf8');
-      const age = Date.now() - statSync(file).mtimeMs;
-      // read between its creation and its write (empty), the lock is judged by its age alone
-      const pid = Number(/^\{"pid":(\d+),/.exec(text)?.[1]) || undefined;
-      held = { text, age, pid };
+      held = readLock(file);
     } catch (err) {
       if (err.code === 'ENOENT') continue; // released meanwhile: try again
-      return unlocked(err);
+      return unlocked(file, err);
     }
-    const waited = Date.now() - t0;
-    const exited = held.pid !== undefined && !alive(held.pid);
+    if (waitingOn?.text !== held.text) waitingOn = { text: held.text, since: Date.now() };
+    const waited = Date.now() - waitingOn.since;
+    // read between its creation and its write (empty), the lock is judged by its age alone
+    const pid = Number(/^\{"pid":(\d+),/.exec(held.text)?.[1]) || undefined;
+    const exited = pid !== undefined && !alive(pid);
     if (exited || held.age > staleMs || waited > staleMs) {
-      if (!exited)
+      let removed;
+      try {
+        removed = takeOver(file, held.text);
+      } catch (err) {
+        return unlocked(file, err);
+      }
+      if (removed && !exited)
         console.error(
-          `[db-up] taking over ${file} from pid ${held.pid ?? '?'} after ` +
+          `[db-up] taking over ${file} from pid ${pid ?? '?'} after ` +
             `${Math.round(Math.max(held.age, waited) / 1000)} s: its start of ${cfg.project} takes too long`,
         );
-      try {
-        // the same lock still, not one another waiter has taken over since: remove it, then race
-        // the other waiters for a new one
-        if (readFileSync(file, 'utf8') === held.text) unlinkSync(file);
-      } catch (err) {
-        if (err.code !== 'ENOENT') return unlocked(err);
-      }
-      continue;
+      continue; // race the other waiters for a new lock
     }
     if (await answers(cfg)) return undefined;
     if (Date.now() >= notice) {
       console.error(
-        `[db-up] waiting for another db-up (pid ${held.pid ?? '?'}) to start ${cfg.project}: ` +
+        `[db-up] waiting for another db-up (pid ${pid ?? '?'}) to start ${cfg.project}: ` +
           `${Math.round((Date.now() - t0) / 1000)} s so far. Its lock ${file} is taken over ` +
           `once that process exits, or after ${Math.round(staleMs / 1000)} s.`,
       );
@@ -279,12 +375,14 @@ const NOT_RUNNING =
   /Cannot connect to the Docker daemon|Is the docker daemon running|docker\.sock/i;
 const PORT_TAKEN = /port is already allocated|address already in use/i;
 // Failures another `compose up` may not have: the registry or the network to it failing for a
-// moment (a cold machine pulls the image: CI), and a start outside the lock (another temp
-// directory, a bare `docker compose up`) that created the container first, which the next `up`
-// finds and starts. Any other failure (a denied pull, an unhealthy server) is reported at once.
+// moment (a cold machine pulls the image: CI), and a start outside the lock (another lock
+// directory, a bare `docker compose up`) that created the container (or its network) first, which
+// the next `up` finds and starts. Any other failure (a denied pull, an unhealthy server) is
+// reported at once. Compose prints warnings on stderr too: `volume "…" already exists but was not
+// created by Docker Compose` is one, on every `up` of a volume made outside compose, and no race.
 const TRANSIENT =
   /context deadline exceeded|Client\.Timeout exceeded|TLS handshake timeout|i\/o timeout|Gateway Time-?out|toomanyrequests|connection reset by peer/i;
-const CONFLICT = /is already in use by container|already exists/i;
+const CONFLICT = /is already in use by container|network with name \S+ already exists/i;
 
 /** `compose up -d --wait`, run again with a growing wait while it fails on a transient error. */
 async function composeUp(cfg, env, { attempts, backoffMs }) {
@@ -308,28 +406,41 @@ async function composeUp(cfg, env, { attempts, backoffMs }) {
 
 /**
  * Start this checkout's Postgres if it is not running, and wait until it accepts connections.
- * `options` override TIMINGS and `lockDir` (default: the temp directory).
+ * `options` override TIMINGS and `lockDir` (default: `db-up-<uid>` in the temp directory).
  */
 export async function dbUp(cfg = resolveDb(), { env = process.env, ...options } = {}) {
-  const timings = { ...TIMINGS, lockDir: tmpdir(), ...options };
+  const since = Date.now();
+  const timings = { ...TIMINGS, lockDir: defaultLockDir(), ...options };
   // this checkout's server: on this machine, on its port (a Postgres URL without one means 5432)
   const ours = (url) => isLocalUrl(url) && Number(new URL(url).port || 5432) === cfg.port;
   // DATABASE_URL / TEST_DATABASE_URL point elsewhere (CI, prod-like runs): not ours to start
   if (!ours(cfg.url) && !ours(cfg.adminUrl) && !env.DB_UP_FORCE) return cfg;
   if (await answers(cfg)) return cfg;
-  const release = await startLock(cfg, timings);
-  if (!release) return cfg; // started by the process this one waited for
+  const lock = await startLock(cfg, timings);
+  if (!lock) return cfg; // started by the process this one waited for
+  // the start this process waited for failed (a registry that keeps failing, Docker stopped):
+  // the same failure, without another round of tries
+  const failed = lock.failure && lock.failure.at >= since ? lock.failure : undefined;
+  let failure;
   try {
-    return await start(cfg, env, timings);
+    return await start(cfg, env, timings, failed);
+  } catch (err) {
+    if (err.dbUp) failure = failed ?? { pid: process.pid, at: Date.now(), reason: err.reason };
+    throw err;
   } finally {
-    release();
+    lock.release(failure);
   }
 }
 
 /** dbUp's part under the lock: the server did not answer a moment ago. */
-async function start(cfg, env, timings) {
+async function start(cfg, env, timings, failed) {
   // the process this one waited for released the lock just now: its server may answer
   if (await answers(cfg)) return cfg;
+  if (failed)
+    fail(
+      `another db-up (pid ${failed.pid}) failed to start ${cfg.project} while this one waited ` +
+        `for it, so this one does not try again:\n${failed.reason}`,
+    );
   // Docker gets called anyway: clear deleted checkouts' leftovers first (their containers may hold
   // a port the registry has since handed to a new worktree)
   pruneQuietly(cfg, env);

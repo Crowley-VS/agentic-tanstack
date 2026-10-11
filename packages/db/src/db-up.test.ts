@@ -1,6 +1,8 @@
-// scripts/db-up.mjs without Docker: a fake `docker`, alone on PATH (or first on it), logs its
-// arguments and answers `compose up` and the listings as each test scripts it, and the server's
-// port is closed, so nothing ever answers.
+// scripts/db-up.mjs, mostly without Docker: a fake `docker`, alone on PATH (or first on it), logs
+// its arguments and answers `compose up` and the listings as each test scripts it. The server's
+// port is closed by default, so nothing answers; where a test needs a server, fakePostgres answers
+// on it once the fake `up` has created the container (fakeServer). The blocks that run only where
+// Docker runs (describe.runIf(dockerRuns), it.runIf(hasCompose)) use the real one.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
@@ -12,15 +14,25 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { type AddressInfo, createServer, type Socket } from 'node:net';
 import { devNull, tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-// @ts-expect-error plain .mjs script
-import { dbUp, isLocalUrl, isOurCluster, psqlArgs, resolveDb } from '../scripts/db-up.mjs';
+import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
+import {
+  alive,
+  dbUp,
+  isLocalUrl,
+  isOurCluster,
+  psqlArgs,
+  resolveDb,
+  takeOver,
+  // @ts-expect-error plain .mjs script
+} from '../scripts/db-up.mjs';
 
 const DB = join(import.meta.dirname, '..');
 const tmp = mkdtempSync(join(tmpdir(), 'db-up-test-'));
@@ -36,6 +48,8 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 //   Docker does: in FAKE_DOCKER_CREATE_MS (default 300), during which another `up` fails on the
 //   container name, as a concurrent compose does; once it exists, an `up` finds it (fakePostgres
 //   answers while it exists)
+// FAKE_DOCKER_TAKEOVER: a lock file each `up` overwrites with another process's lock, as a waiter
+//   that takes it over while the start runs does
 const BIN = join(tmp, 'bin');
 mkdirSync(BIN);
 writeFileSync(
@@ -58,6 +72,8 @@ if (args[0] === 'compose' && process.env.FAKE_DOCKER_ENV) {
 }
 if (args[1] === 'ls') process.stdout.write(JSON.parse(ls)[args[0]] ?? '');
 if (args[0] === 'image' && args[1] === 'inspect') process.stdout.write(JSON.parse(ls).inspect ?? '[]');
+if (args.includes('up') && process.env.FAKE_DOCKER_TAKEOVER)
+  writeFileSync(process.env.FAKE_DOCKER_TAKEOVER, JSON.stringify({ pid: 1, project: 'fake-project', token: 'theirs' }));
 if (args.includes('up')) {
   const n = readFileSync(log, 'utf8').split('\\n').filter((l) => l.split(' ').includes('up')).length;
   const { stderr = '', status = 0 } = JSON.parse(up)[n - 1] ?? {};
@@ -232,11 +248,30 @@ async function run(
   return { error, calls, printed, warned, raw };
 }
 
+/** The process groups of dbUpProcesses' children that still run. */
+const children = new Set<number>();
+/**
+ * Kill them, and the `docker compose` each may run: one a test leaves behind (it failed, or timed
+ * out) would go on to start a server no one removes.
+ */
+function killChildren() {
+  for (const pid of children) {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      // exited meanwhile
+    }
+    children.delete(pid);
+  }
+}
+afterEach(killChildren);
+
 /**
  * dbUp() in `n` processes at once, as Nx runs the tests of several db-using projects, each with
- * the cfg and options `argsFor(i)` gives it: each one's exit code and stderr.
+ * the cfg and options `argsFor(i)` gives it (and `env` added to this process's): each one's exit
+ * code and stderr. Each runs in a process group of its own, which killChildren kills.
  */
-function dbUpProcesses(n: number, argsFor: (i: number) => object) {
+function dbUpProcesses(n: number, argsFor: (i: number) => object, env: object = {}) {
   const code = `import { dbUp } from ${JSON.stringify(join(DB, 'scripts/db-up.mjs'))};
 const { cfg, ...options } = JSON.parse(process.env.DB_UP_ARGS);
 await dbUp(cfg, options);`;
@@ -244,13 +279,18 @@ await dbUp(cfg, options);`;
     Array.from({ length: n }, (_, i) => {
       const child = spawn(process.execPath, ['--input-type=module', '-e', code], {
         cwd: DB,
-        env: { ...process.env, DB_UP_ARGS: JSON.stringify(argsFor(i)) },
+        detached: true,
+        env: { ...process.env, ...env, DB_UP_ARGS: JSON.stringify(argsFor(i)) },
         stdio: ['ignore', 'ignore', 'pipe'],
       });
+      if (child.pid) children.add(child.pid);
       let stderr = '';
       child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
       return new Promise<{ status: number | null; stderr: string }>((resolve) =>
-        child.on('close', (status) => resolve({ status, stderr })),
+        child.on('close', (status) => {
+          if (child.pid) children.delete(child.pid);
+          resolve({ status, stderr });
+        }),
       );
     }),
   );
@@ -261,6 +301,21 @@ const ups = (log: string) =>
   readFileSync(log, 'utf8')
     .split('\n')
     .filter((call) => call.endsWith(' up -d --wait'));
+
+// what Docker Hub answered CI's runners (actions runs 37994128478 and 37994452070)
+const transient = [
+  'Error response from daemon: Head "https://registry-1.docker.io/v2/library/postgres/manifests/18.6-trixie": Get "https://auth.docker.io/token?account=githubactions&scope=repository%3Alibrary%2Fpostgres%3Apull&service=registry.docker.io": context deadline exceeded (Client.Timeout exceeded while awaiting headers)',
+  'Error response from daemon: Head "https://registry-1.docker.io/v2/library/postgres/manifests/18.6-trixie": Get "https://auth.docker.io/token?account=githubactions&scope=repository%3Alibrary%2Fpostgres%3Apull&service=registry.docker.io": net/http: request canceled (Client.Timeout exceeded while awaiting headers)',
+  'Error response from daemon: toomanyrequests: You have reached your unauthenticated pull rate limit. https://www.docker.com/increase-rate-limit',
+  'Error response from daemon: Get "https://registry-1.docker.io/v2/": net/http: TLS handshake timeout',
+  'Error response from daemon: Get "https://registry-1.docker.io/v2/": dial tcp 54.236.113.205:443: i/o timeout',
+  'failed to fetch oauth token: unexpected status from POST request to https://auth.docker.io/token: 504 Gateway Timeout',
+  'Error response from daemon: Get "https://registry-1.docker.io/v2/": read tcp 10.1.0.4:39912->54.236.113.205:443: read: connection reset by peer',
+];
+// what a real `docker compose up` prints on every run once the volume exists but compose did not
+// create it (`docker volume create`): a warning, not a failure
+const volumeWarning =
+  'time="2026-10-11T14:20:32-04:00" level=warning msg="volume \\"fake-project_pgdata\\" already exists but was not created by Docker Compose. Use `external: true` to use an existing volume"';
 
 describe('dbUp', () => {
   it('leaves a server that is not this checkout’s alone (no Docker call), unless DB_UP_FORCE', async () => {
@@ -327,17 +382,6 @@ describe('dbUp', () => {
     expect(error).toMatch(/healthy but \d+ does not reach it/);
   });
 
-  // what Docker Hub answered CI's runners (actions runs 37994128478 and 37994452070)
-  const transient = [
-    'Error response from daemon: Head "https://registry-1.docker.io/v2/library/postgres/manifests/18.6-trixie": Get "https://auth.docker.io/token?account=githubactions&scope=repository%3Alibrary%2Fpostgres%3Apull&service=registry.docker.io": context deadline exceeded (Client.Timeout exceeded while awaiting headers)',
-    'Error response from daemon: Head "https://registry-1.docker.io/v2/library/postgres/manifests/18.6-trixie": Get "https://auth.docker.io/token?account=githubactions&scope=repository%3Alibrary%2Fpostgres%3Apull&service=registry.docker.io": net/http: request canceled (Client.Timeout exceeded while awaiting headers)',
-    'Error response from daemon: toomanyrequests: You have reached your unauthenticated pull rate limit. https://www.docker.com/increase-rate-limit',
-    'Error response from daemon: Get "https://registry-1.docker.io/v2/": net/http: TLS handshake timeout',
-    'Error response from daemon: Get "https://registry-1.docker.io/v2/": dial tcp 54.236.113.205:443: i/o timeout',
-    'failed to fetch oauth token: unexpected status from POST request to https://auth.docker.io/token: 504 Gateway Timeout',
-    'Error response from daemon: Get "https://registry-1.docker.io/v2/": read tcp 10.1.0.4:39912->54.236.113.205:443: read: connection reset by peer',
-  ];
-
   it('retries a pull or start that failed on a network or registry error, then starts the server', async () => {
     const port = await closedPort();
     const state = join(tmp, `container-${runs}`);
@@ -389,6 +433,70 @@ describe('dbUp', () => {
       expect(error).toBe(`[db-up] docker compose up failed (exit 18):\n${stderr}`);
     }
   });
+
+  it('takes compose’s warning about a volume it did not create for no race', async () => {
+    // an unhealthy start, after that warning: reported at once
+    const unhealthy = `${volumeWarning}\ndependency failed to start: container fake-project-postgres-1 is unhealthy\n`;
+    const once = await run(local(await closedPort()), { up: [{ stderr: unhealthy, status: 1 }] });
+    expect(once.calls).toEqual([...LISTS, UP]);
+    expect(once.warned).toEqual([]);
+    expect(once.error).toBe(`[db-up] docker compose up failed (exit 1):\n${unhealthy}`);
+    // after the same warning, a start outside the lock that created the container, or its
+    // network, first is still retried
+    for (const conflict of [
+      'Error response from daemon: Conflict. The container name "/fake-project-postgres-1" is already in use by container "0123abcd".',
+      'Error response from daemon: network with name fake-project_default already exists',
+    ]) {
+      const { calls, warned } = await run(local(await closedPort()), {
+        up: [{ stderr: `${volumeWarning}\n${conflict}\n`, status: 1 }, {}],
+      });
+      expect(calls, conflict).toEqual([...LISTS, UP, UP]);
+      expect(warned[0], conflict).toContain('(another start created its container first)');
+    }
+  });
+
+  it('starts without its lock, saying so, where its lock directory is unusable', async () => {
+    const dirs: [string, string][] = [[join(tmp, 'no-such-dir', 'locks'), 'ENOENT']];
+    const link = join(tmp, `locks-link-${runs}`);
+    symlinkSync(lockDir(), link);
+    dirs.push([link, 'not a directory only this user can write to']);
+    if (process.getuid) {
+      // a directory other users can write to: any of them could leave a lock there
+      const open = lockDir();
+      chmodSync(open, 0o777);
+      dirs.push([open, 'not a directory only this user can write to']);
+    }
+    for (const [dir, why] of dirs) {
+      const { error, calls, warned } = await run(local(await closedPort()), {
+        up: [{}],
+        options: { lockDir: dir },
+      });
+      expect(warned, dir).toEqual([
+        `[db-up] starting fake-project without its lock (${dir}: ${why})`,
+      ]);
+      expect(calls, dir).toEqual([...LISTS, UP]);
+      expect(error, dir).toMatch(/does not reach it/); // (the fake server never answers)
+    }
+  });
+
+  // a FIFO where the lock should be: reading it the usual way would block forever
+  const hasMkfifo = spawnSync('sh', ['-c', 'command -v mkfifo'], { stdio: 'ignore' }).status === 0;
+  it.runIf(hasMkfifo)(
+    'starts without its lock, never blocked, when the lock is no regular file',
+    async () => {
+      const dir = lockDir();
+      const file = join(dir, 'db-up-fake-project.lock');
+      execFileSync('mkfifo', [file]);
+      const { calls, warned } = await run(local(await closedPort()), {
+        up: [{}],
+        options: { lockDir: dir },
+      });
+      expect(warned).toEqual([
+        `[db-up] starting fake-project without its lock (${file}: not a regular file)`,
+      ]);
+      expect(calls).toEqual([...LISTS, UP]);
+    },
+  );
 
   it('fails when compose reports the server healthy but its port does not reach it', async () => {
     const cfg = local(await closedPort());
@@ -606,7 +714,7 @@ describe('dbUp in several processes at once', () => {
     }
   }, 30_000);
 
-  it('says what it waits for, and waits no longer than staleMs in all', async () => {
+  it('says what it waits for, and waits on a lock no longer than staleMs', async () => {
     const { cfg, env, stop } = await fakeServer();
     // a live holder whose start hangs: its server never answers
     const lock = heldLock(process.pid);
@@ -632,21 +740,198 @@ describe('dbUp in several processes at once', () => {
       await stop();
     }
   }, 30_000);
+
+  // A start that hangs past staleMs: every waiter gives up on it at about the same moment. One of
+  // them takes its lock over; the others then wait on that new lock, which they judge on its own
+  // (they took each other's over at once before, and all ran `compose up`).
+  it('past staleMs, one waiter takes the hung start’s lock over, and none another waiter’s', async () => {
+    const { cfg, env, stop } = await fakeServer();
+    const log = join(tmp, `docker-${runs++}.log`);
+    const lock = heldLock(process.pid); // a live holder whose server never answers
+    try {
+      const results = await dbUpProcesses(3, () => ({
+        cfg,
+        env: { ...env, FAKE_DOCKER_LOG: log },
+        lockDir: lock.dir,
+        ...fast,
+        staleMs: 2000,
+      }));
+      expect(results.map((r) => r.status)).toEqual([0, 0, 0]);
+      expect(ups(log)).toHaveLength(1);
+      const takeovers = results.flatMap(({ stderr }) =>
+        stderr.split('\n').filter((line) => line.includes('taking over')),
+      );
+      expect(takeovers).toEqual([
+        expect.stringMatching(new RegExp(` from pid ${process.pid} after 2 s: `)),
+      ]);
+      expect(readdirSync(lock.dir)).toEqual([]);
+    } finally {
+      await stop();
+    }
+  }, 30_000);
+
+  it('of several processes that find a dead start’s lock, one takes it over, leaving nothing', async () => {
+    const { cfg, env, stop } = await fakeServer();
+    const log = join(tmp, `docker-${runs++}.log`);
+    const lock = heldLock(spawnSync(process.execPath, ['-e', '']).pid ?? 0);
+    try {
+      const results = await dbUpProcesses(4, () => ({
+        cfg,
+        env: { ...env, FAKE_DOCKER_LOG: log },
+        lockDir: lock.dir,
+        ...fast,
+      }));
+      expect(results).toEqual(Array.from({ length: 4 }, () => ({ status: 0, stderr: '' })));
+      expect(ups(log)).toHaveLength(1);
+      expect(readdirSync(lock.dir)).toEqual([]); // no lock, and none moved aside
+    } finally {
+      await stop();
+    }
+  }, 30_000);
+
+  // A registry that keeps failing: the holder's tries all fail. Each waiter used to take the lock
+  // in turn and try as often again (3 processes: 12 pulls, the last failing after 42 s).
+  it('fails the processes that waited for a start that failed, without tries of their own', async () => {
+    const { cfg, env, stop } = await fakeServer();
+    const log = join(tmp, `docker-${runs++}.log`);
+    const locks = lockDir();
+    const refused = Array.from({ length: 12 }, () => ({ stderr: `${transient[2]}\n`, status: 1 }));
+    try {
+      // the holder's 4 tries, 0.1, 0.2 and 0.4 s apart: the others are waiting by then
+      const results = await dbUpProcesses(3, () => ({
+        cfg,
+        env: { ...env, FAKE_DOCKER_LOG: log, FAKE_DOCKER_UP: JSON.stringify(refused) },
+        lockDir: locks,
+        ...fast,
+        backoffMs: 100,
+      }));
+      expect(results.map((r) => r.status)).toEqual([1, 1, 1]);
+      expect(ups(log)).toHaveLength(4);
+      for (const { stderr } of results)
+        expect(stderr).toContain(`docker compose up failed (exit 1):\n${transient[2]}`);
+      const waiters = results.filter(({ stderr }) =>
+        /another db-up \(pid \d+\) failed to start fake-project while this one waited for it, so this one does not try again:\n/.test(
+          stderr,
+        ),
+      );
+      expect(waiters).toHaveLength(2);
+    } finally {
+      await stop();
+    }
+  }, 30_000);
+
+  it('tries again when the last start failed before this one began', async () => {
+    const { cfg, env, stop } = await fakeServer();
+    const dir = lockDir();
+    writeFileSync(
+      join(dir, 'db-up-fake-project.failed'),
+      JSON.stringify({ pid: 1, at: Date.now() - 1000, reason: 'an earlier failure' }),
+    );
+    try {
+      const { error, calls } = await run(cfg, { env, options: { lockDir: dir } });
+      expect({ error, calls }).toEqual({ error: undefined, calls: [...LISTS, UP] });
+      expect(readdirSync(dir)).toEqual([]); // the record goes with the lock once a start works
+    } finally {
+      await stop();
+    }
+  }, 30_000);
+
+  it('leaves the lock alone at its release when another process took it over meanwhile', async () => {
+    const { cfg, env, stop } = await fakeServer();
+    const dir = lockDir();
+    const file = join(dir, 'db-up-fake-project.lock');
+    try {
+      // the fake `up` overwrites the lock with another process's, as a waiter's takeover does
+      const { error, calls } = await run(cfg, {
+        env: { ...env, FAKE_DOCKER_TAKEOVER: file },
+        options: { lockDir: dir },
+      });
+      expect({ error, calls }).toEqual({ error: undefined, calls: [...LISTS, UP] });
+      expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ token: 'theirs' });
+    } finally {
+      await stop();
+    }
+  }, 30_000);
+
+  it.runIf(process.getuid)(
+    'keeps its locks in a directory of this user’s own in the temp directory',
+    async () => {
+      const { cfg, env, stop } = await fakeServer();
+      const temp = mkdtempSync(join(tmp, 'tmpdir-'));
+      const log = join(tmp, `docker-${runs++}.log`);
+      try {
+        // no lockDir: db-up's own
+        const args = { cfg, env: { ...env, FAKE_DOCKER_LOG: log }, ...fast };
+        const results = await dbUpProcesses(1, () => args, { TMPDIR: temp });
+        expect(results).toEqual([{ status: 0, stderr: '' }]);
+        const dir = join(temp, `db-up-${process.getuid?.()}`);
+        expect(statSync(dir).mode & 0o777).toBe(0o700);
+        expect(readdirSync(dir)).toEqual([]); // released
+      } finally {
+        await stop();
+      }
+    },
+    30_000,
+  );
+});
+
+/** A start lock of fake-project in a fresh directory, holding `text`. */
+function lockHolding(text: string) {
+  const dir = lockDir();
+  const file = join(dir, 'db-up-fake-project.lock');
+  writeFileSync(file, text);
+  return { dir, file };
+}
+
+describe('takeOver', () => {
+  it('removes the lock while it still holds the text judged stale', () => {
+    const { dir, file } = lockHolding('stale');
+    expect(takeOver(file, 'stale')).toBe(true);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('keeps, with its age, a lock another process took since the stale one was read', () => {
+    const { dir, file } = lockHolding('fresh');
+    const old = new Date(Date.now() - 5000);
+    utimesSync(file, old, old);
+    expect(takeOver(file, 'stale')).toBe(false);
+    expect(readdirSync(dir)).toEqual(['db-up-fake-project.lock']); // nothing left aside
+    expect(readFileSync(file, 'utf8')).toBe('fresh');
+    expect(Date.now() - statSync(file).mtimeMs).toBeGreaterThan(4000);
+  });
+
+  it('does nothing once the lock is gone', () => {
+    expect(takeOver(join(lockDir(), 'db-up-fake-project.lock'), 'stale')).toBe(false);
+  });
+});
+
+describe('alive', () => {
+  it('tells a process that runs from one that has exited', () => {
+    expect(alive(process.pid)).toBe(true);
+    const gone = spawnSync(process.execPath, ['-e', '']).pid ?? 0;
+    expect(gone).toBeGreaterThan(0);
+    expect(alive(gone)).toBe(false);
+  });
 });
 
 const dockerRuns = spawnSync('docker', ['info', '--format', '{{.ID}}']).status === 0;
 
-// The race itself, on Docker: three processes start one fresh compose project at once, with
-// db-up's own timings and lock directory. Before the lock, two of the three `compose up` calls
-// failed on the container's name (and lived only by their one immediate retry).
+// The race itself, on Docker: three processes start one fresh compose project at once. Before the
+// lock, two of the three `compose up` calls failed on the container's name (and lived only by
+// their one immediate retry).
 describe.runIf(dockerRuns)('dbUp in several processes at once, on Docker', () => {
   it('creates the container once: no process hits a name conflict', async () => {
     const project = `db-up-race-${randomBytes(4).toString('hex')}`;
-    const composeFile = join(DB, '../../docker-compose.yml');
-    // its own project and port, never this checkout's; no labels (not owned) and no prune
-    // (commonDir unset): nothing else is touched
+    // its own project and port, never this checkout's, as a checkout of its own in this file's
+    // temp directory: labeled with this repository and that directory, a project that a run
+    // stopped halfway leaves behind is a deleted checkout's once afterAll removes the directory,
+    // and the next db-up start (or `pnpm prune:orphans`) removes it
+    const root = mkdtempSync(join(tmp, 'race-checkout-'));
+    const composeFile = join(root, 'docker-compose.yml');
+    copyFileSync(join(DB, '../../docker-compose.yml'), composeFile);
     const port = await closedPort();
-    const cfg = { ...local(port), project, composeFile, ownsProject: false, commonDir: '' };
+    const { commonDir } = resolveDb();
+    const cfg = { ...local(port), project, composeFile, root, commonDir, ownsProject: true };
     // the real docker, behind a script that logs each call
     const docker = spawnSync('sh', ['-c', 'command -v docker'], { encoding: 'utf8' }).stdout.trim();
     const bin = mkdtempSync(join(tmp, 'logging-bin-'));
@@ -654,17 +939,21 @@ describe.runIf(dockerRuns)('dbUp in several processes at once, on Docker', () =>
     writeFileSync(join(bin, 'docker'), `#!/bin/sh\necho "$*" >> "${log}"\nexec "${docker}" "$@"\n`);
     chmodSync(join(bin, 'docker'), 0o755);
     const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}` };
-    try {
-      const results = await dbUpProcesses(3, () => ({ cfg, env }));
-      expect(results.map((r) => r.status)).toEqual([0, 0, 0]);
-      for (const { stderr } of results) expect(stderr).not.toMatch(/Conflict|another start/);
-      expect(ups(log)).toHaveLength(1);
-    } finally {
+    // also when the test fails or times out: the processes first (afterEach), then what they made
+    onTestFinished(() => {
+      killChildren();
       spawnSync('docker', ['compose', '-p', project, '-f', composeFile, 'down', '-v'], {
         env: { ...process.env, DB_PORT: String(port), COMPOSE_PROJECT_NAME: project },
         stdio: 'ignore',
       });
-    }
+    }, 30_000);
+    // waits shorter than the test's: a process left running (the test process was killed) ends;
+    // locks in this file's temp directory: a killed process's lock goes with it
+    const options = { lockDir: lockDir(), staleMs: 30_000, backoffMs: 500 };
+    const results = await dbUpProcesses(3, () => ({ cfg, env, ...options }));
+    expect(results.map((r) => r.status)).toEqual([0, 0, 0]);
+    for (const { stderr } of results) expect(stderr).not.toMatch(/Conflict|another start/);
+    expect(ups(log)).toHaveLength(1);
   }, 60_000);
 });
 
