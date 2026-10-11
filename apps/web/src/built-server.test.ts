@@ -41,7 +41,7 @@ async function fakeApi(delayMs: number) {
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
-  for (const step of cleanup.splice(0).reverse()) step();
+  for (const step of cleanup.splice(0).toReversed()) step();
 });
 
 /**
@@ -84,11 +84,10 @@ async function startWeb(api: { server: Server; port: number }) {
   const lines = () => readFileSync(file, 'utf8').split('\n');
   /** The lines that parse as JSON: the web server's records. */
   const records = () =>
-    lines().flatMap((line): Record<string, unknown>[] => {
-      if (!line.startsWith('{')) return [];
-      const parsed: unknown = JSON.parse(line);
-      return parsed instanceof Object ? [parsed as Record<string, unknown>] : [];
-    });
+    lines()
+      .filter((line) => line.startsWith('{'))
+      .map((line): unknown => JSON.parse(line))
+      .filter((line): line is Record<string, unknown> => line instanceof Object);
   /** Lines that hold a record but are not one: a record joined to srvx's open line. */
   const broken = () => lines().filter((line) => line.includes('{"time"') && !line.startsWith('{'));
   return { child, url, exited, lines, records, broken };
