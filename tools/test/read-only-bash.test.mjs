@@ -87,6 +87,13 @@ describe('notReadOnly', () => {
     ['git log --output x', 'writes a file or runs a command'],
     ['git grep -Otouch x', 'writes a file or runs a command'],
     ['git grep --open-files-in-pager=touch x', 'writes a file or runs a command'],
+    // git grep's parse-options also takes -O in a cluster and abbreviated
+    ['git grep -nOx y', 'writes a file or runs a command'],
+    ['git grep -nO y', 'writes a file or runs a command'],
+    ['git grep --op=x y', 'writes a file or runs a command'],
+    ['git grep --open=x y', 'writes a file or runs a command'],
+    ['git grep --open-files=x y', 'writes a file or runs a command'],
+    ['git grep --open y', 'writes a file or runs a command'],
     ['GIT_EXTERNAL_DIFF=x git diff', 'not on the list'],
     ['pnpm check', 'not on the list'],
     ['pnpm regen', 'not on the list'],

@@ -136,7 +136,8 @@ process.exit(argv.includes('exit_3') ? 3 : 0);
   });
 });
 
-describe('the real drizzle-kit (a temp project)', () => {
+// drizzle-kit runs five times here (33s once in CI): far over Vitest's 5s default
+describe('the real drizzle-kit (a temp project)', { timeout: 120_000 }, () => {
   const project = join(tmp, 'project');
   mkdirSync(project);
   // packages/db's dependencies: drizzle-kit and the drizzle-orm it checks the schema with
@@ -191,7 +192,7 @@ describe('the real drizzle-kit (a temp project)', () => {
 // pnpm hands a root script its arguments one quoted word each, so the script sees a name with a
 // `;`, a space or a quote whole, and refuses it: no shell ever reads it. This is what makes
 // `Bash(pnpm db:generate *)` a safe allow rule.
-describe('pnpm db:generate (the root script)', () => {
+describe('pnpm db:generate (the root script)', { timeout: 30_000 }, () => {
   const marker = join(tmp, 'pwned');
   it.each([
     `x; touch ${marker}`,

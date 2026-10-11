@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 const SHELL = /[;&|<>$`\\\n\r(){}]/;
 /** git options that write a file (`git log --output=<file>`) or run a command (`git grep -O<cmd>`). */
 const GIT_WRITES = /^(?:--output\b|-O|--open-files-in-pager\b)/;
+/** git grep also takes -O inside a cluster of short options (`-nO<cmd>`) and abbreviated (`--open=<cmd>`). */
+const GREP_PAGER = /^(?:-[^-]*O|--op(?:e(?:n(?:-[\w-]*)?)?)?(?:=|$))/;
 const CHECK_TARGETS = 'lint|eslint|typecheck|test|test-browser';
 
 /**
@@ -81,7 +83,10 @@ export function notReadOnly(command) {
   const argv = words(String(command ?? '').trim());
   if (!argv || argv.length === 0)
     return 'it is not one plain command (no ; & | < > $ ` \\ ( ) { } or newlines)';
-  if (argv[0] === 'git' && argv.slice(1).some((a) => GIT_WRITES.test(a)))
+  if (
+    argv[0] === 'git' &&
+    argv.slice(1).some((a) => GIT_WRITES.test(a) || (argv[1] === 'grep' && GREP_PAGER.test(a)))
+  )
     return 'this git option writes a file or runs a command';
   const line = argv.join(' ');
   return READ_ONLY.some(([pattern]) => pattern.test(line)) ? undefined : 'it is not on the list';
