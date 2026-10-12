@@ -798,7 +798,9 @@ const markdownFiles = (root, dir) =>
  * vendor check pins that text. What this repo writes into a vendored skill, the `with` text of its
  * rewrites, is read like skill markdown instead, and the pnpm commands of a vendored copy are
  * checked like any other. A subagent file git ignores (one a tool generates on this machine) is
- * not checked at all.
+ * not checked at all. Each skill a subagent preloads (its frontmatter `skills`) must be one in
+ * .agents/skills: Claude Code starts the subagent without a missing one, and says nothing. A
+ * plugin's skill (`plugin:skill`) is not checked.
  */
 export function skillReferences(root, { files, gitRoot = root }) {
   const agentFiles = markdownFiles(root, '.claude/agents');
@@ -825,6 +827,7 @@ export function skillReferences(root, { files, gitRoot = root }) {
   const hasScript = (name) => Object.hasOwn(scripts, name);
 
   const vendored = new Set(vendoredSkills(root));
+  const skillNames = new Set(listDirs(join(root, '.agents', 'skills')));
   const missing = []; // [file, token, how to fix it]
   const problems = [];
   /** Note each path token of markdown `text` (from `where`) that names nothing in the repo. */
@@ -841,6 +844,12 @@ export function skillReferences(root, { files, gitRoot = root }) {
     const unchecked = uncheckedTokens(text);
     const vendoredSkill = file.startsWith('.agents/skills/') && vendored.has(file.split('/')[2]);
     if (!vendoredSkill) checkPaths(file, text, code, 'Update the file');
+    if (file.startsWith('.claude/agents/'))
+      for (const name of preloadedSkills(text))
+        if (!name.includes(':') && !skillNames.has(name))
+          problems.push(
+            `${file} preloads skill "${name}" (frontmatter \`skills\`), which .agents/skills does not have: renamed or removed? Claude Code starts the subagent without it, silently. Update the file`,
+          );
     for (const [name, kind] of pnpmCommands(code)) {
       if (unchecked.has(name)) continue;
       // `pnpm test` runs the `test` script; `pnpm start` the `start` script, else `node server.js`
@@ -882,6 +891,17 @@ export function skillReferences(root, { files, gitRoot = root }) {
         `${file} names \`${token}\`, which is not in the repo: renamed or deleted? ${fix} (a path that starts with a top-level directory is read from the root; a file its own steps create, or a token that is no repo path: \`<!-- agents:unchecked ${token} -->\`)`,
       );
   return [...new Set(problems)];
+}
+
+/** The skills a subagent file's frontmatter preloads (`skills`: a list, or names split by commas). */
+function preloadedSkills(text) {
+  const skills = parseFrontmatter(text)?.skills;
+  const names = Array.isArray(skills)
+    ? skills
+    : typeof skills === 'string'
+      ? skills.replace(/^\[|\]$/g, '').split(',')
+      : [];
+  return names.map((n) => unquoted(String(n).trim())).filter(Boolean);
 }
 
 /** `meta.name` of a workflow script (.claude/workflows/*.js), if it declares one. */

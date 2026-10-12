@@ -48,7 +48,7 @@ CodeGraph under Opt-ins.
 - **Task skills** live in `.agents/skills/<name>/SKILL.md`; `pnpm agents:sync` copies them to
   `.claude/skills` (never edit a copy). `AGENTS.md` lists them by task. `pnpm agents:check` (part
   of `pnpm check` and the pre-commit hook) fails when a skill or subagent names a repo path or a
-  pnpm script that does not exist.
+  pnpm script that does not exist, or a subagent preloads a skill that does not.
 - **Vendored skills** are upstream's text with this repo's commands: `playwright-cli` from
   playwright-core, and `drizzle`, `drizzle-generate`, `drizzle-hints` from drizzle-kit.
   `.agents/vendor.json` pins each package's version and the upstream file's sha256 and lists the
