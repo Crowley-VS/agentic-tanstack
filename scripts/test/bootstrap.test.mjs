@@ -18,8 +18,6 @@ import { needsShell, sortedPackageJson, USAGE, withoutScriptsRules } from '../bo
 
 const REPO = resolve(import.meta.dirname, '../..');
 const PROJECT = ['--yes', '--scope', '@smoke', '--name', 'smoke-app'];
-/** What a bootstrapped project keeps of scripts/: what every clone runs (docs/agents.md). */
-const KEPT_SCRIPTS = ['pw-agents.mjs', 'setup-agents.mjs'];
 
 /** A tarball-style copy of the working tree: every git-visible file, no .git (like giget). */
 function archiveCopy() {
@@ -109,10 +107,12 @@ describe('bootstrap', () => {
       return text.includes('@acme/') || text.includes('acme-app');
     });
     expect(leftovers).toEqual([]);
-    for (const gone of ['template.json', '.github/workflows/template-smoke.yml'])
+    for (const gone of ['scripts', 'template.json', '.github/workflows/template-smoke.yml'])
       expect(existsSync(join(copy, gone)), gone).toBe(false);
-    // the scripts project and bootstrap are gone; the scripts every clone runs stay
-    expect(readdirSync(join(copy, 'scripts')).toSorted()).toEqual(KEPT_SCRIPTS);
+    // what every clone runs stays, with its tests, in the tools project (docs/agents.md)
+    for (const kept of ['setup-agents', 'pw-agents'])
+      for (const f of [`tools/${kept}.mjs`, `tools/test/${kept}.test.mjs`])
+        expect(existsSync(join(copy, f)), f).toBe(true);
 
     expect(readFileSync(join(copy, 'README.md'), 'utf8')).toMatch(/^# smoke-app\n/);
     const tsconfig = JSON.parse(readFileSync(join(copy, 'tsconfig.json'), 'utf8'));
@@ -361,7 +361,7 @@ describe('bootstrap', () => {
       rmSync(hook);
       const again = bootstrap(copy, [...PROJECT, '--no-install']);
       expect(again.code, again.out).toBe(0);
-      expect(readdirSync(join(copy, 'scripts')).toSorted()).toEqual(KEPT_SCRIPTS);
+      expect(existsSync(join(copy, 'scripts'))).toBe(false);
       expect(gitIn(copy, 'log', '-1', '--format=%s')).toMatch(/^chore: bootstrap from /);
       expect(gitIn(copy, 'show', '--name-status', '--format=', 'HEAD')).toMatch(
         /^D\tscripts\/bootstrap\.ts$/m,

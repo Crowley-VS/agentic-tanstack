@@ -1,4 +1,4 @@
-// scripts/setup-agents.mjs with fakes: `claude`, `typescript-language-server` and Python are small
+// tools/setup-agents.mjs with fakes: `claude`, `typescript-language-server` and Python are small
 // scripts alone on PATH, and the script runs from a copy in a temp directory with its own
 // .claude/settings.json. Nothing here runs the real `claude plugin install`.
 import { spawnSync } from 'node:child_process';
@@ -61,8 +61,8 @@ else if (is('plugin', 'install')) {
 function machine({ fakes = ['claude', 'typescript-language-server', 'python3'], settings } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'setup-agents-'));
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
-  mkdirSync(join(root, 'scripts'));
-  copyFileSync(join(REPO, 'scripts/setup-agents.mjs'), join(root, 'scripts/setup-agents.mjs'));
+  mkdirSync(join(root, 'tools'));
+  copyFileSync(join(REPO, 'tools/setup-agents.mjs'), join(root, 'tools/setup-agents.mjs'));
   mkdirSync(join(root, '.claude'));
   writeFileSync(join(root, '.claude/settings.json'), settings ?? SETTINGS_TEXT);
   const bin = join(root, 'bin');
@@ -88,7 +88,7 @@ function machine({ fakes = ['claude', 'typescript-language-server', 'python3'], 
 function setupAgents(root, args = [], env = {}) {
   const log = join(root, 'claude.log');
   writeFileSync(log, '');
-  const res = spawnSync(process.execPath, [join(root, 'scripts/setup-agents.mjs'), ...args], {
+  const res = spawnSync(process.execPath, [join(root, 'tools/setup-agents.mjs'), ...args], {
     cwd: root,
     encoding: 'utf8',
     env: { PATH: join(root, 'bin'), FAKE_LOG: log, ...env },
@@ -240,7 +240,7 @@ describe('setup-agents', () => {
   it('refuses unknown arguments', () => {
     const res = setupAgents(machine(), ['--yes']);
     expect(res.code).toBe(2);
-    expect(res.out).toContain('Usage: node scripts/setup-agents.mjs [--check]');
+    expect(res.out).toContain('Usage: node tools/setup-agents.mjs [--check]');
     expect(res.calls).toEqual([]);
   });
 });

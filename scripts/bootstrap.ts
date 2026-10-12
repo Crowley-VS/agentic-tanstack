@@ -562,7 +562,7 @@ export async function main() {
     try {
       rmdirSync(join(ROOT, 'scripts'));
     } catch {
-      // not empty: the scripts every clone runs (setup-agents.mjs, pw-agents.mjs) stay
+      // not empty: keep it
     }
   }
 
@@ -572,7 +572,7 @@ export async function main() {
 Next steps:
   pnpm check                      the definition of done (lint, format, boundaries, types, tests, agent config)
   pnpm ports                      this checkout's ports and database URLs
-  node scripts/setup-agents.mjs   once per machine: the Claude Code plugins this repo enables, and what they need
+  node tools/setup-agents.mjs     once per machine: the Claude Code plugins this repo enables, and what they need
   AGENTS.md                       how agents (and you) work in this repo (docs/agents.md for humans)
 `);
 }

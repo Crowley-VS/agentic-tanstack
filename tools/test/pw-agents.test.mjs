@@ -1,4 +1,4 @@
-// scripts/pw-agents.mjs (`pnpm pw:agents`): with a fake `playwright init-agents` that writes what
+// tools/pw-agents.mjs (`pnpm pw:agents`): with a fake `playwright init-agents` that writes what
 // Playwright 1.63 writes, and once with the real one in a throwaway copy of the repository.
 import { execFileSync, spawn } from 'node:child_process';
 import {

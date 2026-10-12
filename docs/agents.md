@@ -9,7 +9,7 @@ the machinery around it and points at the files that hold it.
 Supported: macOS, Linux and WSL2. Native Windows is not: some package scripts and tests assume a
 POSIX shell.
 
-1. `node scripts/setup-agents.mjs` (`--check` reports without changing anything). Committed
+1. `node tools/setup-agents.mjs` (`--check` reports without changing anything). Committed
    settings turn the project's plugins on, but Claude Code downloads none of them by itself: the
    script installs each one (`claude plugin install <id> --scope project`), and checks for
    `typescript-language-server` and Python. It says what it changed and what is left for you.
@@ -101,7 +101,7 @@ skill copies and check the agent config on every commit.
 ## Plugins on at project scope
 
 `enabledPlugins` in `.claude/settings.json` turns these on for everyone; each machine installs
-them once (`node scripts/setup-agents.mjs`). Once installed, `claude plugin details <id>` shows
+them once (`node tools/setup-agents.mjs`). Once installed, `claude plugin details <id>` shows
 what one adds to each session, in tokens.
 
 | Plugin                                    | What it does                                                                                      | Cost and prerequisites                                                                                                |
@@ -143,7 +143,7 @@ None of these is on by default; each changes your own setup, not the repo.
   review on commit): `claude plugin install security-guidance@claude-plugins-official --scope local`.
   Needs Python 3.8+; each review is a model call at your cost (its README lists the switches).
 - **`pnpm pw:agents`** (Playwright's test planner, generator and healer as subagents for
-  `apps/web-e2e`): `scripts/pw-agents.mjs` runs `playwright init-agents --loop=claude` and patches
+  `apps/web-e2e`): `tools/pw-agents.mjs` runs `playwright init-agents --loop=claude` and patches
   what it writes. The agents stay local (`.gitignore`), as do the planner's plans in `specs/`.
   - Trust: each agent starts its own MCP server (the installed Playwright, `run-test-mcp-server`)
     from its frontmatter, which loads only in a trusted folder; their tools can run code in the

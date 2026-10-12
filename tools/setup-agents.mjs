@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Once per machine, from the repo root: what Claude Code needs here that a clone does not bring.
 //
-//   node scripts/setup-agents.mjs           set it up, saying what it changes
-//   node scripts/setup-agents.mjs --check   report only: runs nothing that changes anything
+//   node tools/setup-agents.mjs           set it up, saying what it changes
+//   node tools/setup-agents.mjs --check   report only: runs nothing that changes anything
 //
 // 1. The Claude Code CLI (`claude`), which the next step needs.
 // 2. The plugins .claude/settings.json turns on (`enabledPlugins`), the Nx plugin among them. The
@@ -27,7 +27,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BUILT_IN_MARKETPLACES = { 'claude-plugins-official': 'anthropics/claude-plugins-official' };
 const PLUGIN_ID = /^[\w.-]+@[\w.-]+$/;
 const GITHUB_REPO = /^[\w.-]+\/[\w.-]+$/;
-export const USAGE = `Usage: node scripts/setup-agents.mjs [--check]
+export const USAGE = `Usage: node tools/setup-agents.mjs [--check]
 
 Once per machine: installs the Claude Code plugins .claude/settings.json enables (project scope),
 and checks for typescript-language-server and Python. --check reports without changing anything.`;
