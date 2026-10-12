@@ -153,7 +153,9 @@ None of these is on by default; each changes your own setup, not the repo.
     To watch, remove it from the agent's `args`.
   - `.mcp.json` stays as it was: `init-agents` overwrites it with an npx server for every
     session, which the script undoes. `pnpm pw:agents --mcp-json` adds the patched server to it
-    instead.
+    instead (a `.mcp.json` that is not JSON it leaves alone, and exits 1). `.gitignore` lists
+    `.mcp.json`: MCP servers are per machine here, and the repo shares none. To share one with
+    everyone, remove that line and commit the file deliberately.
   - Playwright picks `apps/web-e2e/src/seed.spec.ts` as the agents' seed test (the first spec
     whose name holds `seed`): it checks the seeded API, so the planner starts on a blank page.
   - Run it again after a Playwright bump.

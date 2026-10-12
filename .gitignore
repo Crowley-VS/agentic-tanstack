@@ -44,6 +44,8 @@ apps/api/migrations/
 # TanStack Router generator temp files (written under the cwd, then renamed into src/)
 .tanstack/
 
-# `pnpm pw:agents` (opt-in, per machine): Playwright's test agents and the planner's test plans
+# `pnpm pw:agents` (opt-in, per machine): Playwright's test agents, the planner's test plans, and
+# the .mcp.json `--mcp-json` writes (MCP servers are per machine here: the repo shares none)
 .claude/agents/playwright-test-*.md
 /specs/
+/.mcp.json

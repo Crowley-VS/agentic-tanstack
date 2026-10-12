@@ -139,9 +139,17 @@ describe('pw:agents', () => {
     expect(JSON.parse(res.read('.mcp.json') ?? '')).toEqual({
       mcpServers: { mine: { command: 'true' }, 'playwright-test': MCP_SERVER },
     });
-    // a .mcp.json that is not JSON is left as it was
+  });
+
+  it('--mcp-json: a .mcp.json that is not JSON is left as it was, and the run fails', () => {
     const broken = run(['--mcp-json'], { '.mcp.json': '{ not json' });
     expect(broken.read('.mcp.json')).toBe('{ not json');
+    expect(broken.code).toBe(1);
+    expect(broken.out).toContain(
+      '.mcp.json: not JSON, so the playwright-test server was not added',
+    );
+    // the agents are patched all the same
+    expect(broken.read('.claude/agents/playwright-test-planner.md')).toContain('mcpServers:');
   });
 
   it('when init-agents fails: puts .mcp.json back, patches nothing and exits non-zero', () => {
@@ -168,15 +176,13 @@ describe('pw:agents', () => {
   it('runs the CLI this repo installs, and git ignores what it generates', () => {
     expect(playwrightBin(REPO)?.[1]).toBe(join(REPO, CLI));
     expect(existsSync(join(REPO, CONFIG))).toBe(true);
-    const ignored = execFileSync(
-      'git',
-      ['check-ignore', '--no-index', '.claude/agents/playwright-test-planner.md', 'specs/plan.md'],
-      { cwd: REPO, encoding: 'utf8' },
-    );
-    expect(ignored.trim().split('\n')).toEqual([
-      '.claude/agents/playwright-test-planner.md',
-      'specs/plan.md',
-    ]);
+    // the agents, the planner's plans and the .mcp.json --mcp-json writes
+    const generated = ['.claude/agents/playwright-test-planner.md', 'specs/plan.md', '.mcp.json'];
+    const ignored = execFileSync('git', ['check-ignore', '--no-index', ...generated], {
+      cwd: REPO,
+      encoding: 'utf8',
+    });
+    expect(ignored.trim().split('\n')).toEqual(generated);
   });
 });
 
@@ -218,7 +224,7 @@ async function serverTools(server, cwd) {
 }
 
 describe('the real init-agents (a throwaway copy of the repository)', () => {
-  it('writes agents whose patched server serves every tool they name, and no .mcp.json', async () => {
+  it('writes agents whose patched server serves every tool they name, and leaves .mcp.json as it was', async () => {
     const copy = join(tmp, 'copy');
     const files = execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], {
       cwd: REPO,
@@ -238,10 +244,16 @@ describe('the real init-agents (a throwaway copy of the repository)', () => {
       if (existsSync(join(REPO, dir, 'node_modules')))
         symlinkSync(join(REPO, dir, 'node_modules'), join(copy, dir, 'node_modules'), 'junction');
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: copy }); // tools/dev-ports.mjs needs one
+    // the copy's .mcp.json: none, unless git ignores it no more and this machine has one
+    const mcpJson = () =>
+      existsSync(join(copy, '.mcp.json')) ? readFileSync(join(copy, '.mcp.json'), 'utf8') : 'none';
+    const mcpBefore = mcpJson();
 
     const out = [];
     expect(main([], { root: copy, log: (l) => out.push(l) }), out.join('\n')).toBe(0);
-    expect(existsSync(join(copy, '.mcp.json'))).toBe(false);
+    // init-agents wrote one; pw:agents put it back
+    expect(out.join('\n')).toMatch(/\.mcp\.json: init-agents (?:created|overwrote) it; put back/);
+    expect(mcpJson()).toBe(mcpBefore);
     const agents = readdirSync(join(copy, '.claude/agents')).filter((f) =>
       f.startsWith('playwright-test-'),
     );

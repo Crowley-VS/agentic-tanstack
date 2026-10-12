@@ -14,9 +14,9 @@
 //   directory, the repo root;
 // - puts .mcp.json back as it was, or deletes it when there was none: init-agents overwrites it
 //   with an npx server for every session. With --mcp-json it keeps the servers .mcp.json had and
-//   adds the patched one.
-// What it generates stays on this machine: .gitignore lists the agents and specs/ (the planner's
-// test plans). Plain Node, no dependencies.
+//   adds the patched one; when .mcp.json is not JSON, it leaves it alone and exits 1.
+// What it generates stays on this machine: .gitignore lists the agents, specs/ (the planner's
+// test plans) and .mcp.json. Plain Node, no dependencies.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -111,6 +111,8 @@ export function main(
   const res = spawnSync(cmd, args, { cwd: root, stdio: 'inherit' });
 
   const done = [];
+  // --mcp-json asked for a server that could not be added: the run fails once the agents are done
+  let mcpFailed = false;
   // .mcp.json: as it was, unless --mcp-json; whatever init-agents did, even when it failed
   const mcpAfter = read(mcpFile);
   if (mcpJson && res.status === 0) {
@@ -118,14 +120,22 @@ export function main(
     try {
       config = mcpBefore ? JSON.parse(mcpBefore) : {};
     } catch {
-      console.error('✗ pw:agents: .mcp.json is not JSON: left as it was');
       config = undefined;
     }
     if (config) {
       config.mcpServers = { ...config.mcpServers, [SERVER]: MCP_SERVER };
       writeFileSync(mcpFile, `${JSON.stringify(config, null, 2)}\n`);
       done.push(`.mcp.json: added the ${SERVER} server (pinned Playwright, headless)`);
-    } else if (mcpAfter !== mcpBefore) writeFileSync(mcpFile, mcpBefore);
+    } else {
+      if (mcpAfter !== mcpBefore) writeFileSync(mcpFile, mcpBefore);
+      mcpFailed = true;
+      console.error(
+        `✗ pw:agents: .mcp.json is not JSON: left as it was, without the ${SERVER} server`,
+      );
+      done.push(
+        `.mcp.json: not JSON, so the ${SERVER} server was not added (left as it was): fix it, then run \`pnpm pw:agents --mcp-json\` again`,
+      );
+    }
   } else if (mcpAfter !== mcpBefore) {
     if (mcpBefore === undefined) rmSync(mcpFile, { force: true });
     else writeFileSync(mcpFile, mcpBefore);
@@ -169,7 +179,7 @@ export function main(
       'first unless you allow it. Run it again after a Playwright bump.',
     ].join('\n'),
   );
-  return 0;
+  return mcpFailed ? 1 : 0;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
