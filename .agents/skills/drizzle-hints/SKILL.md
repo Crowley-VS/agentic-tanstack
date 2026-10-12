@@ -104,7 +104,7 @@ Pass the reply array as JSON via one of two flags on `generate` or `push`:
 - `--hints-file ./hints.json` — same JSON array read from a file. Preferred for arrays of more than one or two items.
 
 ```bash
-pnpm db:generate <what> --output json --hints-file <file>   # <file>: relative to the repo root
+pnpm db:generate <what> --output json --hints-file <file>   # <file>: a .json file in the repo, e.g. .agents/ignore/hints.json
 ```
 
 `--hints` and `--hints-file` are mutually exclusive at the source level — pass one or the other, not both. A malformed JSON file or a hint that fails shape validation returns `status: 'error'` with `error.code: 'invalid_hints'` and `meta.source: 'file' | 'inline'`.

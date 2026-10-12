@@ -13,12 +13,14 @@
 // again, and `drizzle-kit generate` gains nothing from Nx (no cache, no project graph; the working
 // directory is set here). `pnpm regen` still runs the `db:db-generate` target, without a name.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** packages/db: drizzle-kit reads drizzle.config.ts from here. */
 export const DB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/** The repo root: where pnpm runs root scripts, and where a --hints-file must be. */
+export const REPO = resolve(DB_DIR, '../..');
 /** A migration name: what drizzle-kit appends to the timestamp of the migration's folder. */
 export const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const SYNOPSIS =
@@ -32,16 +34,18 @@ Options:
   --custom             an empty migration.sql for your own SQL (a backfill)
   --output json|text   drizzle-kit's output: json prints one JSON envelope (always non-interactive)
   --explain            a dry run: print the planned SQL, write nothing
-  --hints-file <file>  answers to drizzle-kit's missing_hints, a JSON file (relative to the repo root)
+  --hints-file <file>  answers to drizzle-kit's missing_hints: a .json file in the repo
+                       (relative to the repo root, e.g. .agents/ignore/hints.json)
   -h, --help           print this help`;
 
 export class UsageError extends Error {}
 
 /**
  * The options of `argv` (the script's arguments), or a UsageError naming the first one that is
- * not allowed. `cwd` resolves a relative --hints-file (pnpm runs root scripts in the repo root).
+ * not allowed. `cwd` resolves a relative --hints-file (pnpm runs root scripts in the repo root);
+ * `root` is the directory it must be in.
  */
-export function parseArgs(argv, { cwd = process.cwd() } = {}) {
+export function parseArgs(argv, { cwd = process.cwd(), root = REPO } = {}) {
   const opts = { name: undefined, custom: false, explain: false, output: undefined };
   const seen = new Set();
   const args = argv[0] === '--' ? argv.slice(1) : [...argv]; // `pnpm db:generate -- …` habit
@@ -73,13 +77,9 @@ export function parseArgs(argv, { cwd = process.cwd() } = {}) {
         opts.output = output;
         break;
       }
-      case '--hints-file': {
-        const file = resolve(cwd, value());
-        if (!existsSync(file) || !statSync(file).isFile())
-          throw new UsageError(`--hints-file: no such file ${JSON.stringify(file)}`);
-        opts.hintsFile = file;
+      case '--hints-file':
+        opts.hintsFile = hintsFile(resolve(cwd, value()), root);
         break;
-      }
       case '--name':
         throw new UsageError('pass the name as the only argument: pnpm db:generate <name>');
       default:
@@ -100,6 +100,27 @@ export function parseArgs(argv, { cwd = process.cwd() } = {}) {
   }
   if (opts.name === undefined) throw new UsageError('missing the migration name');
   return opts;
+}
+
+/**
+ * The real path of `file`, a hints file: a `.json` file inside `root`, named nothing like
+ * `.env*` (a symlink is judged by what it points to too). drizzle-kit prints the start of a file
+ * it cannot parse as JSON, so any other file could be read through an allowed command:
+ * `--hints-file .env` would get around the `Read(.env)` deny rule.
+ */
+function hintsFile(file, root) {
+  if (!existsSync(file) || !statSync(file).isFile())
+    throw new UsageError(`--hints-file: no such file ${JSON.stringify(file)}`);
+  const real = realpathSync(file);
+  const inside = relative(realpathSync(root), real);
+  const refuse = (why) =>
+    new UsageError(`--hints-file: ${JSON.stringify(file)} ${why}: give a .json file in the repo`);
+  if (inside.split(sep)[0] === '..' || isAbsolute(inside)) throw refuse('is outside the repo');
+  for (const name of new Set([basename(file), basename(real)])) {
+    if (name.startsWith('.env')) throw refuse(`is an env file (${name})`);
+    if (!name.endsWith('.json')) throw refuse(`is not a .json file (${name})`);
+  }
+  return real;
 }
 
 /** `--flag=value` → ['--flag', 'value']; `--flag` → ['--flag', undefined]. */
@@ -138,14 +159,21 @@ export function drizzleKitBin(dir = DB_DIR) {
 /**
  * Check `argv`, then run drizzle-kit (`[command, ...args]`) in `cwd`. Returns the exit code:
  * drizzle-kit's (0 ok or no changes, 2 missing hints, …), or 2 for arguments it refused.
+ * `argsCwd` and `argsRoot`: parseArgs' `cwd` and `root`.
  */
 export function main(
   argv,
-  { cwd = DB_DIR, drizzleKit = drizzleKitBin(), argsCwd = process.cwd(), stdio = 'inherit' } = {},
+  {
+    cwd = DB_DIR,
+    drizzleKit = drizzleKitBin(),
+    argsCwd = process.cwd(),
+    argsRoot = REPO,
+    stdio = 'inherit',
+  } = {},
 ) {
   let opts;
   try {
-    opts = parseArgs(argv, { cwd: argsCwd });
+    opts = parseArgs(argv, { cwd: argsCwd, root: argsRoot });
   } catch (err) {
     if (!(err instanceof UsageError)) throw err;
     console.error(`✗ db:generate: ${err.message}\n  ${SYNOPSIS} (--help for more)`);

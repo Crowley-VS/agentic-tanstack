@@ -114,7 +114,8 @@
         "inputs": [
           "default",
           "^production",
-          "dbServer"
+          "dbServer",
+          "{workspaceRoot}/package.json"
         ],
         "dependsOn": [
           "db-check"

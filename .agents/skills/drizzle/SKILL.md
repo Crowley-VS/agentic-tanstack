@@ -28,8 +28,8 @@ configured.
 
 - `pnpm db:generate <what>`: a new migration from the schema (skill `db-migration`). It takes one
   name (letters, digits, `_` and `-`) and only `--custom`, `--output json|text`, `--explain` (a dry
-  run that writes nothing) and `--hints-file <file>`; it refuses anything else. The envelope of a
-  dry run: `pnpm db:generate <what> --output json --explain`.
+  run that writes nothing) and `--hints-file <file>` (a JSON file in the repo); it refuses
+  anything else. The envelope of a dry run: `pnpm db:generate <what> --output json --explain`.
 - `pnpm nx run db:db-check`: drizzle-kit's consistency check of `packages/db/migrations`
   (`pnpm nx run db:test` runs it first).
 - `push`, `pull`, `up` and `export` are not used: every schema change is a generated, reviewed

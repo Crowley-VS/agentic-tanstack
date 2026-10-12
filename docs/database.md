@@ -30,8 +30,10 @@ pending schema change would get a random name), read the SQL, and commit them.
 `pnpm db:generate <what>` (`packages/db/scripts/db-generate.mjs`) takes the name (letters, digits,
 `_`, `-`) and only `--custom`, `--output json|text`, `--explain` and `--hints-file <file>`: it
 checks each argument before anything runs and starts drizzle-kit without a shell, so an allow
-rule for it (`Bash(pnpm db:generate *)`) cannot run anything else. The `db:db-generate` Nx target
-passes `--args` on to a shell, so it is for `pnpm regen` only. Once git tracks a
+rule for it (`Bash(pnpm db:generate *)`) cannot run anything else. A hints file must be a `.json`
+file in the repo, never a `.env*` (`.agents/ignore/` holds scratch ones): drizzle-kit prints the
+start of a file it cannot parse, so any other file could be read through it. The `db:db-generate`
+Nx target passes `--args` on to a shell, so it is for `pnpm regen` only. Once git tracks a
 migration (staged or committed) the guard hook blocks edits to it; only a new, untracked one may
 still be edited. A migration step by step, and a change that takes more than one deploy (expand,
 then contract): skill `db-migration`; a new field end to end: skill `add-feature`.
