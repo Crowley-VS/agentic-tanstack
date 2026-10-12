@@ -186,6 +186,11 @@
           "with": "pnpm db:generate <what> --output json   # when packages/db/drizzle.config.ts is missing"
         },
         {
+          "why": "the error example's envelope: with no config file, drizzle-kit names the last default it looked for (drizzle.config.ts, .js, .json), as an absolute path",
+          "replace": "# → {\"status\":\"error\",\"error\":{\"code\":\"config_file_not_found_error\",\"path\":\"missing.ts\"}}",
+          "with": "# → {\"status\":\"error\",\"error\":{\"code\":\"config_file_not_found_error\",\"path\":\"<repo>/packages/db/drizzle.config.json\"}}"
+        },
+        {
           "why": "drizzle-migrations is not vendored or loadable here (it recommends push)",
           "replace": "See the `drizzle-migrations` skill's dialect-notes section.",
           "with": "The `drizzle-migrations` skill that has them is left out here: it recommends `drizzle-kit push` for local iteration, which this repo never uses. This repo's dialect is postgresql."

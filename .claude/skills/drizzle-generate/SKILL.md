@@ -96,7 +96,7 @@ pnpm db:generate <what> --output json
 
 # Hard error
 pnpm db:generate <what> --output json   # when packages/db/drizzle.config.ts is missing
-# → {"status":"error","error":{"code":"config_file_not_found_error","path":"missing.ts"}}
+# → {"status":"error","error":{"code":"config_file_not_found_error","path":"<repo>/packages/db/drizzle.config.json"}}
 ```
 
 SDK equivalent of the happy path:

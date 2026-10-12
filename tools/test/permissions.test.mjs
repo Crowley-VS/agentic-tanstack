@@ -402,7 +402,8 @@ describe('what the browser CLI may do without a prompt', () => {
 describe('pnpm db:generate', () => {
   const RULE = 'Bash(pnpm db:generate *)';
   // A human adds RULE to .claude/settings.json (agents cannot edit it); until then a migration
-  // asks in the default mode. Once it is in, set this to `true`: the test then pins the rule.
+  // asks in the default mode. APPLIED follows settings.json, so these tests pass before and after
+  // that edit: they pin what the rule approves (these calls, nothing else), not that it is there.
   const APPLIED = permissions.allow.includes(RULE);
   const CALLS = [
     'Bash(pnpm db:generate add_tags)',
