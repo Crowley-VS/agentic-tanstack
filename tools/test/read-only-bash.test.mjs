@@ -1,10 +1,12 @@
 // tools/agent-hooks/read-only-bash.mjs: the PreToolUse hook that keeps the reviewer subagent
 // (.claude/agents/reviewer.md) to commands that read.
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { notReadOnly, words } from '../agent-hooks/read-only-bash.mjs';
-import { parseFrontmatter } from '../agents.mjs';
+import { notReadOnly, NX_ALONE, words } from '../agent-hooks/read-only-bash.mjs';
+import { codeOf, parseFrontmatter } from '../agents.mjs';
+import { nodeBin } from '../lib/bin.mjs';
 import { runHook } from './helpers.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
@@ -68,10 +70,11 @@ describe('notReadOnly', () => {
     'pnpm nx show project web --json',
     'pnpm agents:check',
     'pnpm ports',
-    'pnpm nx run web:typecheck',
-    'pnpm nx run web-e2e:eslint',
-    'pnpm nx run db:test',
-    'pnpm nx affected -t lint eslint typecheck test test-browser build',
+    'pnpm nx run web:typecheck --excludeTaskDependencies --skipSync',
+    'pnpm nx run web:eslint --excludeTaskDependencies --skipSync',
+    'pnpm nx run web-e2e:eslint --excludeTaskDependencies --skipSync',
+    'pnpm nx run db:test --excludeTaskDependencies --skipSync',
+    'pnpm nx affected -t lint eslint typecheck test test-browser --excludeTaskDependencies --skipSync',
     'pnpm nx sync:check',
     'node tools/check.mjs --format',
   ])('lets %s through', (command) => expect(notReadOnly(command)).toBeUndefined());
@@ -103,6 +106,25 @@ describe('notReadOnly', () => {
     ['pnpm nx run web:test --args=x', 'not on the list'],
     ['pnpm nx run web:test --command=x', 'not on the list'],
     ['pnpm nx affected -t test --args=x', 'not on the list'],
+    // with the tasks they depend on, checks regenerate tracked files: web:eslint runs
+    // api:print-schema first (schema.graphql), web:typecheck codegen and the route generator
+    ['pnpm nx run web:eslint', 'not on the list'],
+    ['pnpm nx run web:typecheck', 'not on the list'],
+    ['pnpm nx run db:test', 'not on the list'],
+    // and so do Nx's sync generators (tsconfig references)
+    ['pnpm nx run web:typecheck --excludeTaskDependencies', 'not on the list'],
+    ['pnpm nx run web:typecheck --skipSync', 'not on the list'],
+    ['pnpm nx run web:test --excludeTaskDependencies --skipSync --args=x', 'not on the list'],
+    ['pnpm nx run web:build --excludeTaskDependencies --skipSync', 'not on the list'],
+    ['pnpm nx run web:codegen --excludeTaskDependencies --skipSync', 'not on the list'],
+    ['pnpm nx run api:print-schema --excludeTaskDependencies --skipSync', 'not on the list'],
+    ['pnpm nx affected -t lint eslint typecheck test test-browser', 'not on the list'],
+    ['pnpm nx affected -t lint eslint typecheck test test-browser build', 'not on the list'],
+    // a build regenerates routeTree.gen.ts (TanStack Start's Vite plugin), alone or not
+    [
+      'pnpm nx affected -t lint eslint typecheck test test-browser build --excludeTaskDependencies --skipSync',
+      'not on the list',
+    ],
     ['node tools/pr-review.mjs post --pr 31', 'not on the list'],
     ['node tools/check.mjs', 'not on the list'],
     ['gh pr comment 31 -b x', 'not on the list'],
@@ -113,6 +135,26 @@ describe('notReadOnly', () => {
     ['', 'not one plain command'],
     [undefined, 'not one plain command'],
   ])('blocks %j: %s', (command, why) => expect(notReadOnly(command)).toContain(why));
+});
+
+describe('the Nx checks', () => {
+  it('run alone with options this Nx has', () => {
+    const [cmd = '', ...pre] = nodeBin(REPO, 'nx') ?? [];
+    // nx prints its help on stderr
+    const res = spawnSync(cmd, [...pre, 'affected', '--help'], { cwd: REPO, encoding: 'utf8' });
+    expect(res.status, res.stderr).toBe(0);
+    const help = `${res.stdout}${res.stderr}`;
+    for (const option of NX_ALONE.split(' ')) expect(help, option).toContain(` ${option} `);
+  });
+
+  it('are named in reviewer.md in the form the hook lets through', () => {
+    const md = readFileSync(resolve(REPO, '.claude/agents/reviewer.md'), 'utf8');
+    const nx = codeOf(md)
+      .filter((c) => /^pnpm nx (?:run <project>:|affected )/.test(c))
+      .map((c) => c.replace('<project>', 'web').replace(/<[\w-]+>/, 'eslint'));
+    expect(nx.length).toBeGreaterThan(1);
+    for (const command of nx) expect(notReadOnly(command), command).toBeUndefined();
+  });
 });
 
 describe('the hook', () => {

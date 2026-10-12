@@ -3,7 +3,10 @@
 // from its frontmatter. A subagent's `tools` can only grant or remove the whole Bash tool, so this
 // hook narrows it: it lets through only the commands in READ_ONLY (git's read commands, the PR's
 // diff and checks, the project graph, and checks that change no tracked file), each as one plain
-// command. Anything else is blocked (exit 2, the reason on stderr), and so is any command with a
+// command. The Nx checks run alone (NX_ALONE): the tasks they depend on regenerate tracked files
+// (print-schema, codegen, the route generator), and so do a build (TanStack Start's route
+// generator) and Nx's sync generators (tsconfig references), so neither is on the list either.
+// Anything else is blocked (exit 2, the reason on stderr), and so is any command with a
 // character a shell would act on: chaining, pipes, redirects, substitution, escapes, newlines.
 // A command it lets through still goes through the permission rules: it never approves anything.
 // Fails CLOSED on malformed input.
@@ -18,6 +21,13 @@ const GIT_WRITES = /^(?:--output\b|-O|--open-files-in-pager\b)/;
 /** git grep also takes -O inside a cluster of short options (`-nO<cmd>`) and abbreviated (`--open=<cmd>`). */
 const GREP_PAGER = /^(?:-[^-]*O|--op(?:e(?:n(?:-[\w-]*)?)?)?(?:=|$))/;
 const CHECK_TARGETS = 'lint|eslint|typecheck|test|test-browser';
+/**
+ * How an Nx check runs here: without the tasks it depends on (`web:eslint` runs
+ * `api:print-schema` first, which rewrites packages/graphql/schema.graphql) and without the sync
+ * generators (they rewrite tsconfig files). It checks the tree as it is, generated files as
+ * committed.
+ */
+export const NX_ALONE = '--excludeTaskDependencies --skipSync';
 
 /**
  * What a read-only agent may run: [pattern over the command's words joined by one space, what to
@@ -38,12 +48,12 @@ export const READ_ONLY = [
   [/^pnpm nx show(?: .*)?$/, 'pnpm nx show …'],
   [/^pnpm (?:agents:check|ports)$/, 'pnpm agents:check, pnpm ports'],
   [
-    new RegExp(`^pnpm nx run [\\w-]+:(?:${CHECK_TARGETS})$`),
-    `pnpm nx run <project>:<${CHECK_TARGETS}>`,
+    new RegExp(`^pnpm nx run [\\w-]+:(?:${CHECK_TARGETS}) ${NX_ALONE}$`),
+    `pnpm nx run <project>:<${CHECK_TARGETS}> ${NX_ALONE}`,
   ],
   [
-    /^pnpm nx affected -t lint eslint typecheck test test-browser(?: build)?$/,
-    'pnpm nx affected -t lint eslint typecheck test test-browser [build]',
+    new RegExp(`^pnpm nx affected -t lint eslint typecheck test test-browser ${NX_ALONE}$`),
+    `pnpm nx affected -t lint eslint typecheck test test-browser ${NX_ALONE}`,
   ],
   [/^pnpm nx sync:check$/, 'pnpm nx sync:check'],
   [

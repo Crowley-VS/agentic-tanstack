@@ -72,8 +72,11 @@ name one):
 - **`reviewer`**: reviews a diff, branch or PR against the `AGENTS.md` invariants and reports
   each finding with a file, a line and the rule. Read-only: Read, Grep, Glob and Bash, where
   `tools/agent-hooks/read-only-bash.mjs` (a PreToolUse hook in its frontmatter) lets through only
-  git's read commands, the PR's diff and checks, `pnpm nx show` and the checks that change no
-  tracked file. A subagent's `tools` can only grant or drop all of Bash, hence the hook.
+  git's read commands, the PR's diff and checks, `pnpm nx show` and checks that change no tracked
+  file. Nx checks run alone (`--excludeTaskDependencies --skipSync`): what they depend on
+  (`api:print-schema`, `web:codegen`, the route generator, a build) and Nx's sync generators
+  rewrite tracked files, which would fix a stale generated file in your tree and hide the finding.
+  A subagent's `tools` can only grant or drop all of Bash, hence the hook.
 - **`db-migrations`**: makes a schema change and its migration with skills `db-migration` and
   `drizzle` preloaded.
 - Playwright's planner, generator and healer: opt-in, below.
