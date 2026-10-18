@@ -1,0 +1,44 @@
+# Template maintenance only: once a week, main's agent config against what its tools write. `pnpm
+# check` (CI) runs both checks on every change too: this is the scheduled safety net for main
+# itself, which a template's users copy at any moment. Runs only where the repository variable
+# TEMPLATE_MAINTENANCE is 'true' (the upstream template); bootstrap deletes this file from copies.
+# docs/maintaining.md has the details.
+name: Agent config drift
+
+on:
+  schedule:
+    - cron: '47 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CI: 'true'
+  NX_NO_CLOUD: 'true'
+  NX_TUI: 'false'
+
+jobs:
+  drift:
+    if: vars.TEMPLATE_MAINTENANCE == 'true'
+    name: agent config
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: moonrepo/setup-toolchain@v0
+        with:
+          auto-install: true
+
+      - run: pnpm install --frozen-lockfile
+
+      # The CLAUDE.md block, settings and .gitignore lines Nx writes (with the installed Nx's AI
+      # files: NX_AI_FILES_USE_LOCAL). A failure: a human runs `pnpm agents:nx` and commits it.
+      - name: Nx's agent config (nx configure-ai-agents --check)
+        run: pnpm agents:nx-check
+
+      # Skills and their copies, vendored skills, settings, hooks, the paths skills name.
+      - name: The repository's agent config (tools/agents.mjs check)
+        if: ${{ !cancelled() }}
+        run: pnpm agents:check

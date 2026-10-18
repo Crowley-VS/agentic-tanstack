@@ -1,7 +1,8 @@
-# Template maintenance only: proves a fresh copy bootstraps and passes every check.
-# Runs only where the repository variable TEMPLATE_MAINTENANCE is 'true' (the upstream
-# template). Repository variables are not copied into repos created from the template,
-# and bootstrap deletes this file anyway.
+# Template maintenance only: proves a fresh copy bootstraps, passes every check and its end-to-end
+# tests, on pull requests, on main and weekly (dependencies move between changes). Runs only where
+# the repository variable TEMPLATE_MAINTENANCE is 'true' (the upstream template). Repository
+# variables are not copied into repos created from the template, and bootstrap deletes this file
+# anyway. docs/maintaining.md has the details.
 name: Template smoke test
 
 on:
@@ -47,9 +48,10 @@ jobs:
       - name: Create a fresh copy
         env:
           DEST: ${{ runner.temp }}/copy
+          MODE: ${{ matrix.mode }}
         run: |
           mkdir -p "$DEST"
-          if [ "${{ matrix.mode }}" = archive ]; then
+          if [ "$MODE" = archive ]; then
             git archive HEAD | tar -x -C "$DEST"
           else
             git ls-files -z | tar --null -T - -cf - | tar -x -C "$DEST"
@@ -78,9 +80,47 @@ jobs:
           test ! -e scripts/bootstrap.ts
           test ! -e scripts/bootstrap.mjs
           test ! -e template.json
-          test ! -e .github/workflows/template-smoke.yml
+          # the template's maintenance (docs/maintaining.md) is gone; what a project uses stays
+          for f in template-smoke.yml release-please.yml agent-config-drift.yml; do
+            test ! -e ".github/workflows/$f"
+          done
+          test ! -e release-please-config.json
+          test ! -e .release-please-manifest.json
+          test ! -e .prettierignore
+          test -e .github/workflows/ci.yml
+          test -e .github/workflows/renovate-regen.yml
+          test -e .github/renovate.json5
           test "$(git rev-list --count HEAD)" -le 2
+
+      # git archive writes the commit into template.json (export-subst), as GitHub's tarballs do;
+      # a "Use this template" copy has no way to know it
+      - name: Provenance
+        working-directory: ${{ runner.temp }}/copy
+        env:
+          MODE: ${{ matrix.mode }}
+          SOURCE: ${{ github.workspace }}
+        run: |
+          commit=$(node -p "String(require('./package.json').template.commit)")
+          expected=null
+          if [ "$MODE" = archive ]; then expected=$(git -C "$SOURCE" rev-parse HEAD); fi
+          echo "package.json#template.commit: $commit"
+          [ "$commit" = "$expected" ] || { echo "::error::expected the commit $expected"; exit 1; }
 
       - name: Every check on every project
         working-directory: ${{ runner.temp }}/copy
         run: pnpm check --all
+
+      # the production builds `pnpm check --all` just made, on the copy's e2e ports and database
+      - name: End-to-end tests
+        working-directory: ${{ runner.temp }}/copy
+        run: pnpm nx e2e web-e2e --outputStyle=static
+
+      # the Playwright report and each failed test's trace, screenshot and error context
+      - name: Upload test output
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-output-${{ matrix.mode }}
+          path: ${{ runner.temp }}/copy/apps/*/test-output/
+          if-no-files-found: ignore
+          retention-days: 14
