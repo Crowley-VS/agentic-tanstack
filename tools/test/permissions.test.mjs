@@ -156,8 +156,9 @@ describe('git push', () => {
 
 // The local dev database is routine agent work, however destructive to its (reseedable) rows: no
 // ask rule, so auto mode runs it and a user may allow it in their settings.local.json. Nothing here
-// allows the commands that wipe it or open a client (`db-psql --args='-c "…"'` runs any SQL, and
-// any shell command through Nx), so the default mode still asks for them. Dependencies always ask.
+// allows the commands that wipe it or open a client through Nx (`db-psql --args='-c "…"'` runs any
+// SQL, and any shell command), so the default mode still asks for them; `pnpm db:psql` (below) is
+// the client a wildcard rule can allow. Dependencies always ask.
 describe('database and dependencies', () => {
   const DEPENDENCIES = [
     'Bash(pnpm add zod --filter @acme/db)',
@@ -430,6 +431,42 @@ describe('pnpm db:generate', () => {
   );
   it('approves no other command', () => {
     for (const call of ['Bash(pnpm db:generatex)', 'Bash(pnpm db:migrate x)', 'Bash(pnpm x)'])
+      expect(matches([RULE], call, { skipAssignments: false }), call).toBe(false);
+  });
+});
+
+// `pnpm db:psql` hands psql each argument as one word: pnpm quotes each one for the shell it runs
+// a root script in, and packages/db/scripts/db-up.mjs passes them to `docker compose exec` as an
+// argv array, after psql's name (packages/db/src/db-up.test.ts runs commas, quotes and shell syntax
+// through it). So a wildcard rule for it approves psql on this checkout's Postgres and nothing
+// else: any SQL on the dev database, and psql's backslash commands, which run inside the
+// container. A rule for the db:db-psql Nx target would approve any command: its --args reach a
+// shell.
+describe('pnpm db:psql', () => {
+  const RULE = 'Bash(pnpm db:psql *)';
+  // as for db:generate: a human adds RULE to .claude/settings.json; APPLIED follows it
+  const APPLIED = permissions.allow.includes(RULE);
+  const CALLS = [
+    'Bash(pnpm db:psql)',
+    'Bash(pnpm db:psql -c "select 1 as a, 2 as b")',
+    `Bash(pnpm db:psql -tA -c "select title, count(*) from notes group by title")`,
+    `Bash(pnpm db:psql -c "truncate comments")`,
+  ];
+
+  it('is a wildcard rule that approves nothing beyond the script', () => {
+    expect(unsafeAllowRule(RULE)).toBeUndefined();
+    expect(unsafeAllowRule('Bash(pnpm nx run db:db-psql *)')).toMatch(/any shell command/);
+  });
+  it.each(CALLS)('never asks for %s', (call) => expect(asks(call)).toBe(false));
+  it.each(CALLS)('allows %s once the rule is in settings.json', (call) =>
+    expect(allows(call)).toBe(APPLIED),
+  );
+  it('approves no other command', () => {
+    for (const call of [
+      'Bash(pnpm db:psqlx)',
+      'Bash(pnpm db:reset)',
+      `Bash(pnpm nx run db:db-psql --args='-c "select 1"')`,
+    ])
       expect(matches([RULE], call, { skipAssignments: false }), call).toBe(false);
   });
 });

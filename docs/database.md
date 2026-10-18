@@ -6,7 +6,7 @@ databases.
 Postgres 18 runs in Docker, one server per checkout: each git worktree gets its own port and
 databases (`pnpm ports`). Docker must be running. Targets that need the database start and migrate
 it first (`db:db-migrate` depends on `db:db-up`; `db:db-seed`, `db:db-studio` and `api:dev` on
-`db:db-migrate`); `db:db-psql` only starts the server.
+`db:db-migrate`); `pnpm db:psql` only starts the server.
 
 | Task                                       | Command                                                            |
 | ------------------------------------------ | ------------------------------------------------------------------ |
@@ -14,14 +14,22 @@ it first (`db:db-migrate` depends on `db:db-up`; `db:db-seed`, `db:db-studio` an
 | Migrate / reseed (deterministic data)      | `pnpm db:migrate` / `pnpm db:seed`                                 |
 | Change the schema                          | edit `packages/db/src/schema/*`, then `pnpm db:generate <what>`    |
 | Wipe it and start an empty server          | `pnpm db:reset` (then `pnpm db:seed` migrates and seeds it)        |
-| Browse data (the studio URL: `pnpm ports`) | `pnpm db:studio` · `pnpm nx run db:db-psql` (one query: below)     |
+| Browse data (the studio URL: `pnpm ports`) | `pnpm db:studio` · `pnpm db:psql` (one query: below)               |
 | Stop it, data kept / remove leftovers      | `pnpm teardown` / `pnpm prune:orphans` (`docs/local-resources.md`) |
 
-`db-psql` opens the dev database, which exists once something has migrated it in this checkout
-(`pnpm db:migrate`, `pnpm db:seed`, `pnpm db:studio` or `pnpm dev`; `pnpm check` creates only test
-databases). One query: `pnpm nx run db:db-psql --args='-c "select … where x = 1"'`. Not
-`-- -c "…"`: Nx passes on a forwarded argument that holds `=` unquoted, so the shell splits the
-query and psql runs only its first word.
+`pnpm db:psql` opens psql on the dev database, which exists once something has migrated it in this
+checkout (`pnpm db:migrate`, `pnpm db:seed`, `pnpm db:studio` or `pnpm dev`; `pnpm check` creates
+only test databases). One query, also without a terminal:
+`pnpm db:psql -c "select count(*), count(author_name) from comments where body <> ''"` (`-tA`
+prints bare rows). Its arguments reach psql as written, commas, quotes and `=` included: pnpm
+quotes each one for the shell it runs the script in, and `packages/db/scripts/db-up.mjs` starts
+psql (with `docker compose exec`) without a shell. Not the `db:db-psql` Nx target: Nx puts its
+arguments into a shell command, turns each comma in `--args` into a space, and passes a forwarded
+`-- -c "…"` that holds `=` on unquoted. So an allow rule `Bash(pnpm db:psql *)` approves psql in
+this checkout's Postgres container and nothing else: any SQL on the dev database (or on a server
+whose address and password a command gives it), and backslash commands, which run inside the
+container, not on your machine. On native Windows pnpm runs root scripts through `cmd.exe`, which
+its quoting does not cover: allow exact commands there, for `pnpm db:generate` too.
 
 ## Migrations
 

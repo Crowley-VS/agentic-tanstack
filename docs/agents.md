@@ -81,6 +81,9 @@ name one):
   `drizzle` preloaded.
 - Playwright's planner, generator and healer: opt-in, below.
 
+A session that cannot start agents (no Agent tool: a workflow's own subagents) reads
+`.claude/agents/reviewer.md` and applies its rules and checks itself (`AGENTS.md` says so).
+
 **The review loop** (skill `review-loop`, run by `.claude/workflows/review-loop-run.js`) reviews
 a PR, posts the findings, fixes the blocking ones and checks the fixes; a human merges.
 `tools/agent-hooks/pr-opened.mjs` offers it when a PR opens. To start it without the question,
@@ -175,8 +178,10 @@ than it seems to (`unsafeAllowRule` in `tools/agents.mjs`: `git log *` also writ
   tools; `pnpm add`, `remove` and `dlx`. An ask rule prompts in every mode, auto included, and no
   allow rule in any file lifts it, so the list holds only what must reach a human. The local dev
   database's reset, studio and psql are not on it: nothing allows them either, so the default mode
-  asks, auto mode lets them run, and you can allow them in your `.claude/settings.local.json`
-  (exact commands: `db-psql --args='…'` reaches a shell).
+  asks, auto mode lets them run, and you can allow them in your `.claude/settings.local.json`:
+  `Bash(pnpm db:psql *)` (each argument reaches psql as written, and psql's backslash commands run
+  inside the Postgres container: `docs/database.md`), exact commands for the rest
+  (`db-psql --args='…'` reaches a shell).
 - **Allowed**: the checks (`pnpm check`, each project's lint, eslint, typecheck, test and build),
   formatting, regeneration, agent sync and check, the dev database's up, migrate and seed, the dev
   servers, e2e and image builds, the read-only `pr-review` modes, the browser CLI's inspection

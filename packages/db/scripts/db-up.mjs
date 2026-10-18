@@ -12,7 +12,9 @@
 //                                   leftovers of exited processes and deleted checkouts
 //   node scripts/db-up.mjs reset    delete it and its data, then start fresh
 //   node scripts/db-up.mjs psql     open psql on the dev database; arguments after `psql` go to
-//                                   psql (`-c "select …"` runs one query, also without a terminal)
+//                                   psql (`-c "select …"` runs one query, also without a terminal),
+//                                   each as one word, through no shell: `pnpm db:psql …` (the root
+//                                   script) passes them on intact, commas and quotes included
 //   node scripts/db-up.mjs studio   Drizzle Studio on this checkout's studio port
 //
 // Also imported by the Vitest global setup (`dbUp()`, `alive()`) and the migrate/seed scripts
@@ -551,11 +553,14 @@ async function start(cfg, env, timings, failed) {
 }
 
 /**
- * `compose exec` arguments for psql on `db`, followed by the caller's own psql arguments. Without
- * a terminal on stdin (an agent's shell, a pipe) compose must not allocate one: `-T`.
+ * `compose exec` arguments for psql on `db`, followed by the caller's own psql arguments (after
+ * psql's name, so none of them can be an option of compose's). Without a terminal on stdin (an
+ * agent's shell, a pipe) compose must not allocate one: `-T`. A leading `--` is dropped: pnpm
+ * passes it on (`pnpm db:psql -- -c …`), and psql would read the rest as names.
  */
 export function psqlArgs(db, args = [], { tty = process.stdin.isTTY } = {}) {
-  return ['exec', ...(tty ? [] : ['-T']), 'postgres', 'psql', '-U', 'postgres', '-d', db, ...args];
+  const own = args[0] === '--' ? args.slice(1) : args;
+  return ['exec', ...(tty ? [] : ['-T']), 'postgres', 'psql', '-U', 'postgres', '-d', db, ...own];
 }
 
 async function main([mode = 'up', ...args]) {
