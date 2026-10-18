@@ -35,8 +35,10 @@
           "{workspaceRoot}/**/{vite,vitest,eslint,oxlint,playwright}.config.*",
           "{workspaceRoot}/**/Dockerfile",
           "{workspaceRoot}/.dockerignore",
+          "{workspaceRoot}/.gitignore",
           "{workspaceRoot}/docker-compose*.yml",
           "{workspaceRoot}/.github/workflows/*.yml",
+          "{workspaceRoot}/.github/renovate.json5",
           "{workspaceRoot}/**/.oxlintrc.json*"
         ]
       }
