@@ -172,10 +172,11 @@ than it seems to (`unsafeAllowRule` in `tools/agents.mjs`: `git log *` also writ
 
 - **Always asks**: force pushes, pushes to `main`, branch deletions and pushes that run a command
   (`--receive-pack`, `--exec`); every `railway` command, the Railway plugin's API script and MCP
-  tools; `pnpm db:reset`, `pnpm db:studio` and `pnpm nx run db:db-psql`; `pnpm add`, `remove`
-  and `dlx`. An ask rule
-  prompts in every mode, auto included, and no allow rule in any file lifts it, so the list holds
-  only what must reach a human.
+  tools; `pnpm add`, `remove` and `dlx`. An ask rule prompts in every mode, auto included, and no
+  allow rule in any file lifts it, so the list holds only what must reach a human. The local dev
+  database's reset, studio and psql are not on it: nothing allows them either, so the default mode
+  asks, auto mode lets them run, and you can allow them in your `.claude/settings.local.json`
+  (exact commands: `db-psql --args='…'` reaches a shell).
 - **Allowed**: the checks (`pnpm check`, each project's lint, eslint, typecheck, test and build),
   formatting, regeneration, agent sync and check, the dev database's up, migrate and seed, the dev
   servers, e2e and image builds, the read-only `pr-review` modes, the browser CLI's inspection

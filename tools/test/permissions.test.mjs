@@ -154,10 +154,17 @@ describe('git push', () => {
   );
 });
 
-// What changes the dev database or the dependencies, or opens a client that can, asks: in every
-// spelling the docs use, with any arguments (`db-psql --args='-c "…"'` runs any SQL).
+// The local dev database is routine agent work, however destructive to its (reseedable) rows: no
+// ask rule, so auto mode runs it and a user may allow it in their settings.local.json. Nothing here
+// allows the commands that wipe it or open a client (`db-psql --args='-c "…"'` runs any SQL, and
+// any shell command through Nx), so the default mode still asks for them. Dependencies always ask.
 describe('database and dependencies', () => {
-  const CALLS = [
+  const DEPENDENCIES = [
+    'Bash(pnpm add zod --filter @acme/db)',
+    'Bash(pnpm remove zod --filter @acme/db)',
+    'Bash(pnpm dlx cowsay hi)',
+  ];
+  const LOCAL_DB = [
     'Bash(pnpm nx run db:db-psql)',
     `Bash(pnpm nx run db:db-psql --args='-c "drop table notes"')`,
     `Bash(pnpm nx db-psql db --args='-c "truncate notes"')`,
@@ -168,9 +175,6 @@ describe('database and dependencies', () => {
     'Bash(pnpm db:reset)',
     'Bash(pnpm db:reset --verbose)',
     'Bash(pnpm db:studio)',
-    'Bash(pnpm add zod --filter @acme/db)',
-    'Bash(pnpm remove zod --filter @acme/db)',
-    'Bash(pnpm dlx cowsay hi)',
   ];
   const ROUTINE = [
     'Bash(pnpm db:up)',
@@ -180,9 +184,13 @@ describe('database and dependencies', () => {
     'Bash(pnpm nx run db:test)',
   ];
 
-  it.each(CALLS)('asks before %s', (call) => expect(asks(call)).toBe(true));
-  it.each(CALLS)('allows nothing of %s', (call) => expect(allows(call)).toBe(false));
-  it.each(ROUTINE)('does not ask for %s', (call) => expect(asks(call)).toBe(false));
+  it.each(DEPENDENCIES)('asks before %s', (call) => expect(asks(call)).toBe(true));
+  it.each([...DEPENDENCIES, ...LOCAL_DB])('allows nothing of %s', (call) =>
+    expect(allows(call)).toBe(false),
+  );
+  it.each([...LOCAL_DB, ...ROUTINE])('does not ask for %s', (call) =>
+    expect(asks(call)).toBe(false),
+  );
 });
 
 // What writes agent config, or unrewritten skills over the vendored ones, is denied (AGENTS.md:
