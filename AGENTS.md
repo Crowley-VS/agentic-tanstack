@@ -83,7 +83,7 @@ Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI 
 - `packages/logger` (`scope:shared`, `type:util`): one log line per event for the servers (JSON in production: `docs/production.md`); server code only.
 - `packages/ui` (`scope:web`, `type:ui`): React components (shadcn/ui, radix-nova) and the Tailwind 4 theme. Add one with `pnpm --filter @acme/ui exec shadcn add <name> --overwrite` (without `--overwrite` it writes nothing when no terminal is attached), then `pnpm format` and `git diff packages/ui` (`docs/web.md`).
 - `packages/validators` (`scope:shared`, `type:util`): Zod schemas and limits shared by api and web.
-- `tools` (`scope:tooling`, `type:tooling`): dev ports, Claude Code hooks, `pnpm check`, agent-config sync; plain `.mjs`, gated by lint, boundaries and tests (no `typecheck`).
+- `tools` (`scope:tooling`, `type:tooling`): dev ports, Claude Code hooks, `pnpm check`, agent-config sync, machine setup (`node tools/setup-agents.mjs`, `pnpm pw:agents`); plain `.mjs`, gated by lint, boundaries and tests (no `typecheck`).
 - `.railway` (`railway-iac`, `scope:tooling`, `type:tooling`): Railway infrastructure as code (experimental, `docs/deployment-railway.md`); every `railway` command asks first; agents never log in.
 - `docker-compose.yml`: the local Postgres (dev, e2e and tests only); `docker-compose.stack.yml`: the production images (`apps/*/Dockerfile`) run together locally.
 
@@ -106,7 +106,7 @@ Without Docker, `pnpm nx affected -t test --exclude=tag:needs-db` skips the `nee
 
 - Boundaries (full list in `eslint.config.mjs`): `scope:shared` → shared; `scope:tooling` → tooling; `scope:web` → web, shared; `scope:api` → api, server, shared; `scope:server` → server, shared; `type:util` → util only, and no frameworks, Drizzle or `pg`.
 - **Writes go through `packages/core`**, which validates again and throws domain errors (`NotFoundError`). Reads use Drizzle's relational queries (in the API: the Pothos Drizzle plugin), which load nested data in one statement.
-- **Migrations**: edit `packages/db/src/schema/*`, run `pnpm nx run db:db-generate --args="--name=<what>"` and commit the result. The guard hook blocks edits to a migration git tracks (staged or committed); only a new, untracked one may change.
+- **Migrations**: edit `packages/db/src/schema/*`, run `pnpm db:generate <what>` and commit the result. The guard hook blocks edits to a migration git tracks (staged or committed); only a new, untracked one may change.
 - **API** (`docs/api.md`): the schema has no side effects at import; the API is private and locked down by default (tests pin each default); expected failures are data (union members, selected by `__typename`); its Vitest config aliases `graphql` to one copy.
 - **Server-only code lives in `*.server.ts`** (env, API client, BFF): a client import of one fails the build, and so does server code in the client bundle. The browser reaches the API only through the same-origin `/api/graphql`.
 - **Web data** (`docs/web.md`): only through `execute()` with a `graphql()` document. Loaders `await ensure…()` and return nothing; components `useSuspense…` the same query options. Forms copy `apps/web/src/components/note-form.tsx`.
@@ -147,5 +147,7 @@ Task skills (`.agents/skills`), each with its steps, commands and checks:
 - Before saying "done" (the checks each change needs, the evidence): `verify`.
 - Upgrading Nx and its plugins: `nx-upgrade`.
 - Vendored (upstream skills, commands rewritten for this repo): `playwright-cli` (drive a browser from the shell: snapshot, click, console), `drizzle`, `drizzle-generate`, `drizzle-hints`.
+
+Subagents (`.claude/agents`): `reviewer` (read-only review of a change against these rules: file, line, rule) and `db-migrations` (a schema change and its migration). How the agent setup works (plugins, hooks, permissions, opt-ins): `docs/agents.md`.
 
 <!-- stack:end -->

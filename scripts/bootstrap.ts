@@ -572,6 +572,7 @@ export async function main() {
 Next steps:
   pnpm check                      the definition of done (lint, format, boundaries, types, tests, agent config)
   pnpm ports                      this checkout's ports and database URLs
-  AGENTS.md                       how agents (and you) work in this repo
+  node tools/setup-agents.mjs     once per machine: the Claude Code plugins this repo enables, and what they need
+  AGENTS.md                       how agents (and you) work in this repo (docs/agents.md for humans)
 `);
 }

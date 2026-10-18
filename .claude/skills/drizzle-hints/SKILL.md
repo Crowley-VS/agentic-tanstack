@@ -9,7 +9,7 @@ metadata:
 
 # Drizzle hints
 
-Load skill `drizzle` first: it says how drizzle-kit runs here. **This repo's rule wins over this skill** (skill `db-migration`, step 5): a `missing_hints` with a `rename_or_create` from `pnpm nx run db:db-generate` means the schema change drops one entity and adds another in one step. Do not answer it with a `rename` or `create` hint: split the change into an expand migration and a later contract migration, each deployed on its own. Use this skill to read what drizzle-kit asks. The drizzle-kit skills it names that this repo does not vendor: `pnpm exec intent load drizzle-kit#<name>`.
+Load skill `drizzle` first: it says how drizzle-kit runs here. **This repo's rule wins over this skill** (skill `db-migration`, step 5): a `missing_hints` with a `rename_or_create` from `pnpm db:generate` means the schema change drops one entity and adds another in one step. Do not answer it with a `rename` or `create` hint: split the change into an expand migration and a later contract migration, each deployed on its own. Use this skill to read what drizzle-kit asks. The drizzle-kit skills it names that this repo does not vendor: `pnpm exec intent load drizzle-kit#<name>`.
 
 `status: 'missing_hints'` means the diff is ambiguous (a rename could also be a drop + create) or unsafe (would drop a non-empty entity, or would recreate a SQLite table and wipe its rows). Until hints are supplied the operation cannot proceed — the CLI exits `2`, the SDK returns the envelope without writing or applying anything.
 
@@ -87,7 +87,7 @@ The unresolved item for a `confirm_data_loss` carries a `reason` (and, for `type
 
 ## Resolution loop
 
-1. **Invoke.** Run `pnpm nx run db:db-generate --args="--name=<what> --output json"` (CLI; `push` is not used here) or `await generate(...)` / `await push(...)` (SDK).
+1. **Invoke.** Run `pnpm db:generate <what> --output json` (CLI; `push` is not used here) or `await generate(...)` / `await push(...)` (SDK).
 2. **Read the envelope.** If `status === 'missing_hints'`, the response carries `unresolved: MissingHint[]`. Each item has a `type` of `'rename_or_create'` or `'confirm_data_loss'`.
 3. **Build the reply.** For every `unresolved[i]`, append exactly one `Hint` to the reply array:
    - `rename_or_create` → pick `rename` (provide `from` as a deleted entity of the same `kind`) OR `create` (just echo `entity`).
@@ -100,11 +100,11 @@ The reply must cover every item in `unresolved` — partial replies that still l
 
 Pass the reply array as JSON via one of two flags on `generate` or `push`:
 
-- `--hints '<json>'` — inline JSON array of `Hint` objects. Watch shell quoting; the JSON has to survive your shell intact. Through Nx's `--args` it does not: use `--hints-file`.
+- `--hints '<json>'` — inline JSON array of `Hint` objects. Watch shell quoting; the JSON has to survive your shell intact. `pnpm db:generate` refuses `--hints`: use `--hints-file`.
 - `--hints-file ./hints.json` — same JSON array read from a file. Preferred for arrays of more than one or two items.
 
 ```bash
-pnpm nx run db:db-generate --args="--name=<what> --output json --hints-file <file>"   # <file>: relative to packages/db
+pnpm db:generate <what> --output json --hints-file <file>   # <file>: a .json file in the repo, e.g. .agents/ignore/hints.json
 ```
 
 `--hints` and `--hints-file` are mutually exclusive at the source level — pass one or the other, not both. A malformed JSON file or a hint that fails shape validation returns `status: 'error'` with `error.code: 'invalid_hints'` and `meta.source: 'file' | 'inline'`.

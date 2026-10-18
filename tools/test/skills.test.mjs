@@ -5,8 +5,9 @@
 // anywhere fails it at once. Targets need the project graph, too slow for that check. This test
 // is cached, but its inputs hold what defines targets (every package.json and project.json,
 // nx.json, the plugins' config files) and .agents/skills, so changing either runs it again.
-import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { codeOf, pathTokens, pnpmCommands } from '../agents.mjs';
@@ -182,5 +183,34 @@ describe('the CLIs the vendored skills and AGENTS.md run', () => {
     expect(
       run('@tanstack/intent', 'intent', ['load', '@tanstack/router-core#router-core']),
     ).toMatch(/^---\nname: router-core\n/);
+  }, 60_000);
+
+  it("drizzle-generate's hard-error example is what drizzle-kit prints without a config", () => {
+    // `pnpm db:generate` refuses --config: its config can only be missing, in packages/db
+    const example = readFileSync(join(REPO, '.agents/skills/drizzle-generate/SKILL.md'), 'utf8')
+      .split('\n')
+      .find((l) => l.startsWith('# → ') && l.includes('config_file_not_found_error'));
+    const shown = JSON.parse(example?.replace(/^# → /, '') ?? '{}');
+    const { packages } = JSON.parse(readFileSync(join(REPO, '.agents/vendor.json'), 'utf8'));
+    const dir = findPackage(REPO, 'drizzle-kit', packages['drizzle-kit']);
+    expect(dir, 'drizzle-kit is not installed: run `pnpm install`').toBeDefined();
+    const { bin } = JSON.parse(readFileSync(join(dir ?? '', 'package.json'), 'utf8'));
+    const empty = realpathSync(mkdtempSync(join(tmpdir(), 'no-drizzle-config-')));
+    try {
+      const res = spawnSync(
+        process.execPath,
+        [join(dir ?? '', bin['drizzle-kit']), 'generate', '--name', 'x', '--output', 'json'],
+        { cwd: empty, encoding: 'utf8' },
+      );
+      expect(res.status, res.stderr).toBe(1);
+      // the same envelope, the directory aside: <repo>/packages/db there, a temp one here
+      expect(JSON.parse(res.stdout)).toEqual({
+        ...shown,
+        error: { ...shown.error, path: join(empty, 'drizzle.config.json') },
+      });
+      expect(shown.error.path).toBe('<repo>/packages/db/drizzle.config.json');
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
   }, 60_000);
 });

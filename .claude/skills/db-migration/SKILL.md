@@ -27,9 +27,10 @@ purely additive.
 
 ## 2. Generate the migration and read it
 
-- `pnpm nx run db:db-generate --args="--name=<what>"` writes
-  `packages/db/migrations/<timestamp>_<what>/migration.sql` and its `snapshot.json`. Always pass a
-  name: `pnpm regen` runs the generator without one, so a pending change gets a random name.
+- `pnpm db:generate <what>` writes `packages/db/migrations/<timestamp>_<what>/migration.sql` and
+  its `snapshot.json`. `<what>` is letters, digits, `_` and `-` (`add_tags`); the command refuses
+  any other name or option (`--help` lists its few). Always name it: `pnpm regen` runs the
+  generator without a name, so a pending change gets a random one.
 - Read the SQL. Except in the contract step of an expand/contract change, it only adds (tables,
   nullable or defaulted columns, indexes) or relaxes (a dropped `NOT NULL` or check); a column
   drop's first deploy replaces its generated `DROP COLUMN`, and a `DROP TABLE` waits for the
@@ -42,9 +43,8 @@ purely additive.
   `missing_hints` asks). Where they differ from this skill, this skill wins: never answer a
   `rename_or_create` with a hint (step 5), never `drizzle-kit push`, never edit a tracked migration,
   and tests use `testDb()`.
-- A data change (a backfill) is a migration of its own:
-  `pnpm nx run db:db-generate --args="--custom --name=<what>"` writes an empty `migration.sql` for
-  your SQL.
+- A data change (a backfill) is a migration of its own: `pnpm db:generate <what> --custom` writes
+  an empty `migration.sql` for your SQL.
 - Never edit a migration git tracks (staged or committed): the guard hook blocks it. To redo a
   new, untracked one you already applied: `pnpm db:reset` (wipes this checkout's dev data), delete
   its folder, fix the schema and generate again, then `pnpm db:seed` (it migrates, then seeds).
@@ -105,5 +105,5 @@ migrations run would miss it.
 
 - `pnpm regen`, then `git status`: the only generated change is your migration folder.
 - `pnpm check`. It fails on a schema change without its migration: its drift gate generates one
-  with a random name, which you delete before generating with `--name`.
+  with a random name, which you delete before `pnpm db:generate <what>`.
 - `pnpm nx e2e web-e2e` when the API or web changed with it (skill `verify`).

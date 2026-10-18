@@ -7,10 +7,10 @@
 //            .claude/settings.json (Edit deny rules); --stage (pre-commit, after formatting) also
 //            syncs the INDEX from the staged sources, so a commit never carries copies of unstaged
 //            or untracked files
-//   check    fail if sync is stale, on agent-config hygiene problems, when a skill names a repo
-//            path or pnpm script that does not exist, or when a vendored skill differs from its
-//            rewritten upstream (tools/vendor-skills.mjs) (CI, `pnpm check`); --staged checks
-//            what the next commit contains instead of the working tree (pre-commit)
+//   check    fail if sync is stale, on agent-config hygiene problems, when a skill or subagent
+//            names a repo path or pnpm script that does not exist, or when a vendored skill differs
+//            from its rewritten upstream (tools/vendor-skills.mjs) (CI, `pnpm check`); --staged
+//            checks what the next commit contains instead of the working tree (pre-commit)
 //   adopt    move skills that tools wrote directly into .claude/skills into .agents/skills
 //   regen    run every regen command from .agents/generated.json; --check = fail when regen
 //            changes ANY file (generated outputs and the configs sync renders)
@@ -779,22 +779,36 @@ const uncheckedTokens = (markdown) =>
     ),
   );
 
+/** The Markdown files under `dir` (a repo path) in `root`, as repo paths. */
+const markdownFiles = (root, dir) =>
+  listFiles(join(root, ...dir.split('/')))
+    .map((f) => `${dir}/${f.split(sep).join('/')}`)
+    .filter((f) => f.endsWith('.md'));
+
 /**
- * What the skill files (`.agents/skills/**\/*.md`) in `root` name that does not exist: repo
- * paths (`files`: the repo's files; undefined skips paths) and `pnpm` commands (root package.json
- * scripts; `pnpm exec <bin>` and a bare `pnpm <bin>` against `<gitRoot>/node_modules/.bin`, once
- * installed). Only code is read: fenced blocks and inline code spans. Three kinds of path are left
- * out: those git ignores (plans, personal settings, build output: whoever follows the skill makes
- * them), those a skill lists in an `<!-- agents:unchecked <path> … -->` comment (a file its own
- * steps create, such as a tool's temp file), and the paths upstream wrote in a vendored skill
- * (.agents/vendor.json): its examples name upstream's files, and the vendor check pins that text.
- * What this repo writes into a vendored skill, the `with` text of its rewrites, is read like skill
- * markdown instead, and the pnpm commands of a vendored copy are checked like any other.
+ * What the skill files (`.agents/skills/**\/*.md`) and subagent files (`.claude/agents/**\/*.md`)
+ * in `root` name that does not exist: repo paths (`files`: the repo's files; undefined skips
+ * paths) and `pnpm` commands (root package.json scripts; `pnpm exec <bin>` and a bare `pnpm <bin>`
+ * against `<gitRoot>/node_modules/.bin`, once installed). Only code is read: fenced blocks and
+ * inline code spans, plus the `${CLAUDE_PROJECT_DIR}/<path>` a subagent's frontmatter hooks run.
+ * Three kinds of path are left out: those git ignores (plans, personal settings, build output:
+ * whoever follows the file makes them), those a file lists in an `<!-- agents:unchecked <path> …
+ * -->` comment (a file its own steps create, such as a tool's temp file), and the paths upstream
+ * wrote in a vendored skill (.agents/vendor.json): its examples name upstream's files, and the
+ * vendor check pins that text. What this repo writes into a vendored skill, the `with` text of its
+ * rewrites, is read like skill markdown instead, and the pnpm commands of a vendored copy are
+ * checked like any other. A subagent file git ignores (one a tool generates on this machine) is
+ * not checked at all. Each skill a subagent preloads (its frontmatter `skills`) must be one in
+ * .agents/skills: Claude Code starts the subagent without a missing one, and says nothing. A
+ * plugin's skill (`plugin:skill`) is not checked.
  */
 export function skillReferences(root, { files, gitRoot = root }) {
-  const skillFiles = listFiles(join(root, '.agents', 'skills'))
-    .map((f) => `.agents/skills/${f.split(sep).join('/')}`)
-    .filter((f) => f.endsWith('.md'));
+  const agentFiles = markdownFiles(root, '.claude/agents');
+  const localAgents = ignoredPaths(gitRoot, agentFiles);
+  const skillFiles = [
+    ...markdownFiles(root, '.agents/skills'),
+    ...agentFiles.filter((f) => !localAgents.has(f)),
+  ];
   if (!skillFiles.length) return [];
   const entries = files && [...withDirectories(files)];
   const topLevel = new Set(entries?.map((e) => e.split('/')[0]));
@@ -813,19 +827,29 @@ export function skillReferences(root, { files, gitRoot = root }) {
   const hasScript = (name) => Object.hasOwn(scripts, name);
 
   const vendored = new Set(vendoredSkills(root));
+  const skillNames = new Set(listDirs(join(root, '.agents', 'skills')));
   const missing = []; // [file, token, how to fix it]
   const problems = [];
   /** Note each path token of markdown `text` (from `where`) that names nothing in the repo. */
   const checkPaths = (where, text, code, fix) => {
     const unchecked = uncheckedTokens(text);
-    for (const token of new Set(pathTokens(code)))
+    // a subagent's frontmatter hooks run `${CLAUDE_PROJECT_DIR}/<path>`
+    const hooks = [...text.matchAll(/\$\{CLAUDE_PROJECT_DIR\}\/([\w./-]+)/g)].map((m) => m[1]);
+    for (const token of new Set([...pathTokens(code), ...hooks]))
       if (!unchecked.has(token) && !exists(token)) missing.push([where, token, fix]);
   };
   for (const file of skillFiles) {
     const text = readFileSync(join(root, file), 'utf8');
     const { code, stray } = markdownCode(text);
     const unchecked = uncheckedTokens(text);
-    if (!vendored.has(file.split('/')[2])) checkPaths(file, text, code, 'Update the skill');
+    const vendoredSkill = file.startsWith('.agents/skills/') && vendored.has(file.split('/')[2]);
+    if (!vendoredSkill) checkPaths(file, text, code, 'Update the file');
+    if (file.startsWith('.claude/agents/'))
+      for (const name of preloadedSkills(text))
+        if (!name.includes(':') && !skillNames.has(name))
+          problems.push(
+            `${file} preloads skill "${name}" (frontmatter \`skills\`), which .agents/skills does not have: renamed or removed? Claude Code starts the subagent without it, silently. Update the file`,
+          );
     for (const [name, kind] of pnpmCommands(code)) {
       if (unchecked.has(name)) continue;
       // `pnpm test` runs the `test` script; `pnpm start` the `start` script, else `node server.js`
@@ -842,7 +866,7 @@ export function skillReferences(root, { files, gitRoot = root }) {
         problems.push(`${file} runs \`pnpm exec ${name}\`: node_modules/.bin has no \`${name}\``);
       if (kind === 'pnpm' && !runs && !hasScript(name) && !PNPM_COMMANDS.has(name) && !isBin(name))
         problems.push(
-          `${file} runs \`pnpm ${name}\`, which is no root package.json script, pnpm command or installed binary: renamed or removed? Update the skill (a command this check does not know: \`<!-- agents:unchecked ${name} -->\`)`,
+          `${file} runs \`pnpm ${name}\`, which is no root package.json script, pnpm command or installed binary: renamed or removed? Update the file (a command this check does not know: \`<!-- agents:unchecked ${name} -->\`)`,
         );
     }
     for (const line of stray)
@@ -864,9 +888,20 @@ export function skillReferences(root, { files, gitRoot = root }) {
   for (const [file, token, fix] of missing)
     if (!ignored.has(token))
       problems.push(
-        `${file} names \`${token}\`, which is not in the repo: renamed or deleted? ${fix} (a path that starts with a top-level directory is read from the root; a file the skill's own steps create, or a token that is no repo path: \`<!-- agents:unchecked ${token} -->\`)`,
+        `${file} names \`${token}\`, which is not in the repo: renamed or deleted? ${fix} (a path that starts with a top-level directory is read from the root; a file its own steps create, or a token that is no repo path: \`<!-- agents:unchecked ${token} -->\`)`,
       );
   return [...new Set(problems)];
+}
+
+/** The skills a subagent file's frontmatter preloads (`skills`: a list, or names split by commas). */
+function preloadedSkills(text) {
+  const skills = parseFrontmatter(text)?.skills;
+  const names = Array.isArray(skills)
+    ? skills
+    : typeof skills === 'string'
+      ? skills.replace(/^\[|\]$/g, '').split(',')
+      : [];
+  return names.map((n) => unquoted(String(n).trim())).filter(Boolean);
 }
 
 /** `meta.name` of a workflow script (.claude/workflows/*.js), if it declares one. */

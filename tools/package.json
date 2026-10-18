@@ -2,7 +2,7 @@
   "name": "@acme/tools",
   "version": "0.0.0",
   "private": true,
-  "description": "Repo tooling: dev ports, Claude Code hooks, agent-config sync/check, pnpm check.",
+  "description": "Repo tooling: dev ports, Claude Code hooks, agent-config sync/check, pnpm check, machine setup for agents.",
   "type": "module",
   "nx": {
     "name": "tools",
@@ -20,6 +20,7 @@
           "{workspaceRoot}/.agents/vendor.json",
           "{workspaceRoot}/pnpm-workspace.yaml",
           "{workspaceRoot}/.claude/settings.json",
+          "{workspaceRoot}/.claude/agents/**/*",
           "{workspaceRoot}/.claude/workflows/**/*",
           "{workspaceRoot}/AGENTS.md",
           "{workspaceRoot}/apps/web/codegen.ts",

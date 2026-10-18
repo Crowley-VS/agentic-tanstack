@@ -109,6 +109,10 @@ describe('bootstrap', () => {
     expect(leftovers).toEqual([]);
     for (const gone of ['scripts', 'template.json', '.github/workflows/template-smoke.yml'])
       expect(existsSync(join(copy, gone)), gone).toBe(false);
+    // what every clone runs stays, with its tests, in the tools project (docs/agents.md)
+    for (const kept of ['setup-agents', 'pw-agents'])
+      for (const f of [`tools/${kept}.mjs`, `tools/test/${kept}.test.mjs`])
+        expect(existsSync(join(copy, f)), f).toBe(true);
 
     expect(readFileSync(join(copy, 'README.md'), 'utf8')).toMatch(/^# smoke-app\n/);
     const tsconfig = JSON.parse(readFileSync(join(copy, 'tsconfig.json'), 'utf8'));

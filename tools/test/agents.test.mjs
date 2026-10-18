@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -1024,6 +1025,27 @@ function skillRepo(body, files = {}) {
 }
 const referenceProblems = (root) =>
   check(root).filter((p) => p.startsWith('.agents/skills/verify/SKILL.md '));
+/** A subagent file whose frontmatter holds `lines` (its `skills`, say). */
+const preloading = (...lines) =>
+  ['---', 'name: a', 'description: x', ...lines, '---', '', 'Body.', ''].join('\n');
+/** A subagent file whose frontmatter runs `hook` (a repo path) before each Bash command. */
+const subagent = (hook, body) =>
+  [
+    '---',
+    'name: a',
+    'description: x',
+    'hooks:',
+    '  PreToolUse:',
+    '    - matcher: Bash',
+    '      hooks:',
+    '        - type: command',
+    '          command: node',
+    `          args: ['\${CLAUDE_PROJECT_DIR}/${hook}']`,
+    '---',
+    '',
+    body,
+    '',
+  ].join('\n');
 
 describe('check: the paths and pnpm commands skills name', () => {
   it('reads code only: fenced blocks and inline spans, not prose', () => {
@@ -1307,6 +1329,58 @@ describe('check: the paths and pnpm commands skills name', () => {
       ),
       expect.stringMatching(/^\.agents\/vendor\.json \(skill demo, rewrite 2\) names `auth\.json`/),
     ]);
+  });
+
+  it('checks subagents (.claude/agents) too, the hook scripts they run included', () => {
+    const root = skillRepo('Fine.', {
+      '.claude/agents/review.md': subagent(
+        'tools/gone.mjs',
+        'Run `pnpm nope` on `tools/ports.mjs` and `docs/missing.md`.',
+      ),
+      '.claude/agents/review/deep.md': subagent('tools/ports.mjs', 'Run `pnpm db:seed`.'),
+      // one a tool generated on this machine (gitignored): not the repo's to check
+      '.claude/agents/local-tool.md': subagent('tools/gone.mjs', 'Names `apps/missing.ts`.'),
+      '.gitignore': 'node_modules/\n.claude/agents/local-*.md\n',
+    });
+    expect(check(root).filter((p) => p.startsWith('.claude/agents/'))).toEqual([
+      expect.stringMatching(/^\.claude\/agents\/review\.md runs `pnpm nope`/),
+      expect.stringMatching(
+        /^\.claude\/agents\/review\.md names `docs\/missing\.md`, which is not/,
+      ),
+      expect.stringMatching(/^\.claude\/agents\/review\.md names `tools\/gone\.mjs`, which is not/),
+    ]);
+  });
+
+  it('checks that the skills a subagent preloads are in .agents/skills', () => {
+    const root = skillRepo('Fine.', {
+      '.claude/agents/list.md': preloading(
+        'skills:',
+        '  - verify',
+        '  - gone',
+        // a plugin's skill: not this repo's to check
+        '  - some-plugin:its-skill',
+      ),
+      '.claude/agents/inline.md': preloading('skills: verify, "missing"'),
+      '.claude/agents/fine.md': preloading('skills:', '  - verify'),
+      // one a tool generated on this machine (gitignored): not the repo's to check
+      '.claude/agents/local-tool.md': preloading('skills:', '  - gone'),
+      '.gitignore': 'node_modules/\n.claude/agents/local-*.md\n',
+    });
+    expect(
+      check(root)
+        .filter((p) => p.startsWith('.claude/agents/'))
+        .toSorted(),
+    ).toEqual([
+      expect.stringMatching(
+        /^\.claude\/agents\/inline\.md preloads skill "missing" .*Claude Code starts the subagent without it/,
+      ),
+      expect.stringMatching(/^\.claude\/agents\/list\.md preloads skill "gone" /),
+    ]);
+    // the skill is renamed: every subagent that preloads it is reported
+    renameSync(join(root, '.agents/skills/verify'), join(root, '.agents/skills/verify-change'));
+    expect(
+      check(root).filter((p) => p.startsWith('.claude/agents/fine.md preloads skill "verify" ')),
+    ).toHaveLength(1);
   });
 
   it('checks `pnpm exec` and bare binaries against node_modules/.bin once installed', () => {

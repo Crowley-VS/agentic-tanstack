@@ -42,7 +42,7 @@ next.
   `relations.ts` read only the index.
 - A column added to a table that already has rows must be nullable or have a default: otherwise
   the migration fails on the seeded dev database, and in production.
-- `pnpm nx run db:db-generate --args="--name=<what>"` writes
+- `pnpm db:generate <what>` (letters, digits, `_` and `-`) writes
   `packages/db/migrations/<timestamp>_<what>/migration.sql`. Read the SQL: it must be additive
   (a dropped or renamed column breaks the running app).
 - Never edit a migration git tracks (the guard hook blocks it). To redo a new, untracked one that
@@ -183,5 +183,5 @@ next.
 - An operation is a type error until `web:codegen` runs, and `graphql()` returns no document for
   it (`execute()` rejects, naming `web:codegen`).
 - The write rate limit is on in dev (`WRITE_RATE_LIMIT`, `docs/web.md`); e2e turns it off itself.
-- `pnpm regen` runs `db:db-generate` without `--name`: a pending schema change gets a random
-  migration name. Generate with `--name` first.
+- `pnpm regen` runs `db:db-generate` without a name: a pending schema change gets a random
+  migration name. Run `pnpm db:generate <what>` first.
