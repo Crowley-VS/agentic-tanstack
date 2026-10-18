@@ -517,7 +517,8 @@ describe('dbUp', () => {
     const { error, calls } = await run(local(await closedPort()), { up: failing });
     expect(calls).toEqual([...LISTS, UP, UP, UP, UP]);
     expect(error).toContain(`docker compose up failed (exit 1):\n${transient[1]}`);
-  });
+    // 8 starts, about 40 fake docker processes: near Vitest's 5 s default on a loaded CI runner
+  }, 30_000);
 
   it('reports any other compose failure as is, without retrying', async () => {
     for (const stderr of [
@@ -1424,6 +1425,21 @@ describe('down and prune', () => {
     expect(shared.stdout).toContain('[db-up] shared-pg is not this checkout’s own');
   }, 30_000);
 
+  // reset deletes the volume, every database on the server: in a shared project, every checkout's
+  it('reset refuses a project COMPOSE_PROJECT_NAME names, and deletes only this checkout’s own', () => {
+    const shared = cli('reset', { COMPOSE_PROJECT_NAME: 'shared-pg' });
+    expect(shared.status).toBe(1);
+    expect(shared.calls).toEqual([]); // no Docker call: nothing deleted, nothing started
+    expect(shared.stderr).toContain('[db-up] shared-pg is not this checkout’s own');
+    expect(shared.stderr).toContain('`docker compose -p shared-pg down -v`');
+
+    // its own project: the volume goes first (whether the server then starts is dbUp's tests')
+    const { project, composeFile } = resolveDb();
+    const own = cli('reset', { FAKE_DOCKER_FAIL: notRunning });
+    expect(own.calls[0]).toBe(`compose -p ${project} -f ${composeFile} down -v`);
+    expect(own.stderr).not.toContain('is not this checkout’s own');
+  }, 30_000);
+
   it('prune removes this repository’s leftovers and prints them, or says there were none', () => {
     const { commonDir } = resolveDb();
     const gone = join(tmp, 'deleted-worktree');
@@ -1728,9 +1744,36 @@ describe('psql', () => {
     expect(psqlArgs('app', ['-c', 'select 1'], { tty: false })).toEqual(['exec', '-T', ...psql]);
   });
 
-  // what `pnpm nx run db:db-psql -- -c "select …"` runs, in a shell with no terminal (an agent's)
+  it('drops a leading `--` (pnpm passes it on), and only that one', () => {
+    const psql = ['exec', 'postgres', 'psql', '-U', 'postgres', '-d', 'app'];
+    expect(psqlArgs('app', ['--', '-c', 'select 1'], { tty: true })).toEqual([
+      ...psql,
+      '-c',
+      'select 1',
+    ]);
+    expect(psqlArgs('app', ['-c', '--'], { tty: true })).toEqual([...psql, '-c', '--']);
+  });
+
+  it('is what the root script `pnpm db:psql` runs, without Nx', () => {
+    // the db tests rerun when it changes: the root package.json is one of their inputs
+    expect(
+      JSON.parse(readFileSync(join(DB, 'package.json'), 'utf8')).nx.targets.test.inputs,
+    ).toContain('{workspaceRoot}/package.json');
+    const root = JSON.parse(readFileSync(join(DB, '../../package.json'), 'utf8'));
+    expect(root.scripts['db:psql']).toBe('node packages/db/scripts/db-up.mjs psql');
+  });
+
+  // what `pnpm db:psql -c "select …"` runs, in a shell with no terminal (an agent's)
   const url = process.env.TEST_FILE_DATABASE_URL ?? '';
   const onComposeServer = isLocalUrl(url) && Number(new URL(url).port) === resolveDb().port;
+  /** `pnpm db:psql <args>` from the repo root, on this test file's own database. */
+  const dbPsql = (...args: string[]) =>
+    spawnSync('pnpm', ['db:psql', ...args], {
+      cwd: join(DB, '../..'),
+      encoding: 'utf8',
+      env: { ...process.env, DATABASE_URL: url },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
   it.runIf(onComposeServer)(
     'runs a query without a terminal and prints its result',
     () => {
@@ -1748,6 +1791,29 @@ describe('psql', () => {
       expect(res.status).toBe(0);
     },
     30_000,
+  );
+
+  // pnpm quotes each argument of a root script, and db-up hands them to docker as an argv array:
+  // no shell reads them, so `nx run db:db-psql --args=…`'s lost commas cannot happen here, and
+  // shell syntax in a query stays text. This is what makes `Bash(pnpm db:psql *)` a safe allow
+  // rule.
+  it.runIf(onComposeServer)(
+    'pnpm db:psql passes each argument to psql intact: commas, quotes and shell syntax',
+    () => {
+      const marker = join(tmp, 'psql-pwned');
+      const text = `it's "quoted", $(touch ${marker}); touch ${marker} \`touch ${marker}\` | x & y`;
+      const query = `select 1 as a, 2 as b, '${text.replaceAll("'", "''")}' as c`;
+      for (const args of [
+        ['-tA', '-c', query],
+        ['--', '-tA', '-c', query], // the `pnpm db:psql -- …` habit
+      ]) {
+        const res = dbPsql(...args);
+        expect(res.stdout, res.stderr).toBe(`1|2|${text}\n`);
+        expect(res.status).toBe(0);
+      }
+      expect(existsSync(marker)).toBe(false);
+    },
+    60_000,
   );
 });
 

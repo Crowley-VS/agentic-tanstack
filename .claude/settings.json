@@ -71,6 +71,7 @@
       "Bash(pnpm db:up)",
       "Bash(pnpm db:migrate)",
       "Bash(pnpm db:seed)",
+      "Bash(pnpm db:generate *)",
       "Bash(pnpm nx run api:lint)",
       "Bash(pnpm nx run api:eslint)",
       "Bash(pnpm nx run api:typecheck)",
@@ -155,15 +156,7 @@
       "Bash(railway-api.sh *)",
       "Bash(bash railway-api.sh *)",
       "Bash(sh railway-api.sh *)",
-      "mcp__plugin_railway_*",
-      "Bash(pnpm nx run db:db-reset *)",
-      "Bash(pnpm nx run db:db-psql *)",
-      "Bash(pnpm nx run db:db-studio *)",
-      "Bash(pnpm nx db-reset *)",
-      "Bash(pnpm nx db-psql *)",
-      "Bash(pnpm nx db-studio *)",
-      "Bash(pnpm db:reset *)",
-      "Bash(pnpm db:studio *)"
+      "mcp__plugin_railway_*"
     ],
     "deny": [
       "Read(.env)",

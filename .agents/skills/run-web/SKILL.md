@@ -48,9 +48,10 @@ curl -sS -H 'content-type: application/json' \
   `pnpm exec playwright cli open --browser=chromium`, then
   `pnpm exec playwright cli goto <web URL>` (from `pnpm ports`) and
   `pnpm exec playwright cli snapshot`: the board, as roles and names with refs (after
-  `pnpm db:seed`, the newest seed note comes first). `find "Seed note"` searches it; `click <ref>`,
-  `fill <ref> "<text>"`, `console` and `requests` act on and inspect the page. Each write it makes
-  counts against the dev rate limit.
+  `pnpm db:seed`, the newest seed note comes first). Against `pnpm dev` the first snapshot can
+  come before hydration, with every button `[disabled]`: snapshot again once one is enabled.
+  `find "Seed note"` searches it; `click <ref>`, `fill <ref> "<text>"`, `console` and `requests`
+  act on and inspect the page. Each write it makes counts against the dev rate limit.
 
 ## 3. The production build
 

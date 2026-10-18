@@ -23,6 +23,7 @@
     "db:seed": "nx run db:db-seed",
     "db:reset": "nx run db:db-reset",
     "db:studio": "nx run db:db-studio",
+    "db:psql": "node packages/db/scripts/db-up.mjs psql",
     "pw:agents": "node tools/pw-agents.mjs"
   },
   "devDependencies": {

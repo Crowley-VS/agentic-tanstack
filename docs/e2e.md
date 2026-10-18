@@ -124,14 +124,19 @@ running): open it with `pnpm exec playwright show-report <dir>`, a trace with
 
 ## Driving the app by hand (agents)
 
-`pnpm exec playwright cli` (Playwright's agent CLI, headless by default) opens a page and prints
-its accessibility snapshot with element refs to act on:
+`pnpm exec playwright cli` (Playwright's agent CLI, headless by default; skill `playwright-cli`)
+opens a page and prints its accessibility snapshot with element refs to act on, as skill
+`run-web` does:
 
 ```bash
-pnpm exec playwright cli open "$(node tools/dev-ports.mjs --get webE2e)"   # or --get web (dev)
+pnpm exec playwright cli open --browser=chromium
+pnpm exec playwright cli goto http://localhost:<port>   # the URL from `pnpm ports`
 pnpm exec playwright cli snapshot
 pnpm exec playwright cli click e8
-pnpm exec playwright cli close
+pnpm exec playwright cli close-all
 ```
 
-Its files go to `.playwright-cli/` (gitignored).
+`goto` takes the URL as `pnpm ports` prints it: "e2e web" for the e2e servers, "web" for
+`pnpm dev`. Against `pnpm dev` the first snapshot can come before hydration: every button that
+needs JavaScript shows `[disabled]` (`docs/web.md`), so snapshot again once one is enabled. Its
+files go to `.playwright-cli/` (gitignored).
