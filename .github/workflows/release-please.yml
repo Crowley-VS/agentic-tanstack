@@ -1,0 +1,48 @@
+# Template maintenance only: release-please keeps a release PR open against main. It holds the next
+# version (from the Conventional Commits since the last release) in package.json, template.json
+# and .release-please-manifest.json, and its entry in CHANGELOG.md (release-please-config.json).
+# Merging that PR tags the merge commit vX.Y.Z and publishes the GitHub release. Runs only where
+# the repository variable TEMPLATE_MAINTENANCE is 'true' (the upstream template); bootstrap
+# deletes this file and the config from copies. docs/maintaining.md has the details.
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# one run at a time, in push order: each one updates the same release PR
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: vars.TEMPLATE_MAINTENANCE == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # What release-please needs when it acts as GITHUB_TOKEN (no App below)
+    permissions:
+      contents: write # the release PR's branch, the tag, the GitHub release
+      pull-requests: write # open and update the release PR
+      issues: write # its labels (autorelease: pending, autorelease: tagged)
+    steps:
+      # GitHub starts no workflow for what GITHUB_TOKEN does: the release PR would get no CI, and
+      # main requires it. With the repository's automation App set up (docs/maintaining.md),
+      # release-please acts as the App, and CI runs on its PR; without it, as GITHUB_TOKEN.
+      - name: Token of the automation App
+        id: app
+        if: vars.AUTOMATION_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      # No checkout: release-please reads and writes the repository through the API.
+      - uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
