@@ -5,15 +5,15 @@ CI run. Each area's doc has its own testing details; this page is the map.
 
 ## The kinds of tests
 
-| Kind                 | Files                                          | Projects                                        | Run one project                 | Needs            |
-| -------------------- | ---------------------------------------------- | ----------------------------------------------- | ------------------------------- | ---------------- |
-| Unit (Node)          | `src/**/*.test.ts(x)`, `tools/test/*.test.mjs` | validators, logger, ui, web, tools, railway-iac | `pnpm nx run <project>:test`    | nothing          |
-| Database             | `src/**/*.test.ts` using `testDb()`            | db, core                                        | `pnpm nx run core:test`         | Docker           |
-| API                  | `apps/api/src/**/*.test.ts` (`yoga.fetch`)     | api                                             | `pnpm nx run api:test`          | Docker           |
-| Built web server     | `apps/web/src/built-server.test.ts`            | web (`web:test` builds first)                   | `pnpm nx run web:test`          | nothing          |
-| Browser (components) | `apps/web/src/**/*.browser.test.tsx`           | web                                             | `pnpm nx run web:test-browser`  | Chromium         |
-| End to end           | `apps/web-e2e/src/*.spec.ts`                   | web-e2e                                         | `pnpm nx e2e web-e2e`           | Docker, Chromium |
-| End to end on images | the same specs, in BASE_URL mode               | web-e2e                                         | `pnpm nx run web-e2e:e2e-stack` | Docker, Chromium |
+| Kind                 | Files                                                                                                     | Projects                                        | Run one project                 | Needs            |
+| -------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------- | ---------------- |
+| Unit (Node)          | `src/**/*.test.ts(x)`; `tools/test/**/*.test.mjs`, `.railway/*.test.ts`, `apps/web/scripts/**/*.test.mjs` | validators, logger, ui, web, tools, railway-iac | `pnpm nx run <project>:test`    | nothing          |
+| Database             | `src/**/*.test.ts` using `testDb()`                                                                       | db, core                                        | `pnpm nx run core:test`         | Docker           |
+| API                  | `apps/api/src/**/*.test.ts` (`yoga.fetch`)                                                                | api                                             | `pnpm nx run api:test`          | Docker           |
+| Built web server     | `apps/web/src/built-server.test.ts`                                                                       | web (`web:test` builds first)                   | `pnpm nx run web:test`          | nothing          |
+| Browser (components) | `apps/web/src/**/*.browser.test.tsx`                                                                      | web                                             | `pnpm nx run web:test-browser`  | Chromium         |
+| End to end           | `apps/web-e2e/src/*.spec.ts`                                                                              | web-e2e                                         | `pnpm nx e2e web-e2e`           | Docker, Chromium |
+| End to end on images | the same specs, in BASE_URL mode                                                                          | web-e2e                                         | `pnpm nx run web-e2e:e2e-stack` | Docker, Chromium |
 
 Chromium, for browser tests and e2e: `pnpm exec playwright install chromium`, once per machine and
 after each Playwright bump. Docker must be running for every project tagged `needs-db` (api, core,
@@ -27,7 +27,8 @@ A cached result replays: `--skip-nx-cache` reruns it.
 
 ### Unit tests
 
-Vitest in Node (`vitest.config.ts` of each project, inferred by `@nx/vitest`). The tools project
+Vitest in Node (each project's `vitest.config.ts`, `.mjs` in tools and scripts, inferred by
+`@nx/vitest`; its `include` lists the project's test files). The tools project
 (`tools/test`) tests the repository's own machinery: the hooks, `pnpm check`'s gates, the dev
 ports, the agent-config checks, the permissions in `.claude/settings.json`, the CI workflow's
 wiring. `scripts/test` tests bootstrap (template only: bootstrap removes the project).
@@ -76,7 +77,9 @@ every gate on the affected projects (`--all`: every project) and reports every f
 6. **lint outside projects**: oxlint on the scripts no project owns;
 7. **format**: every file oxfmt formats is formatted;
 8. **versions**: Node and pnpm match across `.node-version`, `.prototools`,
-   `package.json#packageManager` and the Dockerfiles.
+   `package.json#packageManager` and the Dockerfiles;
+9. **doc links**: every relative link and `#anchor` in the Markdown files resolves
+   (`tools/doc-links.mjs`).
 
 It does **not** run the e2e specs or the image checks: run `pnpm nx e2e web-e2e` after a route, UI
 or API change, and `pnpm nx run web-e2e:e2e-stack` after a Dockerfile, `.dockerignore` or
@@ -97,8 +100,8 @@ or API change, and `pnpm nx run web-e2e:e2e-stack` after a Dockerfile, `.dockeri
   against them ([deployment.md](deployment.md#ci-the-docker-job)).
 
 The upstream template repository also runs a smoke test that bootstraps fresh copies (a tarball
-and a "Use this template" copy) and runs `pnpm check --all` on them; bootstrap removes it from
-projects.
+and a "Use this template" copy) and runs `pnpm check --all` on them. It runs only where the
+repository variable `TEMPLATE_MAINTENANCE` is `true`, and bootstrap removes it from projects.
 
 ## Writing tests
 

@@ -42,8 +42,9 @@ and a second driver. So the database became Docker Postgres everywhere.
 ## Consequences
 
 - **Docker Engine with Compose v2 is required**, and must be running, for `pnpm dev` and for
-  `pnpm check` (the database tests). Sessions without Docker can run only
-  `pnpm nx affected -t lint eslint typecheck test --exclude=tag:needs-db`.
+  `pnpm check` (the database tests). Sessions without Docker can run every check but those:
+  `pnpm nx affected -t lint eslint typecheck build`, then
+  `pnpm nx affected -t test --exclude=tag:needs-db`.
 - Isolation is real: two worktrees never share a server, and two test files never share a
   database. Measured in S2b: a warm start check takes about 10 ms (no Docker call), a cold
   `up --wait` about 1 s, a test database clone about 9 ms; idle memory about 35 MiB.

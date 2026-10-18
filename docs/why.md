@@ -1,8 +1,8 @@
 # Why this template, and who it is for
 
-The README has the short form. This page says who the template suits and who it does not, why each
-part of the stack was chosen, and what those choices cost. Each choice has its own decision record
-in [decisions/](decisions/), with the alternatives that were weighed.
+The template's own README has the short form. This page says who the template suits and who it
+does not, why each part of the stack was chosen, and what those choices cost. Each choice has its
+own decision record in [decisions/](decisions/), with the alternatives that were weighed.
 
 ## The idea
 
@@ -58,8 +58,9 @@ heads. So the template gives every rule a check, and the agent a way to ask:
   moon or Bazel model those better than Nx's TypeScript-first setup here.
 - **Machines without Docker, or native Windows.** Development and tests use a Postgres container
   (Docker Engine with Compose v2); package scripts assume a POSIX shell (macOS, Linux and WSL2
-  work). Cloud agent sessions without Docker can run only the checks that need no database:
-  `pnpm nx affected -t lint eslint typecheck test --exclude=tag:needs-db`.
+  work). Cloud agent sessions without Docker can run every check but the database tests:
+  `pnpm nx affected -t lint eslint typecheck build`, then
+  `pnpm nx affected -t test --exclude=tag:needs-db`.
 
 ## Why these choices
 

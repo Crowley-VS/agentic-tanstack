@@ -43,7 +43,8 @@ same rules apply to people and agents.
 - **Generated files** (`.agents/generated.json` lists them) are never edited by hand: change the
   source and run the command it names, or `pnpm regen`.
 - **Skills**: edit `.agents/skills/<name>/SKILL.md`, then `pnpm agents:sync`.
-- **Docs**: check that every path and command you write exists.
+- **Docs**: check that every path and command you write exists (`pnpm check` checks the relative
+  links and their anchors).
 - Turn anything you verified by hand into a test.
 
 ## Pull requests
@@ -62,6 +63,25 @@ same rules apply to people and agents.
 6. A maintainer merges. The template's own files (this one, the issue forms, the template smoke
    test) are kept out of projects by bootstrap's `TEMPLATE_ONLY` list: add a new template-only file
    there, with a test in `scripts/test/bootstrap.test.mjs`.
+
+## Repository settings
+
+Some of the template's files rely on settings of the repository itself, which no file can set. The
+maintainers keep them on in the upstream repository, and so should anyone who maintains a fork as
+a template of their own:
+
+- **Public, and a template repository** (Settings → General): the README's "Use this template"
+  needs both.
+- **Discussions** on: blank issues are off, and the issue forms' "Questions and ideas" link opens
+  them (`.github/ISSUE_TEMPLATE/config.yml`).
+- **Private vulnerability reporting** on (Settings → Security): [SECURITY.md](SECURITY.md) and the
+  issue forms send every report there.
+- **The Actions variable `TEMPLATE_MAINTENANCE` set to `true`** (Settings → Secrets and variables
+  → Actions → Variables): the template smoke test (`.github/workflows/template-smoke.yml`) runs
+  only where it is set. Repositories made from the template do not get it.
+
+To check them: `gh repo view --json visibility,isTemplate,hasDiscussionsEnabled`,
+`gh api 'repos/{owner}/{repo}/private-vulnerability-reporting'` and `gh variable list`.
 
 ## Licence of contributions
 

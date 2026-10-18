@@ -13,8 +13,10 @@ explains the mechanism.
 `pnpm dev`, `pnpm check` (the database tests), e2e and every `pnpm db:*` command start this
 checkout's Postgres container, so they need Docker Engine with Compose v2, running. Start Docker
 (Docker Desktop, or `sudo systemctl start docker` on Linux) and retry; `pnpm db:up` is a fast no-op
-once the server answers. Without Docker you can still run the checks that need no database:
-`pnpm nx affected -t lint eslint typecheck test --exclude=tag:needs-db`.
+once the server answers. Without Docker you can still run every check but the database tests:
+`pnpm nx affected -t lint eslint typecheck build` (no target but `test` needs a database), then
+`pnpm nx affected -t test --exclude=tag:needs-db` (the tests of every project but api, core and
+db).
 More: [database.md](database.md).
 
 ## A port is taken
@@ -49,9 +51,10 @@ More: [local-resources.md](local-resources.md).
 
 ## Docker Hub rate limits (`toomanyrequests`)
 
-Pulling `postgres:18.6-trixie` or the Node base image anonymously counts against Docker Hub's
-per-IP pull limit, which shared CI runners and busy networks reach. `pnpm db:up` retries a
-`toomanyrequests` (and network errors) up to 4 times, 2, 4 and 8 s apart; past that it fails.
+Pulling the Postgres image (`docker-compose.yml`) or the Node base image anonymously counts
+against Docker Hub's per-IP pull limit, which shared CI runners and busy networks reach.
+`pnpm db:up` tries `compose up` up to 4 times on a `toomanyrequests` (and on network errors): 3
+retries, 2, 4 and 8 s apart; past that it fails.
 
 - **Locally:** `docker login` raises the limit; or wait.
 - **In CI** (your project's own workflow; the template's works without secrets): log in to

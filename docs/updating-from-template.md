@@ -27,8 +27,25 @@ git remote add template https://github.com/Crowley-VS/agentic-tanstack.git
 git fetch template --tags
 ```
 
-Then, with `<old>` your starting point (the release tag of your `version`, or the `commit`) and
-`<new>` the release you want:
+Your starting point, `<old>`, is the release tag of your `version`, or the `commit`. A copy taken
+before the first release has neither (`0.0.0`, no commit): find the upstream commit it copied. A
+"Use this template" copy's first commit holds upstream's files unchanged, so it has the same tree:
+
+```bash
+tree=$(git rev-parse "$(git rev-list --max-parents=0 HEAD | tail -n 1)^{tree}")
+git log template/main --format='%H %T' | awk -v t="$tree" '$2 == t { print $1 }'
+```
+
+When that prints nothing (a tarball copy, whose first commit is bootstrap's own), take the last
+upstream commit before your bootstrap commit, and check its date against the day you downloaded
+the copy:
+
+```bash
+bootstrapped=$(git log -1 --format=%cI --grep 'bootstrap from')
+git log -1 --format='%H %cs' --before="$bootstrapped" template/main
+```
+
+Then, with `<new>` the release you want:
 
 ```bash
 git log --oneline <old>..<new>                  # the commits, Conventional Commit titles
@@ -37,44 +54,67 @@ git diff <old> <new> -- docs/ .agents/skills/   # one area
 ```
 
 The template's `CHANGELOG.md` and its GitHub releases summarize each release from those commits.
+Read this page as `<new>` has it, too: `git show <new>:docs/updating-from-template.md`.
 
 ## Take a change
 
 Upstream files still hold the placeholder scope and name that bootstrap replaced in yours, so a
-patch from upstream must be renamed the same way before it applies. With your scope and name in
-place of `@my-org` and `my-app` (the brackets keep the pattern from matching itself):
+patch from upstream must be renamed the same way before it applies, and must leave out the files
+your project does not take (listed below). Two shell helpers do both; put your scope and name in
+place of `@my-org` and `my-app` (the brackets keep the pattern from matching itself), and run them
+at the repository root, which their paths start from:
 
 ```bash
-# one upstream commit, keeping its message and author
-git format-patch -1 --stdout <sha> \
-  | sed -e 's#@acme[/]#@my-org/#g' -e 's#acme[-]app#my-app#g' \
-  | git am
+# git <command> <args>, limited to the files a project takes from upstream
+upstream() {
+  git "$@" -- . ':(exclude)pnpm-lock.yaml' ':(exclude)README.md' ':(exclude)README.project.md' \
+    ':(exclude)template.json' ':(exclude)scripts' ':(exclude)CHANGELOG.md' \
+    ':(exclude)CODE_OF_CONDUCT.md' ':(exclude)CONTRIBUTING.md' ':(exclude)SECURITY.md' \
+    ':(exclude).github/ISSUE_TEMPLATE' ':(exclude).github/workflows/template-smoke.yml' \
+    ':(exclude).github/workflows/release-please.yml' \
+    ':(exclude).github/workflows/agent-config-drift.yml' \
+    ':(exclude).github/workflows/renovate-regen.yml' ':(exclude).github/renovate.json5' \
+    ':(exclude)release-please-config.json' ':(exclude).release-please-manifest.json'
+}
+rescope() { sed -e 's#@acme[/]#@my-org/#g' -e 's#acme[-]app#my-app#g'; }
+
+# one upstream commit, keeping its message and author ('<sha>^!' is exactly that commit)
+upstream format-patch --stdout '<sha>^!' | rescope | git am
 
 # or a whole range, as one change to review
-git diff <old> <new> -- . ':(exclude)pnpm-lock.yaml' ':(exclude)README.md' \
-  | sed -e 's#@acme[/]#@my-org/#g' -e 's#acme[-]app#my-app#g' \
-  | git apply --reject
+upstream diff <old> <new> | rescope | git apply --reject
 ```
 
 `git apply --reject` applies every hunk that fits and leaves a `.rej` file next to each one that
 does not; resolve those by hand, then delete the `.rej` files. A hunk fails where you changed the
 same lines, and where bootstrap reformatted a line that a longer scope pushed over the line width.
-It reports `error: <file>: No such file or directory` for each template-only file the range
-touched (bootstrap removed them: below) and exits 1, after applying the rest. A `git am` that
-stops: `git am --show-current-patch=diff`, then fix and `git am --continue`, or `git am --abort`.
+A file you deleted fails with `error: <file>: No such file or directory`; `git apply` exits 1
+after applying the rest. A `git am` that stops: `git am --show-current-patch=diff`, then fix and
+`git am --continue`, or `git am --abort`.
 
-Leave out, or skip when they fail to apply:
+What `upstream` leaves out, and what to do instead:
 
 - **Template-only files**, which bootstrap removed: `CHANGELOG.md`, `CONTRIBUTING.md`,
   `CODE_OF_CONDUCT.md`, `SECURITY.md`, `.github/ISSUE_TEMPLATE/`, `template.json`, `scripts/`, and
-  the template's maintenance workflows (`.github/workflows/template-smoke.yml`, and the others
-  `TEMPLATE_ONLY` lists in the template's `scripts/bootstrap.ts`).
-- **`README.md`**: upstream's is the template's front page; yours came from its
-  `README.project.md`, so take changes from that file instead.
-- **The lockfile and generated files**: never patch them. After the patch, `pnpm install` rewrites
-  `pnpm-lock.yaml` from the changed `package.json` files, and `pnpm regen` rewrites the generated
-  files (`.agents/generated.json` lists them).
-- **`.railway/railway.ts`'s `REPO`**: yours names your repository.
+  the template's own maintenance workflows and their config. Bootstrap's `TEMPLATE_ONLY` list
+  names them. When `<new>` adds one (`git show <new>:scripts/bootstrap.ts`), add it to `upstream`
+  too: a patch creates every file upstream added, and a template workflow would then run in your
+  repository.
+- **`README.md`** and **`README.project.md`**: upstream's `README.md` is the template's front page,
+  and yours came from its `README.project.md`. Read upstream's changes to that file
+  (`git diff <old> <new> -- README.project.md`) and copy what you want into your `README.md`.
+- **The lockfile**: `pnpm install` rewrites `pnpm-lock.yaml` from the changed `package.json`
+  files.
+
+What it takes, with care:
+
+- **Generated files** (`.agents/generated.json` lists them): never resolve a rejected hunk in one
+  by hand; `pnpm regen` rewrites them from their sources.
+- **Migrations are the exception**: take upstream's new folders in `packages/db/migrations/`
+  exactly as committed, and never regenerate them. drizzle-kit would write a regenerated one under
+  another name and id, so your migration history would no longer match upstream's, and a
+  hand-written one (a backfill, `pnpm db:generate <name> --custom`) cannot be regenerated at all.
+- **`.railway/railway.ts`'s `REPO`**: yours names your repository; keep it.
 
 Then prove it as for any change:
 

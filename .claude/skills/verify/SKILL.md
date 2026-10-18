@@ -18,8 +18,8 @@ disable, no `--no-verify`, no edited snapshot of a wrong value).
 
 - `pnpm check` runs every gate on the affected projects: agent config, Nx's agent config,
   generated-file drift, lint, eslint (module boundaries), typecheck, test, test-browser, build, Nx
-  sync, lint of the files no project owns, formatting, pinned versions. Docker must run (database
-  tests), and Chromium must be installed (`pnpm exec playwright install chromium`).
+  sync, lint of the files no project owns, formatting, pinned versions, Markdown links. Docker must
+  run (database tests), and Chromium must be installed (`pnpm exec playwright install chromium`).
 - `pnpm check --all` runs every project. Use it for a change to tooling or shared config, one
   outside any project, or one that touches many projects, and once before a PR.
 - It ends with `✓ pnpm check passed` or `✗ pnpm check failed: <gates>`; each failure is printed

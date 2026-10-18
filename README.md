@@ -74,9 +74,9 @@ The longer version, with what each choice costs: [docs/why.md](docs/why.md).
 
 ## Quickstart
 
-**You need:** Node 24 (`.node-version` pins 24.21.0), pnpm 11 (`package.json#packageManager`:
-`corepack enable pnpm`, or `proto install` with `.prototools`), Docker Engine with Compose v2,
-running, and git with a user name and email. macOS, Linux or WSL2.
+**You need:** Node 24 (`.node-version` pins the exact version), pnpm 11
+(`package.json#packageManager`: `corepack enable pnpm`, or `proto install` with `.prototools`),
+Docker Engine with Compose v2, running, and git with a user name and email. macOS, Linux or WSL2.
 
 **1. Get a copy** (bootstrap refuses to run in a clone of the template itself):
 
@@ -154,7 +154,8 @@ rate limit and a `READ_ONLY=true` switch, because anyone can write to it.
 
 **The checks:** `pnpm check` runs its gates on the affected projects (`--all` for every project):
 agent config, generated-file drift, oxlint, ESLint (module boundaries, GraphQL operations),
-typecheck, tests (unit, API, database, browser), builds, Nx sync, formatting and pinned versions.
+typecheck, tests (unit, API, database, browser), builds, Nx sync, formatting, pinned versions and
+the relative links in the Markdown files.
 CI runs it, then the e2e specs (`e2e-ci`, one task per spec file) and, when web or api changed, the
 production images: built, started together, checked (production mode, non-root, the API's secret,
 the version, SIGTERM) and tested with every e2e spec. How the tests are organized:
