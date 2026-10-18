@@ -62,7 +62,9 @@ the drift gate then fails the PR. Hosted Renovate runs no commands of the reposi
   it (Codegen, the generators). The `regen` job has no secret and a read-only token
   (`persist-credentials: false`), and uploads the regenerated files as a patch. The `push` job
   installs nothing: it stages the patch in the index only (`git apply --cached`), checks that it
-  changes nothing but the paths of `.agents/generated.json`, as plain files
+  changes nothing but the paths of `.agents/generated.json` and, on a Playwright or drizzle-kit
+  bump, what `node tools/vendor-skills.mjs update` writes besides (the versions and sha256 pins in
+  `.agents/vendor.json`, the license files it copies), as plain files
   (`node tools/renovate-regen.mjs check`, run from the commit's own files), commits, then mints a
   token for this repository's contents alone and pushes, not forced.
 - **A GitHub App's token:** GitHub starts no workflow for a push made with `GITHUB_TOKEN`, so CI
