@@ -42,10 +42,13 @@ What the servers get from Railway with no setting of theirs (`docs/production.md
 
 Builds are free; running containers are billed by the minute: RAM $10/GB-month, CPU
 $20/vCPU-month, egress $0.05/GB, volumes $0.15/GB-month (Railway's pricing page, October 2026).
-The Hobby plan ($5/month) includes $5 of usage. Three small idle Node and Postgres containers
-should stay within it (estimate, not measured on Railway: check the project's Usage page after a
-day). The trial is a one-time $5 for 30 days; the Free plan's $1/month of credit is unlikely to
-cover three services. Remove the project (Settings, Danger) when you are done with a scratch one.
+The Hobby plan ($5/month) includes $5 of usage. Measured on a scratch project over a week in
+October 2026 (idle, plus a dozen redeploys): $0.36 in all, about $0.05 a day or $1.60 per 30 days,
+a third of Hobby's included usage. Nearly all of it is memory (about 55 MB per Node service, 40 MB
+for Postgres); CPU, egress and the volume cost cents. `railway usage projects --project <name>`
+shows the figures (the dashboard's Usage page too). The trial is a one-time $5 for 30 days; the
+Free plan's $1/month of credit does not cover three services. Remove the project (Settings,
+Danger) when you are done with a scratch one.
 
 ## Set it up: infrastructure as code (experimental)
 
@@ -55,8 +58,12 @@ beta pinned exactly in the catalog). The Railway CLI compares it with an environ
 the difference. You need:
 
 - a Railway account with GitHub connected (the Railway GitHub app may read your repository);
-- the Railway CLI 5.42.1 or newer: `brew install railway`, `npm i -g @railway/cli`, or
-  `bash <(curl -fsSL railway.com/install.sh)` (`railway --version`).
+- the Railway CLI 5.42.1 or newer (checked with 5.64.2): `brew install railway`,
+  `npm i -g @railway/cli`, or `bash <(curl -fsSL railway.com/install.sh)` (`railway --version`).
+
+Create the project from the CLI, not with the dashboard's **Deploy from GitHub repo**: that one
+builds a single service named after the repository with Railpack, which fails on this monorepo (if
+you made it, the next plan lists it to destroy, and the apply removes it).
 
 From the repository root:
 
@@ -67,29 +74,51 @@ railway init --name acme-app           # a new project (or `railway link` to an 
 
 Then, in the dashboard: **Project Settings → Shared Variables**, environment `production`, add
 `INTERNAL_API_SECRET` with the output of
-`node -p "require('node:crypto').randomBytes(32).toString('hex')"` (railway.ts only refers to
-it; without it the api refuses to start and web's `/api/health` answers 503, so neither deploy
-goes live). Then:
+`node -p "require('node:crypto').randomBytes(32).toString('hex')"`, then click **Deploy** on the
+canvas's bar of staged changes. Only the dashboard sets shared variables (`railway variable set`
+sets a service's own), and railway.ts only refers to it. Until the change is deployed,
+`${{shared.INTERNAL_API_SECRET}}` resolves to an empty value without a warning, `railway config
+plan` does not show it either, and the api fails its deploy after about 5 minutes of restarts
+(`INTERNAL_API_SECRET is required in production`); web's deploy fails after it. Once deployed, the
+name appears under `sharedVariables` in `railway environment config --json` (which also holds the
+values: look, never paste it). Then:
 
 ```bash
 pnpm nx run railway-iac:test           # the file evaluates and holds its rules (offline)
 railway config plan                    # read-only: 3 to add, the first time
 railway config apply                   # asks before it changes anything
+railway config plan                    # again: see below
 railway domain --service web --port 8080   # web's public domain (once; not part of the file)
 ```
+
+The apply that creates the services leaves their **Wait for CI** off (`source.checkSuites`
+null): the second plan lists `source.checkSuites (null → true)` on both, and a second
+`railway config apply` turns it on. Until then a push deploys before CI has run. Plan and apply
+end with a hint to run `railway setup agent`: skip it, it installs Railway's skills and MCP server
+into your agent config, which this repository already sets up (`docs/agents.md`). To apply exactly
+what you reviewed, pin the plan: `railway config plan --out plan.json`, then
+`railway config apply --plan plan.json --yes` (and `--confirm-destructive` when the plan deletes
+something), which also works where no one answers a prompt.
 
 The apply creates the services from your repository's `main`; each deploys once CI passes on that
 commit (`checkSuites`, "Wait for CI"). `REPO` in `railway.ts` names the repository: check it is
 yours. Bootstrap set it from `--repo` or your GitHub origin, else guessed `<scope>/<name>` (it
-printed which). Wait for CI waits for every GitHub Actions run on the commit, and a failed one skips
-the deploy: in the upstream template repository (`TEMPLATE_MAINTENANCE` set) that includes the
-template smoke test, up to 40 minutes.
+printed which). Wait for CI waits for every GitHub Actions run on the commit, and only for those:
+check suites of other GitHub apps on the account (another host's, say) may stay queued and do not
+hold a deploy. A failed run skips the deploy (`SKIPPED` in `railway deployment list -s <service>`;
+`railway status --json` shows it as failed); a passing one releases a waiting deploy within
+seconds. In the upstream template repository (`TEMPLATE_MAINTENANCE` set) CI includes the template
+smoke test, up to 40 minutes. `railway redeploy -s <service> --from-source` deploys the branch's
+latest commit; `railway redeploy -s <service> --yes` redeploys the deployment that runs.
 
 A push redeploys a service only when it changes one of its watch paths: its app, the workspace
 packages its image bundles, and the files every install reads (`railway.ts` lists them; its test
 derives the packages from the `package.json` files, so a new dependency fails it until it is
-watched). A change to only `apps/api` redeploys only the api; docs, e2e specs and `.railway/`
-redeploy nothing.
+watched). A change to only `apps/api` or `packages/db` redeploys only the api; docs, `tools/`, e2e
+specs and `.railway/` redeploy nothing (the skip shows at once, before CI ends); a change to the root
+`package.json` or the lockfile redeploys both. So the two services may run different commits:
+`railway variable set` redeploys the commit a service runs, while a `railway config apply` that
+changes a variable builds the branch's latest commit, even one its watch paths skipped.
 
 **Changing it:** edit `.railway/railway.ts`, run `pnpm nx run railway-iac:test`, then
 `railway config plan` and `railway config apply`. An apply makes the environment match the file:
@@ -156,43 +185,53 @@ composer kept the pre-deploy command, the watch paths and the draining time.
 ## Check a deploy
 
 On a scratch project, once both services are live, with `<web>` the domain from `railway domain`.
-They have not been run on Railway yet: they also confirm what this page takes from Railway's
-documentation (that each field of `railway.ts` applies as typed, the build argument, the edge's
-headers). Note the CLI version first (`railway --version`): `railway.test.ts` copies the
-evaluation script of CLI 5.63.4.
+All ten passed on Railway in October 2026 (CLI 5.64.2, a scratch project in us-west2), which also
+confirmed what this page takes from Railway's documentation: each field of `railway.ts` applies as
+typed, the build argument arrives, the edge sets its headers. Note the CLI version first
+(`railway --version`): `railway.test.ts` copies the evaluation script of CLI 5.63.4, unchanged
+through 5.64.2. Every `railway` command asks first (What an agent may do, below).
 
-1. **The file and the environment agree:** `railway config plan --detailed-exit-code` exits 0.
+1. **The file and the environment agree:** `railway config plan --detailed-exit-code` exits 0
+   (after the first apply only once Wait for CI is on: Set it up, above).
 2. **The api has no public domain:** `railway domain list --service api --json` lists none.
 3. **Migrations ran before the api started:** the api deployment's logs (dashboard, or
    `railway logs -s api -d -n 50`) show `migrations applied from /app/migrations` from the
-   pre-deploy container, then `listening on … (production)`. The build log shows no error about
-   `HEALTHCHECK --start-interval`.
+   pre-deploy container, then `listening on http://localhost:8080/graphql (production)` (it binds
+   every address), each line with the commit as `version`. The build log shows no error about
+   `HEALTHCHECK --start-interval`, and the deploy log `Healthcheck succeeded`. A redeploy runs the
+   pre-deploy migration again (it finds nothing to do).
 4. **Web is up, reaches the api, and runs the commit:** `curl -fsS https://<web>/api/health`
    answers 200 with `version` the deployed commit's SHA, and
    `curl -sS https://<web>/api/graphql -H 'content-type: application/json' -d '{"query":"{ readOnly apiVersion }"}'`
-   answers `readOnly: false` and the same SHA.
+   answers `readOnly: false` and the same SHA, once both services have deployed that commit (a
+   commit only one service watches redeploys only that one).
 5. **The edge sets the client IP:** the same graphql curl with `-H 'X-Real-IP: 203.0.113.9'`:
    the api's log line for it has your address as `ip`, not 203.0.113.9.
-6. **One request id across the logs:** the graphql answer's `x-request-id`, searched as
-   `@requestId:<id>` in the project's logs, finds the web line, the api line and the HTTP log.
-   The same curl with `-H 'x-railway-request-id: spoofed-1'` still answers another id (the edge
-   sets its own).
-7. **A change redeploys only what it touches**, on a scratch branch rather than `main`: set both
-   services' source branch to it (Settings, Source), push a commit that changes only `apps/api`
-   (a comment) and open a draft pull request, so CI runs on it: the api deploys once CI passes,
-   web's deploy shows "skipped". A commit that changes only `docs/` deploys neither. Then close the
-   pull request, delete the branch, and `railway config apply` (the file sets `main` back).
-8. **Shutdown is graceful:** redeploy the api, then web (dashboard, Deployments, Redeploy). Each old
-   deployment logs `SIGTERM: finishing in-flight requests, then exiting` as an info line of its
-   own (web: then srvx's `Stopping server gracefully` and `Server closed successfully.`, on stderr,
-   so shown as errors) and stops within a few seconds, never with the api's
-   `requests still running after 8 s`.
-9. **Optional, the e2e specs against the deploy:** set `WRITE_RATE_LIMIT=off` on web in the
-   dashboard, then run `BASE_URL=https://<web> pnpm nx run web-e2e:e2e-base-url` (the specs that
-   need the seed or the API's own address skip, `docs/e2e.md`; their notes stay in the database).
-   `railway config plan` then lists that variable as one to delete, and `railway config apply`
-   deletes it: an apply removes what the file leaves out.
-10. **Costs:** the project's Usage page after about a day; then delete the scratch project.
+6. **One request id across the logs:** the graphql answer's `x-request-id` (the edge's
+   `x-railway-request-id`), searched as `@requestId:<id>`, finds the web line, the api line and the
+   HTTP log: `railway logs -s <service> -d --filter '@requestId:<id>' -n 20 --json` for each
+   service, `railway logs -s web --http --filter '@requestId:<id>' --json` for the HTTP log (with
+   `srcIp`, `httpStatus`, `path`, `totalDuration`). The same curl with
+   `-H 'x-railway-request-id: spoofed-1'` still answers another id (the edge sets its own).
+7. **A change redeploys only what it touches**, on the next merges to `main`
+   (`railway deployment list -s <service>`): one that changes only `packages/db` or `apps/api`
+   deploys the api once CI passes and shows web's deploy as `SKIPPED`; one that changes only
+   `docs/` or `tools/` deploys neither; one that changes the root `package.json` deploys both.
+8. **Shutdown is graceful:** redeploy the api, then web (`railway redeploy -s <service> --yes`,
+   or the dashboard's Deployments, Redeploy). After Railway's `sending signal SIGTERM to
+container`, each old deployment logs `SIGTERM: finishing in-flight requests, then exiting` as
+   an info line of its own (the api's with `inFlight`; web's after an empty line, then one
+   error-level line holding srvx's `Stopping server gracefully` and `Server closed successfully.`,
+   which it writes to stderr) and is gone within about 15 s, never with the api's
+   `requests still running after 8 s`. `railway logs <deployment id>` needs `-s <service>` too.
+9. **Optional, the e2e specs against the deploy:** `railway variable set WRITE_RATE_LIMIT=off -s web`
+   (it redeploys web, once CI passes), then run
+   `BASE_URL=https://<web> pnpm nx run web-e2e:e2e-base-url`: 11 pass and 5 skip, the specs that
+   need the seed or the API's own address (`docs/e2e.md`; their notes stay in the database).
+   `railway config plan` then lists that variable as one to delete (exit code 2), and
+   `railway config apply` deletes it: an apply removes what the file leaves out.
+10. **Costs:** `railway usage projects --project <name>` after about a day (What it costs, above);
+    then delete the scratch project, or keep it as your reference project.
 
 ## What an agent may do
 
