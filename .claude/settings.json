@@ -71,6 +71,7 @@
       "Bash(pnpm db:up)",
       "Bash(pnpm db:migrate)",
       "Bash(pnpm db:seed)",
+      "Bash(pnpm db:generate *)",
       "Bash(pnpm nx run api:lint)",
       "Bash(pnpm nx run api:eslint)",
       "Bash(pnpm nx run api:typecheck)",
