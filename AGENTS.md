@@ -44,7 +44,7 @@ Stack checks: Docker must run (`pnpm check` runs the database tests). Route, UI 
 
 - `pnpm ports`: this checkout's URLs, ports and database URLs (each git worktree gets its own).
 - `pnpm dev` in the background: web + API, reloading. Curl the web's `/api/health` and the API's `/health`; stop it when done. Writes per IP are rate-limited, in dev too (`docs/web.md`).
-- Database: `pnpm db:up` (a no-op when it is up), `pnpm db:migrate`, `pnpm db:seed` (deterministic data), `pnpm db:reset` (wipes the data). Schema changes: Migrations, below.
+- Database: `pnpm db:up` (a no-op when it is up), `pnpm db:migrate`, `pnpm db:seed` (deterministic data), `pnpm db:reset` (wipes the data), `pnpm db:psql -c "select …"` (one query). Schema changes: Migrations, below.
 - `pnpm teardown` stops this checkout's Postgres and Nx daemon (data kept) and removes its image stack: run it before you leave or delete a worktree, once no server runs there (stop yours; skip it while a `pnpm dev` you did not start runs). `pnpm prune:orphans` removes what deleted worktrees left behind (`pnpm db:up` does the Docker part too, when it starts the server). Details: `docs/local-resources.md`.
 
 <!-- stack:end -->
@@ -109,7 +109,7 @@ Without Docker, `pnpm nx affected -t test --exclude=tag:needs-db` skips the `nee
 - **Migrations**: edit `packages/db/src/schema/*`, run `pnpm db:generate <what>` and commit the result. The guard hook blocks edits to a migration git tracks (staged or committed); only a new, untracked one may change.
 - **API** (`docs/api.md`): the schema has no side effects at import; the API is private and locked down by default (tests pin each default); expected failures are data (union members, selected by `__typename`); its Vitest config aliases `graphql` to one copy.
 - **Server-only code lives in `*.server.ts`** (env, API client, BFF): a client import of one fails the build, and so does server code in the client bundle. The browser reaches the API only through the same-origin `/api/graphql`.
-- **Web data** (`docs/web.md`): only through `execute()` with a `graphql()` document. Loaders `await ensure…()` and return nothing; components `useSuspense…` the same query options. Forms copy `apps/web/src/components/note-form.tsx`.
+- **Web data** (`docs/web.md`): only through `execute()` with a `graphql()` document. Loaders `await ensure…()` and return nothing; components `useSuspense…` the same query options. Forms copy `apps/web/src/components/note-form.tsx`; a write without a form follows `docs/web.md`.
 - **Tests that touch the database** use `testDb()` from `@acme/db/testing`. Each test file gets its own database, shared by its tests: assume nothing about other tests' rows.
 
 <!-- stack:end -->
@@ -148,6 +148,6 @@ Task skills (`.agents/skills`), each with its steps, commands and checks:
 - Upgrading Nx and its plugins: `nx-upgrade`.
 - Vendored (upstream skills, commands rewritten for this repo): `playwright-cli` (drive a browser from the shell: snapshot, click, console), `drizzle`, `drizzle-generate`, `drizzle-hints`.
 
-Subagents (`.claude/agents`): `reviewer` (read-only review of a change against these rules: file, line, rule) and `db-migrations` (a schema change and its migration). How the agent setup works (plugins, hooks, permissions, opt-ins): `docs/agents.md`.
+Subagents (`.claude/agents`): `reviewer` (read-only review of a change against these rules: file, line, rule) and `db-migrations` (a schema change and its migration). Without an Agent tool (a workflow's subagent), read `.claude/agents/reviewer.md` and apply its rules and checks yourself. How the agent setup works (plugins, hooks, permissions, opt-ins): `docs/agents.md`.
 
 <!-- stack:end -->

@@ -52,8 +52,8 @@ purely additive.
 ## 3. Apply it
 
 - `pnpm db:migrate` applies it to the dev database.
-- Look at the rows: `pnpm nx run db:db-psql --args='-c "select count(*) from notes"'` (this form
-  keeps a query with `=` whole: `docs/database.md`).
+- Look at the rows: `pnpm db:psql -c "select count(*), count(author_name) from comments"` (its
+  arguments reach psql as written, commas and `=` included: `docs/database.md`).
 
 ## 4. Seed and tests
 
@@ -76,15 +76,29 @@ work with the code before it and after it, and so must a rollback of the code. A
 one deploy after the code that writes the column: rows the previous API inserts while the
 migrations run would miss it.
 
-- **One deploy:** a new table; a nullable column, or one with a default; a new index; a dropped
-  `NOT NULL` or check.
+- **One deploy:** a new table; a nullable column, or one with a default; a new index (on a large
+  table: below); a dropped `NOT NULL` or check.
+- **A new index on a large table:** drizzle-kit writes a plain `CREATE INDEX`, which blocks writes
+  to the table while it builds (harmless at this template's size). `CREATE INDEX CONCURRENTLY`
+  does not, but cannot be a migration here: the migrator runs every pending migration in one
+  transaction, where it fails. So a human builds it on production before the deploy, with
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS …` (a failed build leaves an invalid index: drop it,
+  retry), and the new, untracked migration says `CREATE INDEX IF NOT EXISTS`: it skips the index
+  there and builds it everywhere else.
 - **A required column:** deploy 1 adds it nullable (or with a default) and the code writes it.
   Deploy 2 backfills the old rows in a custom migration, generated before the schema edit that
   makes it `NOT NULL` (migrations run in the order they were generated).
 - **A rename:** deploy 1 adds the new column, nullable; the code writes both and still reads the
-  old one. Deploy 2 copies the old values in a custom migration (then `NOT NULL`, as above), and
-  the code reads the new column and still writes both, so a rollback to deploy 1 reads complete
-  rows. The old column then goes as a column drop (below): two more deploys. Never one rename.
+  old one. Deploy 2 copies the old values in a custom migration (then `NOT NULL` when the column
+  is required, as above), and the code reads the new column and still writes both, so a rollback
+  to deploy 1 reads complete rows. The old column then goes as a column drop (below): two more
+  deploys. Never one rename.
+- **A renamed column behind an API field:** rename the field in the same deploys (skill
+  `graphql-change`, step 3). Deploy 1 adds the new field and input, and the new field still reads
+  the old column: rows the previous API inserts while deploy 1's migrations run have only that
+  one. Deploy 2, with the backfill, switches both fields to the new column, deprecates the old
+  field and input, and moves the web to the new ones. Deploy 3 removes them, with the old column's
+  schema entry; deploy 4 drops the column.
 - **A column drop:** deploy 1 removes every use of it (an API field first: skill `graphql-change`
   deprecates it) and removes it from `packages/db/src/schema`: Drizzle names every schema column
   in each insert (`default` for a value left out) and in each select without a field list, so code
@@ -99,7 +113,10 @@ migrations run would miss it.
   `DROP TABLE`: the previous API still reads the table while deploy 1's migrations run, and a
   rollback needs it. Code that never queries a table does not fail once it is gone, so deploy 2
   removes it from the schema, and its generated `DROP TABLE` drops it.
-- Each step is its own PR, merged and deployed before the next one.
+- Each step is its own PR, merged and deployed before the next one. Write every later deploy's
+  steps (its SQL, the code changes, what each rollback reads) in the PR description and the commit
+  message: the plans folder is gitignored, and the follow-up PR, in another worktree, starts from
+  them.
 
 ## 6. Prove it
 

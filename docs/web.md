@@ -103,11 +103,11 @@ answers 500 then, not 404.
 
 Hydration-safe rendering:
 
-- Buttons that need JavaScript ("Load more", a form's submit, the error page's "Try again")
-  render disabled until `useHydrated()`: a click before hydration would be lost (a submit would be
-  a native GET, with the form's fields in the URL). Playwright waits for them to be enabled, so e2e
-  specs need no hydration retries. "Load more" also stays disabled while any fetch runs or is
-  paused (offline).
+- Buttons that need JavaScript ("Load more", a form's submit, a write without a form, the error
+  page's "Try again") render disabled until `useHydrated()`: a click before hydration would be
+  lost (a submit would be a native GET, with the form's fields in the URL). Playwright waits for
+  them to be enabled, so e2e specs need no hydration retries. "Load more" also stays disabled while
+  any fetch runs or is paused (offline).
 - User text renders as React text only (never `dangerouslySetInnerHTML`); long words wrap
   (`wrap-anywhere`) and bodies keep their line breaks (`whitespace-pre-wrap`).
 - Timestamps are UTC text (`formatTimestamp()` in `src/lib/notes/format.ts`): the server and
@@ -116,8 +116,9 @@ Hydration-safe rendering:
 ## Writes: forms
 
 The board's "New note" form (`src/components/note-form.tsx`) is the reference; copy it for a new
-write (`comment-form.tsx` is the same with a `NotFoundError` case). Its mutation lives with the
-board's operations (`src/lib/notes/queries.ts`); the helpers are in `src/lib/forms.ts`:
+write (`comment-form.tsx` is the same with a `NotFoundError` case; a write with no form: below).
+Its mutation lives with the board's operations (`src/lib/notes/queries.ts`); the helpers are in
+`src/lib/forms.ts`:
 
 1. **Validate in the browser** with the API's own Zod schema (`NoteInput` from
    `@acme/validators/notes`): the same rules and messages, and nothing is sent while a field is
@@ -147,6 +148,30 @@ their submit button until hydration.
 The forms use plain React state: two short forms, with every step visible to copy.
 `@tanstack/react-form` is the upgrade for bigger forms; it is not added while its 2.0 is in alpha
 (1.33.5 is current).
+
+## Writes without a form
+
+A write from a single control (a toggle, a delete or "mark done" button) takes the forms' steps
+without the fields, and has no form to show a message under:
+
+1. **Send the state to set**, never "toggle" (`{ noteId, done: true }`, the opposite of what the
+   page shows): a retry or a double click then cannot flip it back. The API still validates it
+   with its Zod schema, in the mutation's `validate:` and again in core.
+2. **Wait for the invalidations**: the options-level `onSuccess` returns the `invalidateQueries`
+   promise, as a form's does, so the control stays pending (disabled, `aria-busy`) until every
+   query that shows the change has refetched (`refetchType: 'all'` for one no component on the
+   page reads). No optimistic update: the page shows only what the API stored.
+3. **Toast the result**: success says what changed; another union member (a `NotFoundError`, a
+   `ValidationError`'s first message) is an error toast, and `unreachable(result)` gives the
+   message for one it does not know. A write that threw is a toast of `useWriteError()`'s message
+   (read-only, rate-limited or generic, as for forms).
+4. **Disable it** while `useReadOnly()` is true, while pending, and until `useHydrated()`.
+
+Its accessible name says what it acts on when there are several on a page (one per card); a
+toggle keeps one name and shows its state with `aria-pressed`. On a card it sits above the title
+link, which covers the card (`src/components/note-card.tsx`), so a click on it does not open the
+note. Browser tests mock `execute()` as for forms: the input sent, each toast, and the disabled
+states.
 
 ## Browser tests
 

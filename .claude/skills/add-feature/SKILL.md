@@ -15,8 +15,11 @@ turns the tests that create rows (core, API, `note-form.browser.test.tsx`, the e
 fixture) red from step 2 until steps 3-7 give them the field: add it there, never weaken a test.
 A new required input also breaks deployed clients (step 4): add the field optional first, and make
 it required in a later change. Once the app is deployed, the web selects a new field only after
-the API that has it is live (skill `graphql-change`, step 3): steps 1-4 are one PR, steps 5-7 the
-next.
+the API that has it is live (skill `graphql-change`, step 3): steps 1-4 are one PR, and the web's
+operations and input keys (steps 5-7) the next. UI wording and identifiers that never reach the
+API (a label, a formatter's name, a DOM id) may ship with the API PR. If you cannot tell whether
+the app is deployed, assume it is: two PRs, the web one after the API one is live. The first PR's
+description says what the next one does (the plan file is gitignored).
 
 ## 0. Start
 
@@ -50,8 +53,8 @@ next.
   and generate again, then `pnpm db:seed` (it migrates, then seeds). Reseeding before the new
   migration exists fails: the seed writes every column of the schema.
 - `pnpm db:migrate` applies it to the seeded dev database. Check the existing rows:
-  `pnpm nx run db:db-psql --args='-c "select …"'` (the form that keeps a query with `=` whole:
-  `docs/database.md`).
+  `pnpm db:psql -c "select count(*), count(author_name) from comments"` (its arguments reach psql
+  as written, commas and `=` included: `docs/database.md`).
 - Change `packages/db/src/seed.ts` only if the feature needs seeded data, and then `SEED` in
   `apps/web-e2e/src/fixtures.ts` with it (e2e may not import `@acme/db`).
 - A constraint or index the schema enforces gets a test in `packages/db/src/schema.test.ts`.
@@ -118,6 +121,11 @@ next.
   `FieldLabel` and `FieldError`; `name` is the input's key; `maxLength` from `NOTE_LIMITS`;
   `aria-invalid` and `aria-describedby`; the name added to `FIELDS`, so its errors land on it. The
   steps of a write: `docs/web.md`, "Writes: forms".
+- A write without a form (a toggle, a button): `docs/web.md`, "Writes without a form". It sends
+  the state to set, never "toggle"; stays pending until its invalidations have refetched; toasts
+  its result, and a write that threw (`useWriteError()`); and is disabled while read-only, while
+  pending and until hydration. Its browser test clicks it, and asserts the input sent and each
+  toast.
 - Show values as React text only, never HTML (`wrap-anywhere` on user text). A formatter (a
   fallback such as "Anonymous") goes in `src/lib/notes/format.ts`, with node tests in
   `format.test.ts`.
