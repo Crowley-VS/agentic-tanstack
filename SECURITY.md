@@ -60,8 +60,9 @@ pin each of these defaults.
 - **Production hardening.** Introspection, GraphiQL and field suggestions are off; unexpected
   errors are masked (`Unexpected error.`, details in the server log); CORS is off and CSRF
   prevention on.
-- **Limits** on depth (10), aliases (15), directives (10), tokens (2,000) and cost, checked before
-  execution.
+- **Limits** on depth (10), aliases (15), directives (10), tokens (2,000) and cost (5,000 in
+  graphql-armor's measure), checked before execution; the schema checks depth (10) and complexity
+  (2,000) again before its first resolver runs.
 
 ## Secrets
 
