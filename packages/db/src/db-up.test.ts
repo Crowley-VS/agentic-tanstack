@@ -517,7 +517,8 @@ describe('dbUp', () => {
     const { error, calls } = await run(local(await closedPort()), { up: failing });
     expect(calls).toEqual([...LISTS, UP, UP, UP, UP]);
     expect(error).toContain(`docker compose up failed (exit 1):\n${transient[1]}`);
-  });
+    // 8 starts, about 40 fake docker processes: near Vitest's 5 s default on a loaded CI runner
+  }, 30_000);
 
   it('reports any other compose failure as is, without retrying', async () => {
     for (const stderr of [
