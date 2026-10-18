@@ -1425,6 +1425,21 @@ describe('down and prune', () => {
     expect(shared.stdout).toContain('[db-up] shared-pg is not this checkout’s own');
   }, 30_000);
 
+  // reset deletes the volume, every database on the server: in a shared project, every checkout's
+  it('reset refuses a project COMPOSE_PROJECT_NAME names, and deletes only this checkout’s own', () => {
+    const shared = cli('reset', { COMPOSE_PROJECT_NAME: 'shared-pg' });
+    expect(shared.status).toBe(1);
+    expect(shared.calls).toEqual([]); // no Docker call: nothing deleted, nothing started
+    expect(shared.stderr).toContain('[db-up] shared-pg is not this checkout’s own');
+    expect(shared.stderr).toContain('`docker compose -p shared-pg down -v`');
+
+    // its own project: the volume goes first (whether the server then starts is dbUp's tests')
+    const { project, composeFile } = resolveDb();
+    const own = cli('reset', { FAKE_DOCKER_FAIL: notRunning });
+    expect(own.calls[0]).toBe(`compose -p ${project} -f ${composeFile} down -v`);
+    expect(own.stderr).not.toContain('is not this checkout’s own');
+  }, 30_000);
+
   it('prune removes this repository’s leftovers and prints them, or says there were none', () => {
     const { commonDir } = resolveDb();
     const gone = join(tmp, 'deleted-worktree');

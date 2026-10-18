@@ -10,7 +10,9 @@
 //                                   deleted checkouts (scripts/orphans.mjs; `up` does it too
 //                                   whenever it has to start the server), and the start locks'
 //                                   leftovers of exited processes and deleted checkouts
-//   node scripts/db-up.mjs reset    delete it and its data, then start fresh
+//   node scripts/db-up.mjs reset    delete it and its data (every database on it: dev, test, e2e),
+//                                   then start fresh; refuses a project that is not this
+//                                   checkout's own
 //   node scripts/db-up.mjs psql     open psql on the dev database; arguments after `psql` go to
 //                                   psql (`-c "select …"` runs one query, also without a terminal),
 //                                   each as one word, through no shell: `pnpm db:psql …` (the root
@@ -615,6 +617,16 @@ async function main([mode = 'up', ...args]) {
     for (const line of pruned.failed) console.error(`[db-up] could not prune: ${line}`);
     if (pruned.failed.length) process.exitCode = 1;
   } else if (mode === 'reset') {
+    // the volume holds the whole server: this checkout's dev, test and e2e databases, and, in a
+    // project COMPOSE_PROJECT_NAME names, every other checkout's that uses it (resolveDb). That
+    // one is for a human to delete: an agent's reset must not wipe other checkouts' data.
+    if (!cfg.ownsProject) {
+      console.error(
+        `[db-up] ${cfg.project} is not this checkout’s own (COMPOSE_PROJECT_NAME): other checkouts may use it, so reset leaves it alone (\`docker compose -p ${cfg.project} down -v\` deletes it and every database on it)`,
+      );
+      process.exitCode = 1;
+      return;
+    }
     compose(cfg, ['down', '-v'], { stdio: 'inherit' });
     await dbUp(cfg);
     console.log(`[db-up] ${cfg.project} reset: empty server on :${cfg.port}`);

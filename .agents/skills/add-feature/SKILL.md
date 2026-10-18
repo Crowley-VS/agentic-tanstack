@@ -49,8 +49,9 @@ description says what the next one does (the plan file is gitignored).
   `packages/db/migrations/<timestamp>_<what>/migration.sql`. Read the SQL: it must be additive
   (a dropped or renamed column breaks the running app).
 - Never edit a migration git tracks (the guard hook blocks it). To redo a new, untracked one that
-  was applied: `pnpm db:reset` (wipes this checkout's dev data), delete its folder, fix the schema
-  and generate again, then `pnpm db:seed` (it migrates, then seeds). Reseeding before the new
+  was applied: `pnpm db:reset` (wipes this checkout's whole local server: its dev, test and e2e
+  databases; it refuses one other checkouts share), delete its folder, fix the schema and
+  generate again, then `pnpm db:seed` (it migrates, then seeds). Reseeding before the new
   migration exists fails: the seed writes every column of the schema.
 - `pnpm db:migrate` applies it to the seeded dev database. Check the existing rows:
   `pnpm db:psql -c "select count(*), count(author_name) from comments"` (its arguments reach psql

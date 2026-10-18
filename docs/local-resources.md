@@ -32,7 +32,8 @@ they reset their worktree (`.claude/workflows/review-loop-run.js`). Skip it whil
 not start still runs in the checkout (the user's `pnpm dev`; the API's `/health` from `pnpm ports`
 answers): its API answers every query with an error until `pnpm db:up` brings the database back.
 A project `COMPOSE_PROJECT_NAME` (or, for the stack, `STACK_PROJECT`) names other than the
-checkout's own may serve other checkouts too, so `teardown` leaves it running.
+checkout's own may serve other checkouts too, so `teardown` leaves it running, and `pnpm db:reset`
+refuses to delete its volume (every checkout's databases on that server).
 
 ## `pnpm prune:orphans`: remove what deleted checkouts left behind
 

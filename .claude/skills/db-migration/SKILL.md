@@ -46,8 +46,9 @@ purely additive.
 - A data change (a backfill) is a migration of its own: `pnpm db:generate <what> --custom` writes
   an empty `migration.sql` for your SQL.
 - Never edit a migration git tracks (staged or committed): the guard hook blocks it. To redo a
-  new, untracked one you already applied: `pnpm db:reset` (wipes this checkout's dev data), delete
-  its folder, fix the schema and generate again, then `pnpm db:seed` (it migrates, then seeds).
+  new, untracked one you already applied: `pnpm db:reset` (wipes this checkout's whole local
+  server: its dev, test and e2e databases; it refuses one other checkouts share), delete its
+  folder, fix the schema and generate again, then `pnpm db:seed` (it migrates, then seeds).
 
 ## 3. Apply it
 

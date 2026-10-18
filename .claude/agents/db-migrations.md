@@ -27,8 +27,9 @@ hands: say so in your report.
   name the next one in your report.
 - Never answer a `rename_or_create` with a hint: split the change instead.
 - Never edit a migration git tracks (staged or committed): the guard hook blocks it. To redo your
-  own new, untracked one, follow step 2 of the skill; `pnpm db:reset` wipes this checkout's dev
-  data (`pnpm db:seed` refills it): only this checkout's local database, never another one.
+  own new, untracked one, follow step 2 of the skill; `pnpm db:reset` wipes this checkout's whole
+  local server (its dev, test and e2e databases; `pnpm db:seed` refills the dev one), and refuses
+  a server `COMPOSE_PROJECT_NAME` shares with other checkouts.
 - Tests that touch the database use `testDb()` from `@acme/db/testing`.
 - Never read or print `.env*` files.
 
