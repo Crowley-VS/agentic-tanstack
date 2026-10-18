@@ -179,9 +179,9 @@ than it seems to (`unsafeAllowRule` in `tools/agents.mjs`: `git log *` also writ
   allow rule in any file lifts it, so the list holds only what must reach a human. The local dev
   database's reset, studio and psql are not on it: nothing allows them either, so the default mode
   asks, auto mode lets them run, and you can allow them in your `.claude/settings.local.json`:
-  `Bash(pnpm db:psql *)` (each argument reaches psql as written, and psql's backslash commands run
-  inside the Postgres container: `docs/database.md`), exact commands for the rest
-  (`db-psql --args='…'` reaches a shell).
+  `Bash(pnpm db:psql *)` (each argument reaches psql as written: any SQL on this checkout's
+  server, and any command inside its Postgres container, none on your machine:
+  `docs/database.md`), exact commands for the rest (`db-psql --args='…'` reaches a shell).
 - **Allowed**: the checks (`pnpm check`, each project's lint, eslint, typecheck, test and build),
   formatting, regeneration, agent sync and check, the dev database's up, migrate and seed, the dev
   servers, e2e and image builds, the read-only `pr-review` modes, the browser CLI's inspection

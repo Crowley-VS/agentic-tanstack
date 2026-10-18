@@ -334,12 +334,19 @@ export function withoutScriptsRules(settings: string): string {
     .join('\n');
 }
 
-/** The CLI script of the oxfmt installed in `root`'s node_modules, or undefined before install. */
+/**
+ * The CLI script of the oxfmt installed in `root`'s node_modules, or undefined before install (or
+ * when the package or its bin is missing). Run with this Node: no `.bin` shim, so no shell.
+ */
 export function oxfmtEntry(root: string): string | undefined {
   const dir = join(root, 'node_modules', 'oxfmt');
-  if (!existsSync(join(dir, 'package.json'))) return undefined;
-  const { bin } = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
-  return join(dir, typeof bin === 'string' ? bin : bin.oxfmt);
+  try {
+    const { bin } = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+    const entry: unknown = typeof bin === 'string' ? bin : bin?.oxfmt;
+    return typeof entry === 'string' && existsSync(join(dir, entry)) ? join(dir, entry) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -348,18 +355,19 @@ export function oxfmtEntry(root: string): string | undefined {
  * `pnpm check` has a format gate. `files` undefined (a re-run: an earlier run renamed them, and
  * which they were is unknown) formats every file, which changes only what the rename left
  * unformatted: the template's own files already are. oxfmt skips ignored (generated) files even
- * when named. Before install there is no oxfmt: it says so, and `pnpm format` does it later.
+ * when named (the test pins it for the lockfile and a vendored skill). Before install there is no
+ * oxfmt: it says so, returns false, and the next steps name `pnpm format`.
  */
-function formatRewritten(files: string[] | undefined) {
+function formatRewritten(files: string[] | undefined): boolean {
   step('Format');
   const oxfmt = oxfmtEntry(ROOT);
   if (!oxfmt) {
     console.log('  skipped: oxfmt is not installed yet; run `pnpm format` after `pnpm install`');
-    return;
+    return false;
   }
   if (files?.length === 0) {
     console.log('  nothing was rewritten');
-    return;
+    return true;
   }
   // No shell: one argument per file. oxfmt skips the ones it does not format (a Dockerfile) or
   // ignores; the flag keeps that from failing when it is all of them.
@@ -371,6 +379,7 @@ function formatRewritten(files: string[] | undefined) {
   if (res.status !== 0)
     fail(`oxfmt failed (exit ${res.status}): fix the file it names, then re-run`);
   console.log(`  formatted ${files ? `the ${files.length} rewritten files` : 'every file'}`);
+  return true;
 }
 
 export async function main() {
@@ -571,7 +580,7 @@ export async function main() {
     run('node', ['tools/agents.mjs', 'install-hooks'], { allowFail: true });
   }
   // after the install (which brings oxfmt), before regeneration and agent sync copy files
-  formatRewritten(
+  const formatted = formatRewritten(
     needsRename ? [...rewritten].filter((f) => existsSync(join(ROOT, f))) : undefined,
   );
   if (opts.install) {
@@ -622,7 +631,11 @@ export async function main() {
   console.log(`
 ✓ Bootstrapped ${scope}/… (${name}).
 
-Next steps:
+Next steps:${
+    formatted
+      ? ''
+      : '\n  pnpm format                     once installed: format what bootstrap renamed (oxfmt was not installed yet)'
+  }
   pnpm check                      the definition of done (lint, format, boundaries, types, tests, agent config)
   pnpm ports                      this checkout's ports and database URLs
   node tools/setup-agents.mjs     once per machine: the Claude Code plugins this repo enables, and what they need

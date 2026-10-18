@@ -56,11 +56,13 @@ operations meet the new schema, and new operations can meet the old one.
   client sends both (the new one, say, with a blank one counting as not given), and test that in
   core and in the API.
 - A connection's cursor holds one value per ordering column, by position, and the Drizzle plugin
-  reads a shorter cursor as the first columns of the order. So changing a connection's `orderBy`
-  changes its cursors, and open tabs still hold the old ones: append a column, or add a new order
-  as an opt-in argument; never put a column in front or reorder, or every "Load more" an open tab
-  sends breaks (its values land on the wrong columns: a database error, or a wrong page). For the
-  same reason a cursor fits only the order that issued it.
+  reads a shorter cursor as the first columns of the order. To an order that is not unique the
+  plugin appends the primary key, and the cursor holds it too (`notes` orders by
+  `createdAt, id`). So changing a connection's `orderBy` changes its cursors, and open tabs still
+  hold the old ones: add a new order as an opt-in argument, or append columns after the key;
+  never put a column in front of or among the others, reorder or remove one, or every "Load more"
+  an open tab sends breaks (its values land on the wrong columns: a database error, or a wrong
+  page). For the same reason a cursor fits only the order that issued it.
 - A new union member reaches old clients too: the forms' exhaustive `__typename` switch shows a
   generic message for one it does not know (`docs/web.md`, "Writes: forms").
 

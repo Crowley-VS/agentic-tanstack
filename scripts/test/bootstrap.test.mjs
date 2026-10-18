@@ -88,22 +88,42 @@ function templateCopy() {
   gitIn(copy, 'commit', '-q', '-m', 'Initial commit');
   return copy;
 }
-/** The copy's formatting, checked with this repository's oxfmt (the copy has no node_modules). */
-function oxfmtCheck(copy) {
+/** The copy's formatting (of `paths`), checked with this repository's oxfmt. */
+function oxfmtCheck(copy, paths = ['.']) {
   const entry = oxfmtEntry(REPO);
   expect(entry, 'oxfmt is not installed: run `pnpm install`').toBeDefined();
-  return spawnSync(process.execPath, [entry, '--check', '.'], { cwd: copy, encoding: 'utf8' });
+  return spawnSync(process.execPath, [entry, '--check', ...paths], { cwd: copy, encoding: 'utf8' });
 }
 /**
  * A copy with this repository's oxfmt in its node_modules, as after its install: what bootstrap
  * formats with when --no-install skips the install.
  */
 function withOxfmt(copy) {
-  mkdirSync(join(copy, 'node_modules'));
+  mkdirSync(join(copy, 'node_modules'), { recursive: true });
   const real = realpathSync(join(REPO, 'node_modules/oxfmt'));
   symlinkSync(real, join(copy, 'node_modules/oxfmt'), 'junction');
   return copy;
 }
+const AT_THE_LIMIT = 'packages/core/src/at-the-limit.ts';
+/**
+ * Plants in `copy` an import line of exactly printWidth (100) that holds the placeholder, as the
+ * template's own lines may (two names: oxfmt never wraps an import of one). Any longer scope
+ * pushes it over.
+ */
+function plantLineAtTheLimit(copy) {
+  const line = `import { a, ${'x'.repeat(55)} } from '@acme/validators/notes';`;
+  expect(line).toHaveLength(100);
+  writeFileSync(join(copy, AT_THE_LIMIT), `${line}\n`);
+  expect(oxfmtCheck(copy).status, 'the template copy is formatted').toBe(0);
+  return copy;
+}
+/** The longest line of a file in `copy`. */
+const longestLine = (copy, file) =>
+  Math.max(
+    ...readFileSync(join(copy, file), 'utf8')
+      .split('\n')
+      .map((l) => l.length),
+  );
 const secret = (root) =>
   readFileSync(join(root, '.env'), 'utf8').match(/^INTERNAL_API_SECRET=(.*)$/m)?.[1];
 /** The text of every file in a checkout's .railway directory. */
@@ -180,35 +200,46 @@ describe('bootstrap', () => {
   });
 
   it('formats what it renamed: a scope longer than @acme pushes no line over the limit', () => {
-    const LONG = ['--yes', '--scope', '@a-much-longer-scope', '--name', 'smoke-app', '--no-commit'];
-    // a line of exactly printWidth (100) that holds the placeholder, as the template's own may (two
-    // names: oxfmt never wraps an import of one)
-    const line = `import { a, ${'x'.repeat(55)} } from '@acme/validators/notes';`;
-    expect(line).toHaveLength(100);
-    const plant = (copy) => {
-      writeFileSync(join(copy, 'packages/core/src/at-the-limit.ts'), `${line}\n`);
-      expect(oxfmtCheck(copy).status, 'the template copy is formatted').toBe(0);
-      return copy;
-    };
+    const SCOPE = '@a-much-longer-scope';
+    const LONG = ['--yes', '--scope', SCOPE, '--name', 'smoke-app', '--no-install', '--no-commit'];
+    const renamed = (file) =>
+      readFileSync(join(REPO, file), 'utf8')
+        .replaceAll('@acme/', `${SCOPE}/`)
+        .replaceAll('acme-app', 'smoke-app');
 
-    const copy = withOxfmt(plant(archiveCopy()));
-    const res = bootstrap(copy, [...LONG, '--no-install']);
+    const copy = withOxfmt(plantLineAtTheLimit(archiveCopy()));
+    const res = bootstrap(copy, LONG);
     expect(res.code, res.out).toBe(0);
     expect(res.out).toMatch(/formatted the \d+ rewritten files/);
     const fmt = oxfmtCheck(copy);
     expect(fmt.status, `${fmt.stdout}${fmt.stderr}`).toBe(0);
     // the planted line was renamed, then wrapped
-    const planted = readFileSync(join(copy, 'packages/core/src/at-the-limit.ts'), 'utf8');
-    expect(planted).toContain("\n} from '@a-much-longer-scope/validators/notes';\n");
-    expect(Math.max(...planted.split('\n').map((l) => l.length))).toBeLessThanOrEqual(100);
+    expect(readFileSync(join(copy, AT_THE_LIMIT), 'utf8')).toContain(
+      `\n} from '${SCOPE}/validators/notes';\n`,
+    );
+    expect(longestLine(copy, AT_THE_LIMIT)).toBeLessThanOrEqual(100);
+    // named or not, what oxfmt ignores (the lockfile, generated files) is only renamed
+    for (const file of ['pnpm-lock.yaml', '.agents/skills/drizzle/SKILL.md']) {
+      expect(renamed(file), file).toContain(`${SCOPE}/`);
+      expect(readFileSync(join(copy, file), 'utf8'), file).toBe(renamed(file));
+    }
 
-    // before its install a copy has no oxfmt: bootstrap says so, and what it renamed needs
-    // `pnpm format`
-    const bare = plant(archiveCopy());
-    const skipped = bootstrap(bare, [...LONG, '--no-install']);
+    // before its install a copy has no oxfmt: bootstrap says so, the next steps name
+    // `pnpm format`, and the rename alone pushed the planted line over the limit
+    const bare = plantLineAtTheLimit(archiveCopy());
+    const skipped = bootstrap(bare, LONG);
     expect(skipped.code, skipped.out).toBe(0);
     expect(skipped.out).toContain('run `pnpm format` after `pnpm install`');
-    expect(oxfmtCheck(bare).status).not.toBe(0);
+    expect(skipped.out.slice(skipped.out.indexOf('Next steps:'))).toMatch(/^\s+pnpm format\s/m);
+    const unformatted = oxfmtCheck(bare);
+    expect(unformatted.status).toBe(1);
+    expect(`${unformatted.stdout}${unformatted.stderr}`).toContain(AT_THE_LIMIT);
+    // ...while every package.json is formatted: sortedPackageJson sorts the renamed dependencies
+    // as oxfmt does (this scope moves @a-much-longer-scope/* in front of @pothos/* and others)
+    const manifests = Object.keys(snapshot(bare)).filter((f) => f.endsWith('package.json'));
+    expect(manifests.length).toBeGreaterThan(5);
+    const pkgs = oxfmtCheck(bare, manifests);
+    expect(pkgs.status, `${pkgs.stdout}${pkgs.stderr}`).toBe(0);
   });
 
   it('points the Railway config at your repository: --repo, else the origin, else <scope>/<name>', () => {
@@ -317,9 +348,9 @@ describe('bootstrap', () => {
   });
 
   it.skipIf(process.platform === 'win32')(
-    'a re-run after a failed install reports the chosen name and commits the provenance',
+    'a re-run after a failed install reports the chosen name, formats and commits the provenance',
     () => {
-      const copy = archiveCopy();
+      const copy = plantLineAtTheLimit(archiveCopy());
       // A pnpm whose `install` fails (the first run stops there, after renaming everything).
       const bin = mkdtempSync(join(tmpdir(), 'bootstrap-bin-'));
       onTestFinished(() => rmSync(bin, { recursive: true, force: true }));
@@ -333,15 +364,24 @@ describe('bootstrap', () => {
       const git = (...args) => execFileSync('git', args, { cwd: copy, encoding: 'utf8' }).trim();
       git('config', 'user.email', 'smoke@example.com');
       git('config', 'user.name', 'Smoke');
+      // the first run stopped before formatting: the renamed line is over the limit
+      expect(longestLine(copy, AT_THE_LIMIT)).toBeGreaterThan(100);
 
+      // the install went far enough to bring oxfmt; this run no longer knows what was renamed
+      withOxfmt(copy);
       const again = bootstrap(copy, [...PROJECT, '--no-install'], env);
       expect(again.code, again.out).toBe(0);
       expect(again.out).toContain('already renamed (@smoke/source)');
+      expect(again.out).toContain('formatted every file');
       expect(again.out).toContain('Bootstrapped @smoke/… (smoke-app)');
+      const fmt = oxfmtCheck(copy);
+      expect(fmt.status, `${fmt.stdout}${fmt.stderr}`).toBe(0);
+      expect(longestLine(copy, AT_THE_LIMIT)).toBeLessThanOrEqual(100);
       const template = JSON.parse(readFileSync(join(REPO, 'template.json'), 'utf8'));
       expect(git('log', '-1', '--format=%s')).toBe(
         `chore: bootstrap from ${template.repo}@${template.version}`,
       );
+      expect(git('status', '--porcelain')).toBe(''); // the formatted files are in the commit
     },
   );
 

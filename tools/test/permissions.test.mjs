@@ -438,9 +438,10 @@ describe('pnpm db:generate', () => {
 // `pnpm db:psql` hands psql each argument as one word: pnpm quotes each one for the shell it runs
 // a root script in, and packages/db/scripts/db-up.mjs passes them to `docker compose exec` as an
 // argv array, after psql's name (packages/db/src/db-up.test.ts runs commas, quotes and shell syntax
-// through it). So a wildcard rule for it approves psql on this checkout's Postgres and nothing
-// else: any SQL on the dev database, and psql's backslash commands, which run inside the
-// container. A rule for the db:db-psql Nx target would approve any command: its --args reach a
+// through it). So a wildcard rule for it approves psql in this checkout's Postgres container and
+// nothing else: any SQL on any database of its server, and any command inside the container
+// (psql's `\!`, COPY … TO PROGRAM), which has network access but no mount of the checkout. A rule
+// for the db:db-psql Nx target would approve any command on this machine: its --args reach a
 // shell.
 describe('pnpm db:psql', () => {
   const RULE = 'Bash(pnpm db:psql *)';

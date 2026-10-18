@@ -26,10 +26,12 @@ quotes each one for the shell it runs the script in, and `packages/db/scripts/db
 psql (with `docker compose exec`) without a shell. Not the `db:db-psql` Nx target: Nx puts its
 arguments into a shell command, turns each comma in `--args` into a space, and passes a forwarded
 `-- -c "…"` that holds `=` on unquoted. So an allow rule `Bash(pnpm db:psql *)` approves psql in
-this checkout's Postgres container and nothing else: any SQL on the dev database (or on a server
-whose address and password a command gives it), and backslash commands, which run inside the
-container, not on your machine. On native Windows pnpm runs root scripts through `cmd.exe`, which
-its quoting does not cover: allow exact commands there, for `pnpm db:generate` too.
+this checkout's Postgres container and nothing else: any SQL on any database of this checkout's
+server (dev, test and e2e; another server's too, given its address and password), and any command
+inside the container (psql's `\!`, `COPY … TO PROGRAM`), which has network access but none of
+your files (its only mount is its data volume). On native Windows pnpm runs root scripts through
+`cmd.exe`, which its quoting does not cover: allow exact commands there, for `pnpm db:generate`
+too.
 
 ## Migrations
 
