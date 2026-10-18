@@ -11,8 +11,8 @@ const HERE = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = join(HERE, '..');
 
 // The script Railway CLI 5.63.4 runs as `node --experimental-strip-types --input-type=module -e`
-// (from the strings of its binary), with one change: its last line is reworded so the SDK does not
-// take this for the CLI and run a `railway` binary to check its version.
+// (from the strings of its binary; unchanged through 5.64.2), with one change: its last line is
+// reworded so the SDK does not take this for the CLI and run a `railway` binary to check its version.
 const EVALUATE = `
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
