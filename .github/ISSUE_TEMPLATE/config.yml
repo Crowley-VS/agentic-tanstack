@@ -1,0 +1,9 @@
+# Template-only: bootstrap removes .github/ISSUE_TEMPLATE from projects made from it.
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/Crowley-VS/agentic-tanstack/discussions
+    about: Ask how to use the template, or discuss an idea before you open a feature request.
+  - name: Report a vulnerability
+    url: https://github.com/Crowley-VS/agentic-tanstack/security/advisories/new
+    about: Privately, through GitHub's private vulnerability reporting (SECURITY.md). Never in an issue.

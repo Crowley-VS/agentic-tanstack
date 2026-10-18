@@ -148,6 +148,19 @@ describe('bootstrap', () => {
     expect(leftovers).toEqual([]);
     for (const gone of ['scripts', 'template.json', '.github/workflows/template-smoke.yml'])
       expect(existsSync(join(copy, gone)), gone).toBe(false);
+    // the template's public files go; its pull request template stays (AGENTS.md asks every PR
+    // for a summary and a test plan, in projects too)
+    for (const gone of [
+      'CHANGELOG.md',
+      'CODE_OF_CONDUCT.md',
+      'CONTRIBUTING.md',
+      'SECURITY.md',
+      '.github/ISSUE_TEMPLATE',
+    ]) {
+      expect(existsSync(join(REPO, gone)), `${gone} in the template`).toBe(true);
+      expect(existsSync(join(copy, gone)), gone).toBe(false);
+    }
+    expect(existsSync(join(copy, '.github/pull_request_template.md'))).toBe(true);
     // what every clone runs stays, with its tests, in the tools project (docs/agents.md)
     for (const kept of ['setup-agents', 'pw-agents'])
       for (const f of [`tools/${kept}.mjs`, `tools/test/${kept}.test.mjs`])

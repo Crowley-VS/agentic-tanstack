@@ -1,0 +1,67 @@
+# A bug in the template (its code, checks, scripts, agent layer or docs). Template-only: bootstrap
+# removes .github/ISSUE_TEMPLATE from projects made from it.
+name: Bug report
+description: Something in the template does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. A vulnerability goes through the Security tab (Report a vulnerability), never here.
+        A question or an idea: Discussions.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead (the error, as text).
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The commands you ran, from a fresh copy if you can.
+      placeholder: |
+        1. node scripts/bootstrap.mjs --yes --scope @my-org --name my-app
+        2. pnpm check
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - bootstrap
+        - pnpm check, CI or another check
+        - web app (apps/web)
+        - API (apps/api)
+        - database (packages/db, Docker Postgres)
+        - e2e tests (apps/web-e2e)
+        - Docker images or Railway
+        - agent layer (AGENTS.md, skills, hooks, permissions, review loop)
+        - docs
+        - something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Template version or commit
+      description: '`package.json#template` in a bootstrapped project, else the commit you copied.'
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: The output of these commands, and your OS (macOS, Linux or WSL2).
+      placeholder: |
+        node --version
+        pnpm --version
+        docker version --format '{{.Server.Version}}'
+        docker compose version
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output. Remove secrets first (never paste a `.env` file).
+      render: text
