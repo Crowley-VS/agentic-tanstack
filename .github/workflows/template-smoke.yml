@@ -81,7 +81,7 @@ jobs:
           test ! -e scripts/bootstrap.mjs
           test ! -e template.json
           # the template's maintenance (docs/maintaining.md) is gone; what a project uses stays
-          for f in template-smoke.yml release-please.yml agent-config-drift.yml; do
+          for f in template-smoke.yml release-please.yml; do
             test ! -e ".github/workflows/$f"
           done
           test ! -e release-please-config.json

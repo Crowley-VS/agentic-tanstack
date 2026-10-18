@@ -44,7 +44,6 @@ export const TEMPLATE_ONLY = [
   '.github/pull_request_template.md',
   '.github/workflows/template-smoke.yml',
   '.github/workflows/release-please.yml',
-  '.github/workflows/agent-config-drift.yml',
   'release-please-config.json',
   '.release-please-manifest.json',
   // it keeps oxfmt off CHANGELOG.md, which release-please writes

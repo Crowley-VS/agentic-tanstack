@@ -4,11 +4,14 @@
 // renovate-config-validator --strict` validates the config against Renovate's schema. tools:test's
 // inputs include both files, so a change to either re-runs these.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, symlinkSync, unlinkSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { chmodSync, readdirSync, readFileSync, symlinkSync, unlinkSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { catalogVersions, dockerfiles, dockerfileVersions, LOCKSTEP } from '../check-versions.mjs';
+import { loadManifest } from '../lib/generated.mjs';
+import { ADD_ONLY, problems } from '../renovate-regen.mjs';
+import { update } from '../vendor-skills.mjs';
 import { commitAll, makeRepo, writeFile } from './helpers.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
@@ -123,7 +126,7 @@ describe('Renovate (.github/renovate.json5)', () => {
     }
   });
 
-  it('pins every image the repository runs by digest', () => {
+  it('has Renovate pin every image the repository runs by digest (its first run opens the PR)', () => {
     const images = [
       ...dockerfiles(REPO).flatMap((file) =>
         [...read(file).matchAll(/^FROM\s+(?:--\S+\s+)*([^\s:@]+)/gm)].map((m) => m[1]),
@@ -179,10 +182,48 @@ function jobs(text) {
   );
 }
 
+/**
+ * The steps of a job's text (its `- ` entries at six spaces): the action each uses (`owner/repo`
+ * and its ref) and its `with:` inputs, as text.
+ */
+function steps(job) {
+  return job
+    .split(/^(?= {6}- )/m)
+    .slice(1)
+    .map((step) => {
+      const [, action, ref] = step.match(/^ {6}(?:- | {2})uses: ([^@\s]+)@(\S+)/m) ?? [];
+      const inputs = step.match(/^ {8}with:\n((?: {10}.*\n?)*)/m)?.[1] ?? '';
+      return {
+        action,
+        ref,
+        with: Object.fromEntries(
+          [...inputs.matchAll(/^ {10}([\w-]+): (.*)$/gm)].map((m) => [m[1], m[2]]),
+        ),
+      };
+    });
+}
+
+/** The relative modules `file` imports, recursively, failing on any import but Node's built-ins. */
+function localImports(file, seen = new Set()) {
+  if (seen.has(file)) return seen;
+  seen.add(file);
+  const text = readFileSync(file, 'utf8');
+  expect(text, file).not.toMatch(/\bimport\(|\brequire\(|createRequire/);
+  for (const [, from, bare] of text.matchAll(/\bfrom\s+'([^']+)'|^import\s+'([^']+)'/gm)) {
+    const spec = from ?? bare;
+    if (spec.startsWith('node:')) continue;
+    expect(spec, `${relative(REPO, file)} imports ${spec}`).toMatch(/^\.\.?\//);
+    localImports(resolve(dirname(file), spec), seen);
+  }
+  return seen;
+}
+
 describe('renovate-regen (.github/workflows/renovate-regen.yml)', () => {
+  const raw = read('.github/workflows/renovate-regen.yml');
   // without its comment lines, which name what it must not do
-  const text = read('.github/workflows/renovate-regen.yml').replaceAll(/^\s*#.*\n/gm, '');
+  const text = raw.replaceAll(/^\s*#.*\n/gm, '');
   const { regen, push } = jobs(text);
+  const email = text.match(/^ {2}REGEN_AUTHOR_EMAIL: '([^']+)'$/m)?.[1];
 
   it("runs for pushes to this repository's Renovate branches, never for a fork's pull request", () => {
     expect(text).toMatch(/^on:\n {2}push:\n {4}branches: \['renovate\/\*\*'\]\n\n/m);
@@ -203,7 +244,59 @@ describe('renovate-regen (.github/workflows/renovate-regen.yml)', () => {
     expect(regen).toMatch(/if: >-\n\s+vars\.AUTOMATION_APP_CLIENT_ID != ''/);
   });
 
-  it('pushes only a patch of generated files, from a job that runs none of the update', () => {
+  it('restores no cache in the job that can push: a job that runs the update could write one', () => {
+    const used = steps(push);
+    // each action of the job, reviewed: a new one must show it reads no cache either
+    expect(used.map((s) => s.action).filter(Boolean)).toEqual([
+      'actions/checkout',
+      'actions/setup-node',
+      'actions/download-artifact',
+      'actions/create-github-app-token',
+    ]);
+    for (const step of used) {
+      expect(step.action ?? '', 'actions/cache').not.toMatch(/^actions\/cache\b/);
+      // setup-toolchain restores ~/.proto (node, pnpm) from the branch's cache unless told not to
+      if (step.action === 'moonrepo/setup-toolchain') expect(step.with.cache).toBe('false');
+      // setup-node caches only with `cache`, or by itself for npm (package-manager-cache)
+      if (step.action === 'actions/setup-node') {
+        expect(step.with).not.toHaveProperty('cache');
+        expect(step.with['package-manager-cache']).toBe('false');
+        // the commit's Node, not the runner image's
+        expect(step.with['node-version-file']).toBe('.node-version');
+      }
+    }
+    // the check it runs loads Node's built-in modules and the commit's tools/ files only
+    const modules = [...localImports(join(REPO, 'tools/renovate-regen.mjs'))];
+    expect(modules.map((m) => relative(REPO, m))).toEqual([
+      'tools/renovate-regen.mjs',
+      'tools/lib/generated.mjs',
+    ]);
+  });
+
+  it('saves no cache from the job that runs the update; it restores what CI on main saved', () => {
+    const used = steps(regen);
+    const toolchain = used.find((s) => s.action === 'moonrepo/setup-toolchain');
+    expect(toolchain?.with).toEqual({ 'auto-install': 'true', cache: 'false' });
+    const caches = used.filter((s) => s.action?.startsWith('actions/cache'));
+    expect(caches.map((s) => s.action)).toEqual(['actions/cache/restore']);
+  });
+
+  it('pins every action to a commit, with its version as a comment', () => {
+    const refs = [...raw.matchAll(/^\s+(?:- )?uses: (.*)$/gm)].map((m) => m[1]);
+    expect(refs.length).toBeGreaterThan(5);
+    for (const ref of refs)
+      expect(ref).toMatch(/^[\w.-]+\/[\w./-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
+  });
+
+  it('gives its own push a concurrency group of its own: in the shared one it would cancel its run', () => {
+    expect(email).toBe('41898282+github-actions[bot]@users.noreply.github.com');
+    const group = text.match(/^concurrency:\n {2}group: (.*)\n {2}cancel-in-progress: true$/m)?.[1];
+    expect(group).toBe(
+      `renovate-regen-\${{ github.ref }}\${{ github.event.head_commit.author.email == '${email}' && format('-{0}', github.sha) || '' }}`,
+    );
+  });
+
+  it('pushes only a patch of what pnpm regen writes, from a job that runs none of the update', () => {
     expect(push).toContain('needs: regen');
     // no install, no script of the repository's but the check
     expect(push).not.toMatch(/^\s*(?:run:\s*)?pnpm\s/m);
@@ -232,7 +325,15 @@ describe('renovate-regen (.github/workflows/renovate-regen.yml)', () => {
 
 describe('tools/renovate-regen.mjs check', () => {
   const MANIFEST = {
-    artifacts: [{ id: 'gql', paths: ['src/gql/**'], regen: 'true' }],
+    artifacts: [
+      { id: 'gql', paths: ['src/gql/**'], regen: 'true' },
+      {
+        id: 'db-migrations',
+        paths: ['migrations/**'],
+        regen: 'drizzle-kit generate',
+        protect: 'tracked',
+      },
+    ],
   };
   // a vendor manifest as tools/vendor-skills.mjs reads it
   const VENDOR = {
@@ -252,17 +353,24 @@ describe('tools/renovate-regen.mjs check', () => {
     packages: { pkg: { ...VENDOR.packages.pkg, version } },
     skills: { tool: { ...VENDOR.skills.tool, sha256 } },
   });
-  /** A repo with a generated file and a source, and `change` staged as the workflow stages it. */
-  function staged(change) {
-    const root = makeRepo({
-      '.agents/generated.json': MANIFEST,
-      '.agents/vendor.json': VENDOR,
-      '.agents/vendor/pkg/LICENSE': 'MIT License\n',
-      '.agents/vendor/pkg/NOTES': 'written by hand\n',
-      'src/gql/graphql.ts': 'export {};\n',
-      'src/gql/old.ts': 'export {};\n',
-      'src/app.ts': 'export {};\n',
-    });
+  const MIGRATION = 'migrations/0001_init/migration.sql';
+  const FILES = {
+    '.agents/generated.json': MANIFEST,
+    '.agents/vendor.json': VENDOR,
+    '.agents/vendor/pkg/LICENSE': 'MIT License\n',
+    '.agents/vendor/pkg/NOTES': 'written by hand\n',
+    [MIGRATION]: 'CREATE TABLE "notes" ("id" integer);\n',
+    'src/gql/graphql.ts': 'export {};\n',
+    'src/gql/old.ts': 'export {};\n',
+    'src/app.ts': 'export {};\n',
+  };
+  /**
+   * A repo with `files` (generated files and a source), committed after `setup` ran in it, and
+   * `change` staged as the workflow stages it; the check's exit code and output.
+   */
+  function staged(change, { files = FILES, setup = () => {} } = {}) {
+    const root = makeRepo(files);
+    setup(root);
     commitAll(root);
     const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
     change(root);
@@ -286,8 +394,44 @@ describe('tools/renovate-regen.mjs check', () => {
       writeFile(root, 'src/gql/new.ts', 'export {};\n');
       unlinkSync(join(root, 'src/gql/old.ts'));
     });
-    expect(res.out).toContain('3 generated files changed');
+    expect(res.out).toContain('3 regenerated files');
     expect(res.code, res.out).toBe(0);
+  });
+
+  it('passes a new migration, and refuses a change to or the deletion of a committed one', () => {
+    const added = staged((root) =>
+      writeFile(root, 'migrations/0002_next/migration.sql', 'ALTER TABLE "notes" ADD "x" text;\n'),
+    );
+    expect(added.code, added.out).toBe(0);
+    // SQL appended to a migration that has run: fresh databases (tests, e2e, new ones) would run it
+    const changed = staged((root) =>
+      writeFile(root, MIGRATION, `${FILES[MIGRATION]}DROP TABLE x;\n`),
+    );
+    expect(changed.code).toBe(1);
+    expect(changed.out).toContain(
+      `${MIGRATION}: changes a committed file of db-migrations (\`drizzle-kit generate\` only adds new ones)`,
+    );
+    const deleted = staged((root) => unlinkSync(join(root, MIGRATION)));
+    expect(deleted.code).toBe(1);
+    expect(deleted.out).toContain(`${MIGRATION}: deletes a committed file of db-migrations`);
+  });
+
+  it("holds the repository's own migrations to additions (.agents/generated.json)", () => {
+    const manifest = loadManifest(REPO);
+    expect([...ADD_ONLY]).toEqual(['db-migrations']);
+    expect(manifest.artifacts.find((a) => a.id === 'db-migrations')?.paths).toEqual([
+      'packages/db/migrations/**',
+    ]);
+    const dir = readdirSync(join(REPO, 'packages/db/migrations'), { withFileTypes: true }).find(
+      (d) => d.isDirectory(),
+    );
+    expect(dir, 'a committed migration').toBeTruthy();
+    const committed = `packages/db/migrations/${dir.name}/migration.sql`;
+    expect(problems([{ oldMode: '100644', mode: '100644', path: committed }], manifest)).toEqual([
+      expect.stringContaining(`${committed}: changes a committed file of db-migrations`),
+    ]);
+    const next = 'packages/db/migrations/29991231000000_next/migration.sql';
+    expect(problems([{ oldMode: '000000', mode: '100644', path: next }], manifest)).toEqual([]);
   });
 
   it('refuses a change to any other file, naming it', () => {
@@ -307,8 +451,84 @@ describe('tools/renovate-regen.mjs check', () => {
       writeFile(root, '.agents/vendor/pkg/LICENSE', 'MIT License\n\nCopyright 2026\n');
       writeFile(root, 'src/gql/graphql.ts', 'export const changed = 1;\n');
     });
-    expect(res.out).toContain('3 generated files changed');
+    expect(res.out).toContain('3 regenerated files');
     expect(res.code, res.out).toBe(0);
+  });
+
+  it('passes what the real vendor-skills update writes for a bump: the producer, not a fixture', () => {
+    // a repo with one vendored skill, as tools/test/vendor-skills.test.mjs builds it
+    const files = {
+      '.gitignore': 'node_modules/\n',
+      '.agents/generated.json': {
+        artifacts: [
+          {
+            id: 'vendored-skills',
+            paths: ['.agents/skills/demo/**'],
+            regen: 'node tools/vendor-skills.mjs update',
+            protect: 'tracked',
+          },
+        ],
+      },
+      '.agents/vendor.json': {
+        packages: {
+          'demo-pkg': { version: '1.0.0', license: 'MIT', licenseFiles: ['LICENSE'] },
+        },
+        skills: {
+          demo: {
+            package: 'demo-pkg',
+            file: 'skills/demo/SKILL.md',
+            sha256: '',
+            rewrites: [{ replace: 'npx demo-cli', with: 'pnpm exec demo-cli' }],
+          },
+        },
+      },
+    };
+    /** demo-pkg at `version`, its skill and license changing with it, as a release ships them. */
+    const install = (root, version) => {
+      writeFile(root, 'node_modules/demo-pkg/package.json', { name: 'demo-pkg', version });
+      writeFile(
+        root,
+        'node_modules/demo-pkg/skills/demo/SKILL.md',
+        `---\nname: demo\ndescription: Demo ${version}.\n---\n\n# Demo\n\nRun \`npx demo-cli start\` (${version}).\n`,
+      );
+      writeFile(root, 'node_modules/demo-pkg/LICENSE', `MIT License\n\nCopyright ${version}\n`);
+    };
+    const updated = (root) => {
+      const res = update(root, { oxfmt: undefined });
+      expect(res.problems).toEqual([]);
+      return res.written;
+    };
+    const res = staged(
+      (root) => {
+        install(root, '1.1.0');
+        expect(updated(root).toSorted((a, b) => a.localeCompare(b))).toEqual([
+          '.agents/skills/demo/SKILL.md',
+          '.agents/vendor.json',
+          '.agents/vendor/demo-pkg/LICENSE',
+        ]);
+      },
+      {
+        files,
+        setup: (root) => {
+          install(root, '1.0.0');
+          updated(root);
+        },
+      },
+    );
+    expect(res.out).toContain('3 regenerated files');
+    expect(res.code, res.out).toBe(0);
+  });
+
+  it('refuses a vendored license file deleted or made executable: update only ever writes one', () => {
+    const deleted = staged((root) => unlinkSync(join(root, '.agents/vendor/pkg/LICENSE')));
+    expect(deleted.code).toBe(1);
+    expect(deleted.out).toContain('.agents/vendor/pkg/LICENSE: mode 000000, not the regular file');
+    if (process.platform === 'win32') return; // no executable bit
+    const executable = staged((root) => chmodSync(join(root, '.agents/vendor/pkg/LICENSE'), 0o755));
+    expect(executable.code).toBe(1);
+    expect(executable.out).toContain(
+      '.agents/vendor/pkg/LICENSE: mode 100755, not the regular file',
+    );
   });
 
   it('refuses any other change to .agents/vendor.json, and a vendored file it does not copy', () => {

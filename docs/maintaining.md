@@ -10,7 +10,6 @@ releases and weekly checks. CI itself (`.github/workflows/ci.yml`) is `pnpm chec
 | `.github/renovate.json5`                                                | Renovate's config                                            | weekly, once the Renovate App is installed | kept, off until it installs Renovate |
 | `.github/workflows/renovate-regen.yml`                                  | `pnpm regen` on Renovate's branches, pushed back             | each push to a `renovate/**` branch        | kept, off until it sets up its App   |
 | `.github/workflows/template-smoke.yml`                                  | bootstraps fresh copies, then every check and the e2e tests  | pull requests, main, Mondays               | removed by bootstrap                 |
-| `.github/workflows/agent-config-drift.yml`                              | `pnpm agents:nx-check` and `pnpm agents:check` on main       | Mondays, on demand                         | removed by bootstrap                 |
 | `.github/workflows/release-please.yml`, `release-please-config.json`, … | the release PR, the tags and GitHub releases, `CHANGELOG.md` | each push to main                          | removed by bootstrap                 |
 
 ## Dependency updates: Renovate
@@ -31,13 +30,16 @@ installing the App for its repository: the config is there, so Renovate skips it
   version bump skips (skill `nx-upgrade`). A major of `@types/node`: with a Node major, by hand.
 - **One PR per group:** Node (`.node-version`, `.prototools`, the Dockerfiles' images,
   `@types/node`), pnpm (`packageManager`, `.prototools`, the Dockerfiles' `pnpm@<version>`, read by
-  a regex manager), Vitest, oxc, Playwright, Tailwind, TanStack Start and Drizzle: what
-  `tools/check-versions.mjs` (part of `pnpm check`) requires to agree moves together.
+  a regex manager), Vitest, Playwright and Tailwind: what `tools/check-versions.mjs` (part of
+  `pnpm check`) requires to agree moves together. oxc (oxlint, oxlint-tsgolint, oxfmt), TanStack
+  Start (Start, Router, the SSR query integration) and Drizzle (with `@pothos/plugin-drizzle`) are
+  grouped because they are released or built together; no check enforces that.
 - **Prereleases:** Drizzle follows npm's `rc` tag (its `latest` is still 0.x, and its other
   prereleases are branch builds); Nitro follows `latest`, where it publishes its betas. Nothing is
   automerged: a person merges every PR.
-- **Digests:** the `node` and `postgres` images are pinned by digest (a tag can move), in the
-  Dockerfiles and both compose files; later PRs update the digests.
+- **Digests:** Renovate pins the `node` and `postgres` images by digest (`pinDigests`: a tag can
+  move, a digest cannot), in the Dockerfiles and both compose files. Until the App is installed
+  they are tags only: its first run opens the pin PR, and later PRs update the digests.
 
 On a Renovate PR, CI runs as on any other. A generated file the update changes is committed by
 renovate-regen (below), or by hand: check out the branch, `pnpm regen`, commit. A new oxfmt that
@@ -62,11 +64,29 @@ the drift gate then fails the PR. Hosted Renovate runs no commands of the reposi
   it (Codegen, the generators). The `regen` job has no secret and a read-only token
   (`persist-credentials: false`), and uploads the regenerated files as a patch. The `push` job
   installs nothing: it stages the patch in the index only (`git apply --cached`), checks that it
-  changes nothing but the paths of `.agents/generated.json` and, on a Playwright or drizzle-kit
-  bump, what `node tools/vendor-skills.mjs update` writes besides (the versions and sha256 pins in
-  `.agents/vendor.json`, the license files it copies), as plain files
+  changes nothing but what `pnpm regen` writes, as plain files
   (`node tools/renovate-regen.mjs check`, run from the commit's own files), commits, then mints a
-  token for this repository's contents alone and pushes, not forced.
+  token for this repository's contents alone and pushes, not forced. What `pnpm regen` writes: the
+  paths of `.agents/generated.json`, of the migrations only new ones (drizzle-kit never changes or
+  deletes a committed migration, which may have run on a database already), and on a Playwright or
+  drizzle-kit bump what `node tools/vendor-skills.mjs update` writes besides (the versions and
+  sha256 pins in `.agents/vendor.json`, the license files it copies, never deleted or executable).
+- **No cache crosses from the update to the push:** a job that runs untrusted code can write the
+  branch's Actions caches, whatever its steps say: `cache: false` only stops an action's own save,
+  and the update's code can reach the runner's cache token itself. A later job restoring such an
+  entry would run the attacker's files; `setup-toolchain`'s cache of `~/.proto` holds the node
+  binary itself, and the branch's own entries are restored first. So the `push` job restores no
+  cache at all: no `actions/cache`, no `setup-toolchain`, but `actions/setup-node` at
+  `.node-version` with its caching off, which downloads Node's release. The check it runs imports
+  Node's built-in modules and the commit's own `tools/` files only, never the patch's (it is staged,
+  not checked out). The `regen` job restores CI's pnpm store from main (restore only) and passes
+  `cache: false` to `setup-toolchain`, so it saves nothing a later run could restore by default.
+- **Actions pinned to commits:** every `uses:` of the workflow names a commit, with its version
+  as a comment (Renovate updates both): a moved tag cannot change what runs next to the App's key.
+- **Its own push cancels nothing:** the push of the regen commit starts this workflow again, on
+  the same branch; its jobs skip it, and it gets a concurrency group of its own, as in the shared
+  one it would cancel the run that made it, still in its last steps. A push by Renovate cancels an
+  older run.
 - **A GitHub App's token:** GitHub starts no workflow for a push made with `GITHUB_TOKEN`, so CI
   would not run on the regenerated commit.
 - **Renovate keeps the branch:** the commit's author is `github-actions[bot]`, which
@@ -105,14 +125,15 @@ tarballs, giget) and the tracked files in one fresh commit ("Use this template")
 `bootstrap --yes` with a scope longer than `@acme`, then checks that no placeholder survived, that
 `.railway/` no longer builds the template, that the template-only files are gone and the kept ones
 are not, and the provenance (an archive records its commit; a template copy, null). Then
-`pnpm check --all` and `pnpm nx e2e web-e2e` in the copy. Up to 40 minutes.
+`pnpm check --all` and `pnpm nx e2e web-e2e` in the copy. Up to 40 minutes. GitHub turns off a
+public repository's scheduled workflows after 60 days without activity: turn it back on in the
+Actions tab.
 
-**Agent config drift** (`agent-config-drift.yml`): on Mondays at 05:47 UTC, and on demand from
-the Actions tab. `pnpm agents:nx-check` (`nx configure-ai-agents --check`, with the installed Nx's
-files) and `pnpm agents:check`. `pnpm check` runs both on every change; this checks main itself,
-which people copy at any moment. When the first fails, a person runs `pnpm agents:nx` and commits
-the result (agents never do). GitHub turns off a public repository's scheduled workflows after 60
-days without activity: turn them back on in the Actions tab.
+**No scheduled agent-config check:** `pnpm agents:nx-check` (with the installed Nx's AI files,
+`NX_AI_FILES_USE_LOCAL`) and `pnpm agents:check` read only the commit and its frozen install, so
+on an unchanged main they give the result CI gave on its push (`pnpm check` runs both, on every
+change). A newer Nx's agent config comes with the Nx upgrade (skill `nx-upgrade`), whose
+`pnpm check` compares it.
 
 **Releases** (`release-please.yml`, `release-please-config.json`, `.release-please-manifest.json`):
 
