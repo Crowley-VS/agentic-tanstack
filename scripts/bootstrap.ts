@@ -51,8 +51,8 @@ export const USAGE = `Usage: node scripts/bootstrap.mjs [options]
 
 Turns a fresh copy of this template into your project: renames the @acme / acme-app placeholders,
 writes .env with a generated secret, removes template-only files, records the template version,
-installs, commits, and deletes itself. It asks for anything it needs that no option gives, unless
---yes is set. Safe to re-run after a failure.
+installs, formats what it rewrote, commits, and deletes itself. It asks for anything it needs that
+no option gives, unless --yes is set. Safe to re-run after a failure.
 
 Options:
   -y, --yes                 never ask: take the defaults (needs --scope and --name)
@@ -65,7 +65,8 @@ Options:
       --author <name>       copyright holder of a replaced LICENSE (default: git user.name)
       --dry-run             print what would change, write nothing, and stop before installing
       --force               run even though origin is the template repository itself
-      --no-install          skip pnpm install, regeneration and the git hooks
+      --no-install          skip pnpm install, regeneration and the git hooks (formatting too,
+                            unless oxfmt is installed already)
       --no-browsers         skip the Playwright browser download
       --no-commit           leave the changes uncommitted
       --keep-script         keep scripts/bootstrap.* instead of deleting them at the end
@@ -333,6 +334,45 @@ export function withoutScriptsRules(settings: string): string {
     .join('\n');
 }
 
+/** The CLI script of the oxfmt installed in `root`'s node_modules, or undefined before install. */
+export function oxfmtEntry(root: string): string | undefined {
+  const dir = join(root, 'node_modules', 'oxfmt');
+  if (!existsSync(join(dir, 'package.json'))) return undefined;
+  const { bin } = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+  return join(dir, typeof bin === 'string' ? bin : bin.oxfmt);
+}
+
+/**
+ * Formats what bootstrap rewrote with the repo's own oxfmt and config: a scope longer than @acme
+ * pushes a line that was within the difference of the 100-character printWidth over it, and
+ * `pnpm check` has a format gate. `files` undefined (a re-run: an earlier run renamed them, and
+ * which they were is unknown) formats every file, which changes only what the rename left
+ * unformatted: the template's own files already are. oxfmt skips ignored (generated) files even
+ * when named. Before install there is no oxfmt: it says so, and `pnpm format` does it later.
+ */
+function formatRewritten(files: string[] | undefined) {
+  step('Format');
+  const oxfmt = oxfmtEntry(ROOT);
+  if (!oxfmt) {
+    console.log('  skipped: oxfmt is not installed yet; run `pnpm format` after `pnpm install`');
+    return;
+  }
+  if (files?.length === 0) {
+    console.log('  nothing was rewritten');
+    return;
+  }
+  // No shell: one argument per file. oxfmt skips the ones it does not format (a Dockerfile) or
+  // ignores; the flag keeps that from failing when it is all of them.
+  const res = spawnSync(
+    process.execPath,
+    [oxfmt, '--no-error-on-unmatched-pattern', ...(files ?? [])],
+    { cwd: ROOT, stdio: 'inherit' },
+  );
+  if (res.status !== 0)
+    fail(`oxfmt failed (exit ${res.status}): fix the file it names, then re-run`);
+  console.log(`  formatted ${files ? `the ${files.length} rewritten files` : 'every file'}`);
+}
+
 export async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const template = existsSync(join(ROOT, 'template.json')) ? readJson('template.json') : undefined;
@@ -374,6 +414,8 @@ export async function main() {
   // 3. Rename placeholders -----------------------------------------------------------------
   step('Project name');
   const needsRename = pkg.name?.startsWith(`${PLACEHOLDER_SCOPE}/`);
+  /** What this run rewrote, for the format step. */
+  const rewritten = new Set<string>();
   let scope = PLACEHOLDER_SCOPE;
   let name = PLACEHOLDER_NAME;
   if (needsRename) {
@@ -406,6 +448,7 @@ export async function main() {
       if (after !== before && basename(file) === 'package.json') after = sortedPackageJson(after);
       if (after !== before) {
         changed++;
+        rewritten.add(file);
         if (!opts.dryRun) writeFileSync(full, after);
       }
     }
@@ -454,6 +497,7 @@ export async function main() {
   const kept = references.filter((r) => r.path.replace(/^\.\//, '') !== 'scripts');
   if (kept.length !== references.length) {
     if (!opts.dryRun) writeJson('tsconfig.json', { ...rootTsconfig, references: kept });
+    rewritten.add('tsconfig.json');
     console.log('  removed the scripts project from tsconfig.json');
   }
   const settingsFile = join(ROOT, '.claude', 'settings.json');
@@ -462,11 +506,13 @@ export async function main() {
     const trimmed = withoutScriptsRules(settings);
     if (trimmed !== settings) {
       if (!opts.dryRun) writeFileSync(settingsFile, trimmed);
+      rewritten.add('.claude/settings.json');
       console.log("  removed the scripts project's allow rules from .claude/settings.json");
     }
   }
   if (existsSync(join(ROOT, 'README.project.md'))) {
     if (!opts.dryRun) renameSync(join(ROOT, 'README.project.md'), join(ROOT, 'README.md'));
+    if (rewritten.delete('README.project.md')) rewritten.add('README.md');
     console.log('  README.project.md → README.md');
   }
   if (existsSync(join(ROOT, 'LICENSE')) && needsRename) {
@@ -502,6 +548,7 @@ export async function main() {
     if (!opts.dryRun) {
       writeJson('package.json', fresh);
       rmSync(join(ROOT, 'template.json'));
+      rewritten.add('package.json');
     }
     console.log(
       `  recorded template ${template.repo}@${template.version} in package.json#template`,
@@ -515,13 +562,19 @@ export async function main() {
     return;
   }
 
-  // 7. Install + regenerate ------------------------------------------------------------------
+  // 7. Install, format, regenerate ------------------------------------------------------------
   if (opts.install) {
     step('Install');
     run('pnpm', ['install']); // not frozen: package names changed
     // Its `prepare` script installs the git hooks too, but only on a full install: after a failed
     // first run, pnpm may find everything up to date and run no scripts. Skipped when CI is set.
     run('node', ['tools/agents.mjs', 'install-hooks'], { allowFail: true });
+  }
+  // after the install (which brings oxfmt), before regeneration and agent sync copy files
+  formatRewritten(
+    needsRename ? [...rewritten].filter((f) => existsSync(join(ROOT, f))) : undefined,
+  );
+  if (opts.install) {
     run('pnpm', ['nx', 'reset']);
     run('pnpm', ['nx', 'sync']);
     if (readJson('.agents/generated.json').artifacts.length > 0) run('pnpm', ['regen']);

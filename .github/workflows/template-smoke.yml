@@ -56,9 +56,10 @@ jobs:
             cd "$DEST" && git init -q -b main && git add -A && git commit -q -m "Initial commit"
           fi
 
+      # a scope much longer than @acme: lines near the print width must come out formatted
       - name: Bootstrap
         working-directory: ${{ runner.temp }}/copy
-        run: node scripts/bootstrap.mjs --yes --scope @smoke --name smoke-app
+        run: node scripts/bootstrap.mjs --yes --scope @a-much-longer-scope --name smoke-app
 
       # bootstrap installs Chromium without its system libraries (that needs sudo)
       - name: Install Playwright Chromium

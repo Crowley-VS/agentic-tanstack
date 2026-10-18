@@ -8,13 +8,21 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { needsShell, sortedPackageJson, USAGE, withoutScriptsRules } from '../bootstrap.ts';
+import {
+  needsShell,
+  oxfmtEntry,
+  sortedPackageJson,
+  USAGE,
+  withoutScriptsRules,
+} from '../bootstrap.ts';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const PROJECT = ['--yes', '--scope', '@smoke', '--name', 'smoke-app'];
@@ -46,10 +54,11 @@ function bootstrap(cwd, args, env = process.env) {
   return { code: res.status, out: `${res.stdout}${res.stderr}` };
 }
 
-/** { relative path: sha256 } of every file outside .git. */
+/** { relative path: sha256 } of every file outside .git and node_modules. */
 function snapshot(root, dir = root, out = {}) {
   for (const d of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, d.name);
+    if (d.name === 'node_modules' && dir === root) continue; // withOxfmt's link
     if (d.isDirectory()) {
       if (d.name !== '.git') snapshot(root, p, out);
     } else {
@@ -81,9 +90,19 @@ function templateCopy() {
 }
 /** The copy's formatting, checked with this repository's oxfmt (the copy has no node_modules). */
 function oxfmtCheck(copy) {
-  const bin = JSON.parse(readFileSync(join(REPO, 'node_modules/oxfmt/package.json'), 'utf8')).bin;
-  const entry = join(REPO, 'node_modules/oxfmt', typeof bin === 'string' ? bin : bin.oxfmt);
+  const entry = oxfmtEntry(REPO);
+  expect(entry, 'oxfmt is not installed: run `pnpm install`').toBeDefined();
   return spawnSync(process.execPath, [entry, '--check', '.'], { cwd: copy, encoding: 'utf8' });
+}
+/**
+ * A copy with this repository's oxfmt in its node_modules, as after its install: what bootstrap
+ * formats with when --no-install skips the install.
+ */
+function withOxfmt(copy) {
+  mkdirSync(join(copy, 'node_modules'));
+  const real = realpathSync(join(REPO, 'node_modules/oxfmt'));
+  symlinkSync(real, join(copy, 'node_modules/oxfmt'), 'junction');
+  return copy;
 }
 const secret = (root) =>
   readFileSync(join(root, '.env'), 'utf8').match(/^INTERNAL_API_SECRET=(.*)$/m)?.[1];
@@ -98,7 +117,7 @@ const railwayRepo = (root) =>
 
 describe('bootstrap', () => {
   it('turns a tarball copy into a project with no template leftovers', () => {
-    const copy = archiveCopy();
+    const copy = withOxfmt(archiveCopy());
     const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit']);
     expect(res.code, res.out).toBe(0);
 
@@ -158,6 +177,38 @@ describe('bootstrap', () => {
     expect(readFileSync(join(authored, 'LICENSE'), 'utf8')).toMatch(
       /^Copyright \(c\) \d{4} Ada L$/m,
     );
+  });
+
+  it('formats what it renamed: a scope longer than @acme pushes no line over the limit', () => {
+    const LONG = ['--yes', '--scope', '@a-much-longer-scope', '--name', 'smoke-app', '--no-commit'];
+    // a line of exactly printWidth (100) that holds the placeholder, as the template's own may (two
+    // names: oxfmt never wraps an import of one)
+    const line = `import { a, ${'x'.repeat(55)} } from '@acme/validators/notes';`;
+    expect(line).toHaveLength(100);
+    const plant = (copy) => {
+      writeFileSync(join(copy, 'packages/core/src/at-the-limit.ts'), `${line}\n`);
+      expect(oxfmtCheck(copy).status, 'the template copy is formatted').toBe(0);
+      return copy;
+    };
+
+    const copy = withOxfmt(plant(archiveCopy()));
+    const res = bootstrap(copy, [...LONG, '--no-install']);
+    expect(res.code, res.out).toBe(0);
+    expect(res.out).toMatch(/formatted the \d+ rewritten files/);
+    const fmt = oxfmtCheck(copy);
+    expect(fmt.status, `${fmt.stdout}${fmt.stderr}`).toBe(0);
+    // the planted line was renamed, then wrapped
+    const planted = readFileSync(join(copy, 'packages/core/src/at-the-limit.ts'), 'utf8');
+    expect(planted).toContain("\n} from '@a-much-longer-scope/validators/notes';\n");
+    expect(Math.max(...planted.split('\n').map((l) => l.length))).toBeLessThanOrEqual(100);
+
+    // before its install a copy has no oxfmt: bootstrap says so, and what it renamed needs
+    // `pnpm format`
+    const bare = plant(archiveCopy());
+    const skipped = bootstrap(bare, [...LONG, '--no-install']);
+    expect(skipped.code, skipped.out).toBe(0);
+    expect(skipped.out).toContain('run `pnpm format` after `pnpm install`');
+    expect(oxfmtCheck(bare).status).not.toBe(0);
   });
 
   it('points the Railway config at your repository: --repo, else the origin, else <scope>/<name>', () => {
