@@ -180,13 +180,17 @@ than it seems to (`unsafeAllowRule` in `tools/agents.mjs`: `git log *` also writ
   database's reset, studio and psql are not on it: nothing allows them either, so the default mode
   asks, auto mode lets them run, and you can allow them in your `.claude/settings.local.json`:
   `Bash(pnpm db:psql *)` (each argument reaches psql as written: any SQL on this checkout's
-  server, and any command inside its Postgres container, none on your machine:
-  `docs/database.md`), exact commands for the rest (`db-psql --args='…'` reaches a shell).
+  server, and any command inside its Postgres container, none on your machine, except on native
+  Windows: `docs/database.md`), exact commands for the rest (`db-psql --args='…'` reaches a
+  shell). `pnpm db:reset` wipes this checkout's whole server (its dev, test and e2e databases)
+  and refuses one that `COMPOSE_PROJECT_NAME` shares with other checkouts.
 - **Allowed**: the checks (`pnpm check`, each project's lint, eslint, typecheck, test and build),
-  formatting, regeneration, agent sync and check, the dev database's up, migrate and seed, the dev
-  servers, e2e and image builds, the read-only `pr-review` modes, the browser CLI's inspection
-  commands, and Intent's `list` and `load`. Exact commands, or wildcards whose arguments reach no
-  shell. `pnpm db:generate` exists so a migration can be allowed too (`docs/database.md`).
+  formatting, regeneration, agent sync and check, the dev database's up, migrate and seed, a new
+  migration (`pnpm db:generate <what>`, with any arguments: it checks each one and starts
+  drizzle-kit without a shell), the dev servers, e2e and image builds, the read-only `pr-review`
+  modes, the browser CLI's inspection commands, and Intent's `list` and `load`. Exact commands, or
+  wildcards whose arguments reach no shell (on native Windows, which is not supported, they do:
+  `docs/database.md` says which rule to override there).
 - **Denied**: reading `.env*`, `npx`, `nx configure-ai-agents`, the download-latest skill
   installers, and edits to generated files (`pnpm agents:sync` renders those rules from
   `.agents/generated.json`).

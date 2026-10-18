@@ -29,9 +29,17 @@ arguments into a shell command, turns each comma in `--args` into a space, and p
 this checkout's Postgres container and nothing else: any SQL on any database of this checkout's
 server (dev, test and e2e; another server's too, given its address and password), and any command
 inside the container (psql's `\!`, `COPY … TO PROGRAM`), which has network access but none of
-your files (its only mount is its data volume). On native Windows pnpm runs root scripts through
-`cmd.exe`, which its quoting does not cover: allow exact commands there, for `pnpm db:generate`
-too.
+your files (its only mount is its data volume).
+
+On native Windows, which this repo does not support (`docs/agents.md`), neither rule is safe:
+pnpm runs root scripts through `cmd.exe` there, and an argument that holds a `"` ends the quotes
+pnpm puts around it, so the rest reaches `cmd.exe` as commands. Do not add `Bash(pnpm db:psql *)`
+there, and put `Bash(pnpm db:generate *)`, which the shared settings allow, in the `ask` list of
+your `.claude/settings.local.json`: an ask rule in any file wins over an allow rule.
+
+`pnpm db:reset` deletes the server's volume: every database on it (dev, test and e2e), not only
+the dev data. It refuses a project `COMPOSE_PROJECT_NAME` names, which other checkouts may share
+(`docs/local-resources.md`); `docker compose -p <name> down -v` deletes that one, by hand.
 
 ## Migrations
 
@@ -39,14 +47,15 @@ Generate them from the schema with a name (`pnpm regen` runs `db:db-generate` wi
 pending schema change would get a random name), read the SQL, and commit them.
 `pnpm db:generate <what>` (`packages/db/scripts/db-generate.mjs`) takes the name (letters, digits,
 `_`, `-`) and only `--custom`, `--output json|text`, `--explain` and `--hints-file <file>`: it
-checks each argument before anything runs and starts drizzle-kit without a shell, so an allow
-rule for it (`Bash(pnpm db:generate *)`) cannot run anything else. A hints file must be a `.json`
-file in the repo, never a `.env*` (`.agents/ignore/` holds scratch ones): drizzle-kit prints the
-start of a file it cannot parse, so any other file could be read through it. The `db:db-generate`
-Nx target passes `--args` on to a shell, so it is for `pnpm regen` only. Once git tracks a
-migration (staged or committed) the guard hook blocks edits to it; only a new, untracked one may
-still be edited. A migration step by step, and a change that takes more than one deploy (expand,
-then contract): skill `db-migration`; a new field end to end: skill `add-feature`.
+checks each argument before anything runs and starts drizzle-kit without a shell, so the shared
+settings allow it (`Bash(pnpm db:generate *)`): that rule runs nothing else (on native Windows it
+can: above). A hints file must be a `.json` file in the repo, never a `.env*` (`.agents/ignore/`
+holds scratch ones): drizzle-kit prints the start of a file it cannot parse, so any other file
+could be read through it. The `db:db-generate` Nx target passes `--args` on to a shell, so it is
+for `pnpm regen` only. Once git tracks a migration (staged or committed) the guard hook blocks
+edits to it; only a new, untracked one may still be edited. A migration step by step, and a
+change that takes more than one deploy (expand, then contract): skill `db-migration`; a new field
+end to end: skill `add-feature`.
 
 ## Test databases
 

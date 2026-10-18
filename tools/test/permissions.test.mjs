@@ -155,10 +155,12 @@ describe('git push', () => {
 });
 
 // The local dev database is routine agent work, however destructive to its (reseedable) rows: no
-// ask rule, so auto mode runs it and a user may allow it in their settings.local.json. Nothing here
-// allows the commands that wipe it or open a client through Nx (`db-psql --args='-c "…"'` runs any
-// SQL, and any shell command), so the default mode still asks for them; `pnpm db:psql` (below) is
-// the client a wildcard rule can allow. Dependencies always ask.
+// ask rule, so auto mode runs it and a user may allow it in their settings.local.json. A reset
+// wipes only this checkout's own server: it refuses one COMPOSE_PROJECT_NAME shares with other
+// checkouts (packages/db/src/db-up.test.ts, 'reset refuses a project …'). Nothing here allows
+// the commands that wipe it or open a client through Nx (`db-psql --args='-c "…"'` runs any SQL,
+// and any shell command), so the default mode still asks for them; `pnpm db:psql` (below) is the
+// client a wildcard rule can allow. Dependencies always ask.
 describe('database and dependencies', () => {
   const DEPENDENCIES = [
     'Bash(pnpm add zod --filter @acme/db)',
@@ -406,13 +408,16 @@ describe('what the browser CLI may do without a prompt', () => {
 });
 
 // `pnpm db:generate` checks every argument before anything runs and starts drizzle-kit without a
-// shell (packages/db/scripts/db-generate.mjs), so a wildcard rule for it approves nothing else. A
-// rule for the db:db-generate Nx target would approve any command: its --args reach a shell.
+// shell (packages/db/scripts/db-generate.mjs), so a wildcard rule for it approves nothing else.
+// The proof is packages/db/src/db-generate.test.ts, which runs shell syntax and quotes through
+// `pnpm db:generate` and gets each one refused whole, nothing run. A rule for the db:db-generate
+// Nx target would approve any command: its --args reach a shell. (Not on native Windows, which
+// the repo does not support: pnpm runs root scripts through cmd.exe there, docs/database.md.)
 describe('pnpm db:generate', () => {
   const RULE = 'Bash(pnpm db:generate *)';
-  // A human adds RULE to .claude/settings.json (agents cannot edit it); until then a migration
-  // asks in the default mode. APPLIED follows settings.json, so these tests pass before and after
-  // that edit: they pin what the rule approves (these calls, nothing else), not that it is there.
+  // RULE is in .claude/settings.json (a human put it there: agents cannot edit that file), so a
+  // migration runs without a prompt. APPLIED follows the file, so these tests still pin what the
+  // rule approves (these calls, nothing else) if a human takes it out again.
   const APPLIED = permissions.allow.includes(RULE);
   const CALLS = [
     'Bash(pnpm db:generate add_tags)',
@@ -421,12 +426,14 @@ describe('pnpm db:generate', () => {
     'Bash(pnpm db:generate add_tags --output json --hints-file .agents/ignore/hints.json)',
   ];
 
-  it('is a wildcard rule that approves nothing beyond the script', () => {
+  // unsafeAllowRule knows the git, gh and Nx shapes only (it passes `Bash(rm -rf *)` too): this
+  // pins that pnpm agents:check accepts RULE, not that RULE is safe (that is db-generate.test.ts)
+  it('is not one of the rule shapes unsafeAllowRule rejects, unlike the db:db-generate target', () => {
     expect(unsafeAllowRule(RULE)).toBeUndefined();
     expect(unsafeAllowRule('Bash(pnpm nx run db:db-generate *)')).toMatch(/any shell command/);
   });
   it.each(CALLS)('never asks for %s', (call) => expect(asks(call)).toBe(false));
-  it.each(CALLS)('allows %s once the rule is in settings.json', (call) =>
+  it.each(CALLS)('allows %s just when settings.json has the rule', (call) =>
     expect(allows(call)).toBe(APPLIED),
   );
   it('approves no other command', () => {
@@ -437,15 +444,17 @@ describe('pnpm db:generate', () => {
 
 // `pnpm db:psql` hands psql each argument as one word: pnpm quotes each one for the shell it runs
 // a root script in, and packages/db/scripts/db-up.mjs passes them to `docker compose exec` as an
-// argv array, after psql's name (packages/db/src/db-up.test.ts runs commas, quotes and shell syntax
-// through it). So a wildcard rule for it approves psql in this checkout's Postgres container and
-// nothing else: any SQL on any database of its server, and any command inside the container
-// (psql's `\!`, COPY … TO PROGRAM), which has network access but no mount of the checkout. A rule
-// for the db:db-psql Nx target would approve any command on this machine: its --args reach a
-// shell.
+// argv array, after psql's name. So a wildcard rule for it approves psql in this checkout's
+// Postgres container and nothing else: any SQL on any database of its server, and any command
+// inside the container (psql's `\!`, COPY … TO PROGRAM), which has network access but no mount of
+// the checkout. The proof is the round trip in packages/db/src/db-up.test.ts ('pnpm db:psql
+// passes each argument to psql intact'), which runs commas, quotes and shell syntax through it
+// where the compose server runs. A rule for the db:db-psql Nx target would approve any command on
+// this machine: its --args reach a shell. (Not on native Windows: docs/database.md.)
 describe('pnpm db:psql', () => {
   const RULE = 'Bash(pnpm db:psql *)';
-  // as for db:generate: a human adds RULE to .claude/settings.json; APPLIED follows it
+  // RULE is not in .claude/settings.json: a user may add it to their settings.local.json
+  // (docs/agents.md), and a human may move it into the shared file. APPLIED follows that file.
   const APPLIED = permissions.allow.includes(RULE);
   const CALLS = [
     'Bash(pnpm db:psql)',
@@ -454,12 +463,13 @@ describe('pnpm db:psql', () => {
     `Bash(pnpm db:psql -c "truncate comments")`,
   ];
 
-  it('is a wildcard rule that approves nothing beyond the script', () => {
+  // as for db:generate: this pins that pnpm agents:check would accept RULE, not that it is safe
+  it('is not one of the rule shapes unsafeAllowRule rejects, unlike the db:db-psql target', () => {
     expect(unsafeAllowRule(RULE)).toBeUndefined();
     expect(unsafeAllowRule('Bash(pnpm nx run db:db-psql *)')).toMatch(/any shell command/);
   });
   it.each(CALLS)('never asks for %s', (call) => expect(asks(call)).toBe(false));
-  it.each(CALLS)('allows %s once the rule is in settings.json', (call) =>
+  it.each(CALLS)('allows %s just when settings.json has the rule', (call) =>
     expect(allows(call)).toBe(APPLIED),
   );
   it('approves no other command', () => {
