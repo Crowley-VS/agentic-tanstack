@@ -87,21 +87,23 @@ values: look, never paste it). Then:
 pnpm nx run railway-iac:test           # the file evaluates and holds its rules (offline)
 railway config plan                    # read-only: 3 to add, the first time
 railway config apply                   # asks before it changes anything
-railway config plan                    # again: see below
+railway config plan                    # again: it lists source.checkSuites (null → true)
+railway config apply                   # again: turns Wait for CI on (see below)
 railway domain --service web --port 8080   # web's public domain (once; not part of the file)
 ```
 
 The apply that creates the services leaves their **Wait for CI** off (`source.checkSuites`
-null): the second plan lists `source.checkSuites (null → true)` on both, and a second
+null): the second plan lists `source.checkSuites (null → true)` on both, and the second
 `railway config apply` turns it on. Until then a push deploys before CI has run. Plan and apply
 end with a hint to run `railway setup agent`: skip it, it installs Railway's skills and MCP server
 into your agent config, which this repository already sets up (`docs/agents.md`). To apply exactly
-what you reviewed, pin the plan: `railway config plan --out plan.json`, then
-`railway config apply --plan plan.json --yes` (and `--confirm-destructive` when the plan deletes
-something), which also works where no one answers a prompt.
+what you reviewed, pin the plan: `railway config plan --out .agents/ignore/railway-plan.json`
+(a gitignored folder, so neither the format check nor a commit picks the file up), then
+`railway config apply --plan .agents/ignore/railway-plan.json --yes` (and `--confirm-destructive`
+when the plan deletes something), which also works where no one answers a prompt.
 
-The apply creates the services from your repository's `main`; each deploys once CI passes on that
-commit (`checkSuites`, "Wait for CI"). `REPO` in `railway.ts` names the repository: check it is
+The apply creates the services from your repository's `main`; once Wait for CI is on (the second
+apply, above), each deploys a commit only after CI passes on it (`checkSuites`). `REPO` in `railway.ts` names the repository: check it is
 yours. Bootstrap set it from `--repo` or your GitHub origin, else guessed `<scope>/<name>` (it
 printed which). Wait for CI waits for every GitHub Actions run on the commit, and only for those:
 check suites of other GitHub apps on the account (another host's, say) may stay queued and do not
@@ -187,7 +189,8 @@ composer kept the pre-deploy command, the watch paths and the draining time.
 On a scratch project, once both services are live, with `<web>` the domain from `railway domain`.
 All ten passed on Railway in October 2026 (CLI 5.64.2, a scratch project in us-west2), which also
 confirmed what this page takes from Railway's documentation: each field of `railway.ts` applies as
-typed, the build argument arrives, the edge sets its headers. Note the CLI version first
+typed (except `checkSuites` on the apply that creates the services: Set it up, above), the build
+argument arrives, the edge sets its headers. Note the CLI version first
 (`railway --version`): `railway.test.ts` copies the evaluation script of CLI 5.63.4, unchanged
 through 5.64.2. Every `railway` command asks first (What an agent may do, below).
 
@@ -213,23 +216,30 @@ through 5.64.2. Every `railway` command asks first (What an agent may do, below)
    service, `railway logs -s web --http --filter '@requestId:<id>' --json` for the HTTP log (with
    `srcIp`, `httpStatus`, `path`, `totalDuration`). The same curl with
    `-H 'x-railway-request-id: spoofed-1'` still answers another id (the edge sets its own).
-7. **A change redeploys only what it touches**, on the next merges to `main`
+7. **A change redeploys only what it touches**, seen on the next merges to `main`
    (`railway deployment list -s <service>`): one that changes only `packages/db` or `apps/api`
    deploys the api once CI passes and shows web's deploy as `SKIPPED`; one that changes only
-   `docs/` or `tools/` deploys neither; one that changes the root `package.json` deploys both.
+   `docs/` or `tools/` deploys neither; one that changes the root `package.json` deploys both. A
+   watch-path skip shows at once, before the commit's CI ends; a skip for failed CI shows only after
+   a red run, so check the commit's CI is green before reading a `SKIPPED` as a watch-path one.
 8. **Shutdown is graceful:** redeploy the api, then web (`railway redeploy -s <service> --yes`,
    or the dashboard's Deployments, Redeploy). After Railway's `sending signal SIGTERM to
 container`, each old deployment logs `SIGTERM: finishing in-flight requests, then exiting` as
    an info line of its own (the api's with `inFlight`; web's after an empty line, then one
    error-level line holding srvx's `Stopping server gracefully` and `Server closed successfully.`,
-   which it writes to stderr) and is gone within about 15 s, never with the api's
-   `requests still running after 8 s`. `railway logs <deployment id>` needs `-s <service>` too.
+   which it writes to stderr). Each exits on its own: its last line (web's `Server closed
+successfully.`) comes within a second or two of its SIGTERM line, well inside the 10 s draining
+   time, never with the api's `requests still running after 8 s`; Railway then removes the old
+   container (about 15 s after SIGTERM in October 2026). `railway logs <deployment id>` needs
+   `-s <service>` too.
 9. **Optional, the e2e specs against the deploy:** `railway variable set WRITE_RATE_LIMIT=off -s web`
    (it redeploys web, once CI passes), then run
-   `BASE_URL=https://<web> pnpm nx run web-e2e:e2e-base-url`: 11 pass and 5 skip, the specs that
-   need the seed or the API's own address (`docs/e2e.md`; their notes stay in the database).
-   `railway config plan` then lists that variable as one to delete (exit code 2), and
-   `railway config apply` deletes it: an apply removes what the file leaves out.
+   `BASE_URL=https://<web> pnpm nx run web-e2e:e2e-base-url`: every spec passes except those that
+   need the seed (seed.spec, the board's seed tests) or the API's own address (the harness's
+   401 check), which skip (`docs/e2e.md`; 11 passed and 5 skipped in October 2026; their notes
+   stay in the database). `railway config plan --detailed-exit-code` then lists that variable as
+   one to delete and exits 2, and `railway config apply` deletes it: an apply removes what the file
+   leaves out.
 10. **Costs:** `railway usage projects --project <name>` after about a day (What it costs, above);
     then delete the scratch project, or keep it as your reference project.
 
@@ -242,5 +252,6 @@ which calls Railway's API with your login) and its MCP server's tools. The plugi
 approves its commands, but a hook cannot skip an ask rule; `tools/test/permissions.test.mjs`
 keeps the rules. An agent may edit `.railway/railway.ts` and run
 `pnpm nx run railway-iac:test` freely; it shows you `railway config plan` and applies only when
-you approve. Variable values are redacted in plans; `--show-values`, `--decrypt-variables` and
-`railway variable list --kv` or `--json` print secrets: never paste their output anywhere.
+you approve. Variable values are redacted in plans; `--show-values`, `--decrypt-variables`,
+`railway variable list --kv` or `--json` and `railway environment config --json` print secrets:
+never paste their output anywhere.
