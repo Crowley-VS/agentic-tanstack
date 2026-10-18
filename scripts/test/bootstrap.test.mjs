@@ -20,12 +20,21 @@ import {
   needsShell,
   oxfmtEntry,
   sortedPackageJson,
+  TEMPLATE_ONLY,
+  templateCommit,
   USAGE,
   withoutScriptsRules,
 } from '../bootstrap.ts';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const PROJECT = ['--yes', '--scope', '@smoke', '--name', 'smoke-app'];
+/** A git identity from the environment, as a CI runner without one configured would set it. */
+const IDENTITY_ENV = {
+  GIT_AUTHOR_NAME: 'Smoke',
+  GIT_AUTHOR_EMAIL: 'smoke@example.com',
+  GIT_COMMITTER_NAME: 'Smoke',
+  GIT_COMMITTER_EMAIL: 'smoke@example.com',
+};
 
 /** A tarball-style copy of the working tree: every git-visible file, no .git (like giget). */
 function archiveCopy() {
@@ -146,8 +155,29 @@ describe('bootstrap', () => {
       return text.includes('@acme/') || text.includes('acme-app');
     });
     expect(leftovers).toEqual([]);
-    for (const gone of ['scripts', 'template.json', '.github/workflows/template-smoke.yml'])
+    // the template's own maintenance goes (docs/maintaining.md)...
+    for (const gone of [
+      'scripts',
+      'template.json',
+      '.github/workflows/template-smoke.yml',
+      '.github/workflows/release-please.yml',
+      '.github/workflows/agent-config-drift.yml',
+      'release-please-config.json',
+      '.release-please-manifest.json',
+      '.prettierignore',
+    ])
       expect(existsSync(join(copy, gone)), gone).toBe(false);
+    // ...what a project uses stays: CI, and Renovate's config and regen workflow (off until it
+    // installs Renovate and sets up an App), with its tests and docs
+    for (const kept of [
+      '.github/workflows/ci.yml',
+      '.github/renovate.json5',
+      '.github/workflows/renovate-regen.yml',
+      'tools/renovate-regen.mjs',
+      'tools/test/renovate.test.mjs',
+      'docs/maintaining.md',
+    ])
+      expect(existsSync(join(copy, kept)), kept).toBe(true);
     // what every clone runs stays, with its tests, in the tools project (docs/agents.md)
     for (const kept of ['setup-agents', 'pw-agents'])
       for (const f of [`tools/${kept}.mjs`, `tools/test/${kept}.test.mjs`])
@@ -170,6 +200,8 @@ describe('bootstrap', () => {
     const pkg = JSON.parse(readFileSync(join(copy, 'package.json'), 'utf8'));
     expect(pkg.name).toBe('@smoke/source');
     expect(pkg.template.repo).toBeTruthy();
+    // a copy of the files, not an archive: the commit it came from is unknown
+    expect(pkg.template.commit).toBeNull();
 
     // .env: a copy of .env.example with a fresh random secret (never the placeholder)
     expect(secret(copy)).toMatch(/^[0-9a-f]{64}$/);
@@ -356,7 +388,13 @@ describe('bootstrap', () => {
       onTestFinished(() => rmSync(bin, { recursive: true, force: true }));
       writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\n[ "$1" = install ] && exit 1\nexit 0\n');
       chmodSync(join(bin, 'pnpm'), 0o755);
-      const env = { ...process.env, CI: 'true', PATH: `${bin}${delimiter}${process.env.PATH}` };
+      // an identity to commit with: the preflight checks it before anything changes
+      const env = {
+        ...process.env,
+        ...IDENTITY_ENV,
+        CI: 'true',
+        PATH: `${bin}${delimiter}${process.env.PATH}`,
+      };
 
       const first = bootstrap(copy, PROJECT, env);
       expect(first.code, first.out).toBe(1);
@@ -519,5 +557,78 @@ describe('bootstrap', () => {
     expect(res.code).toBe(1);
     expect(res.out).toContain('stdin is not a terminal');
     expect(res.out).not.toContain('unsettled top-level await');
+  });
+
+  it('stops before changing anything when git has no identity to commit with', () => {
+    // none in the environment, and git may not guess one (the global config is already /dev/null)
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([k]) => !/^GIT_(?:AUTHOR|COMMITTER)_|^EMAIL$/.test(k)),
+    );
+    Object.assign(env, {
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'user.useConfigOnly',
+      GIT_CONFIG_VALUE_0: 'true',
+    });
+    const copy = archiveCopy();
+    const before = snapshot(copy);
+    const res = bootstrap(copy, [...PROJECT, '--no-install'], env);
+    expect(res.code, res.out).toBe(1);
+    expect(res.out).toContain('git has no identity to commit with');
+    expect(res.out).toContain('git config --global user.email');
+    expect(snapshot(copy)).toEqual(before);
+    expect(existsSync(join(copy, '.git'))).toBe(false);
+
+    // --no-commit needs none; an identity from the environment is one
+    const uncommitted = bootstrap(archiveCopy(), [...PROJECT, '--no-install', '--no-commit'], env);
+    expect(uncommitted.code, uncommitted.out).toBe(0);
+    const fromEnv = archiveCopy();
+    const committed = bootstrap(fromEnv, [...PROJECT, '--no-install'], { ...env, ...IDENTITY_ENV });
+    expect(committed.code, committed.out).toBe(0);
+    expect(gitIn(fromEnv, 'log', '-1', '--format=%an <%ae>')).toBe('Smoke <smoke@example.com>');
+  });
+
+  it('records the commit an archive came from (git archive fills it in), null for a file copy', () => {
+    expect(templateCommit('$Format:%H$')).toBeNull();
+    expect(templateCommit(null)).toBeNull();
+    expect(templateCommit('abc123')).toBeNull();
+    for (const sha of ['a1'.repeat(20), 'b2'.repeat(32)]) expect(templateCommit(sha)).toBe(sha);
+
+    // the tarball GitHub (and giget) serve: `git archive` of a commit
+    const source = templateCopy();
+    const sha = gitIn(source, 'rev-parse', 'HEAD');
+    const tarball = join(mkdtempSync(join(tmpdir(), 'bootstrap-tar-')), 'copy.tar');
+    onTestFinished(() => rmSync(dirname(tarball), { recursive: true, force: true }));
+    gitIn(source, 'archive', '--format=tar', '-o', tarball, 'HEAD');
+    const copy = mkdtempSync(join(tmpdir(), 'bootstrap-archive-'));
+    onTestFinished(() => rmSync(copy, { recursive: true, force: true }));
+    execFileSync('tar', ['-xf', tarball, '-C', copy]);
+    expect(JSON.parse(readFileSync(join(copy, 'template.json'), 'utf8')).commit).toBe(sha);
+
+    const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit']);
+    expect(res.code, res.out).toBe(0);
+    expect(res.out).toContain(`(commit ${sha})`);
+    const { repo, version } = JSON.parse(readFileSync(join(REPO, 'template.json'), 'utf8'));
+    expect(JSON.parse(readFileSync(join(copy, 'package.json'), 'utf8')).template).toEqual({
+      repo,
+      version,
+      commit: sha,
+    });
+  });
+
+  it('removes exactly the workflows that run only in the template (TEMPLATE_MAINTENANCE)', () => {
+    const dir = join(REPO, '.github/workflows');
+    const workflows = readdirSync(dir).filter((f) => /\.ya?ml$/.test(f));
+    expect(workflows).toEqual(expect.arrayContaining(['ci.yml', 'template-smoke.yml']));
+    for (const file of workflows) {
+      const text = readFileSync(join(dir, file), 'utf8');
+      const jobs = [...text.slice(text.indexOf('\njobs:\n')).matchAll(/^ {2}[\w-]+:$/gm)];
+      const gates = [...text.matchAll(/^ {4}if: vars\.TEMPLATE_MAINTENANCE == 'true'$/gm)];
+      const templateOnly = TEMPLATE_ONLY.includes(`.github/workflows/${file}`);
+      // every job of a template-only workflow is gated (a copy made before bootstrap ran, or
+      // with --keep-script, must not run them), and no other workflow's job is
+      expect(gates.length, file).toBe(templateOnly ? jobs.length : 0);
+    }
+    for (const file of TEMPLATE_ONLY.filter((f) => f.startsWith('.github/workflows/')))
+      expect(existsSync(join(REPO, file)), file).toBe(true);
   });
 });
