@@ -461,11 +461,15 @@ describe('bootstrap', () => {
     },
   );
 
+  // The one bootstrap with its install: the order the other tests cannot see (install → format →
+  // nx sync, regen and agent sync → commit). A scope longer than @acme makes the format step
+  // matter: formatting before the install (no oxfmt yet), after agent sync or after the commit
+  // leaves a line over the limit, stale skill copies or uncommitted changes.
   it.skipIf(process.platform === 'win32')(
-    'leaves no Nx daemon behind: the first Nx task after a local (non-CI) bootstrap passes',
+    'formats and commits the rename after its install, and leaves no Nx daemon behind: the first Nx task after a local (non-CI) bootstrap passes',
     () => {
       // a tarball copy with a fresh repository, as in the report this reproduces
-      const copy = archiveCopy();
+      const copy = plantLineAtTheLimit(archiveCopy());
       gitIn(copy, 'init', '-q', '-b', 'main');
       gitIn(copy, 'config', 'user.email', 'smoke@example.com');
       gitIn(copy, 'config', 'user.name', 'Smoke');
@@ -477,11 +481,28 @@ describe('bootstrap', () => {
       Object.assign(env, { CI: 'false', NX_NO_CLOUD: 'true' });
       const pnpm = (...args) =>
         spawnSync('pnpm', args, { cwd: copy, env, encoding: 'utf8', input: '' });
+      const SCOPE = '@a-much-longer-scope';
       try {
-        const res = bootstrap(copy, PROJECT, env);
+        const res = bootstrap(copy, ['--yes', '--scope', SCOPE, '--name', 'smoke-app'], env);
         expect(res.code, res.out).toBe(0);
         // the install (not CI) also installed the git hooks
         expect(existsSync(join(copy, '.git/hooks/pre-commit'))).toBe(true);
+        // formatted after the install brought oxfmt: the planted line was renamed, then wrapped
+        expect(res.out).toMatch(/formatted the \d+ rewritten files/);
+        expect(readFileSync(join(copy, AT_THE_LIMIT), 'utf8')).toContain(
+          `\n} from '${SCOPE}/validators/notes';\n`,
+        );
+        expect(longestLine(copy, AT_THE_LIMIT)).toBeLessThanOrEqual(100);
+        const fmt = oxfmtCheck(copy);
+        expect(fmt.status, `${fmt.stdout}${fmt.stderr}`).toBe(0);
+        // before agent sync: the skill copies match their formatted sources
+        const agents = spawnSync(process.execPath, ['tools/agents.mjs', 'check'], {
+          cwd: copy,
+          encoding: 'utf8',
+        });
+        expect(agents.status, `${agents.stdout}${agents.stderr}`).toBe(0);
+        // before the commit: it holds every formatted file
+        expect(gitIn(copy, 'status', '--porcelain')).toBe('');
         const task = pnpm('nx', 'run', 'validators:lint', '--outputStyle=static');
         const out = `${task.stdout}${task.stderr}`;
         expect(out).not.toContain('DB transaction error');
