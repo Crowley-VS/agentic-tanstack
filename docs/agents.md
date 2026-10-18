@@ -81,6 +81,9 @@ name one):
   `drizzle` preloaded.
 - Playwright's planner, generator and healer: opt-in, below.
 
+A session that cannot start agents (no Agent tool: a workflow's own subagents) reads
+`.claude/agents/reviewer.md` and applies its rules and checks itself (`AGENTS.md` says so).
+
 **The review loop** (skill `review-loop`, run by `.claude/workflows/review-loop-run.js`) reviews
 a PR, posts the findings, fixes the blocking ones and checks the fixes; a human merges.
 `tools/agent-hooks/pr-opened.mjs` offers it when a PR opens. To start it without the question,
@@ -172,15 +175,22 @@ than it seems to (`unsafeAllowRule` in `tools/agents.mjs`: `git log *` also writ
 
 - **Always asks**: force pushes, pushes to `main`, branch deletions and pushes that run a command
   (`--receive-pack`, `--exec`); every `railway` command, the Railway plugin's API script and MCP
-  tools; `pnpm db:reset`, `pnpm db:studio` and `pnpm nx run db:db-psql`; `pnpm add`, `remove`
-  and `dlx`. An ask rule
-  prompts in every mode, auto included, and no allow rule in any file lifts it, so the list holds
-  only what must reach a human.
+  tools; `pnpm add`, `remove` and `dlx`. An ask rule prompts in every mode, auto included, and no
+  allow rule in any file lifts it, so the list holds only what must reach a human. The local dev
+  database's reset, studio and psql are not on it: nothing allows them either, so the default mode
+  asks, auto mode lets them run, and you can allow them in your `.claude/settings.local.json`:
+  `Bash(pnpm db:psql *)` (each argument reaches psql as written: any SQL on this checkout's
+  server, and any command inside its Postgres container, none on your machine, except on native
+  Windows: `docs/database.md`), exact commands for the rest (`db-psql --args='…'` reaches a
+  shell). `pnpm db:reset` wipes this checkout's whole server (its dev, test and e2e databases)
+  and refuses one that `COMPOSE_PROJECT_NAME` shares with other checkouts.
 - **Allowed**: the checks (`pnpm check`, each project's lint, eslint, typecheck, test and build),
-  formatting, regeneration, agent sync and check, the dev database's up, migrate and seed, the dev
-  servers, e2e and image builds, the read-only `pr-review` modes, the browser CLI's inspection
-  commands, and Intent's `list` and `load`. Exact commands, or wildcards whose arguments reach no
-  shell. `pnpm db:generate` exists so a migration can be allowed too (`docs/database.md`).
+  formatting, regeneration, agent sync and check, the dev database's up, migrate and seed, a new
+  migration (`pnpm db:generate <what>`, with any arguments: it checks each one and starts
+  drizzle-kit without a shell), the dev servers, e2e and image builds, the read-only `pr-review`
+  modes, the browser CLI's inspection commands, and Intent's `list` and `load`. Exact commands, or
+  wildcards whose arguments reach no shell (on native Windows, which is not supported, they do:
+  `docs/database.md` says which rule to override there).
 - **Denied**: reading `.env*`, `npx`, `nx configure-ai-agents`, the download-latest skill
   installers, and edits to generated files (`pnpm agents:sync` renders those rules from
   `.agents/generated.json`).
