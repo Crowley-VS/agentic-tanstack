@@ -4,7 +4,7 @@
 
 Nx monorepo: **TanStack Start** web app → **GraphQL** API (Yoga + Pothos) → **Drizzle** → Postgres 18 (Docker).
 Business logic lives in `packages/core`; apps are thin wrappers around it.
-Before you work on an area, read its doc (how to run, build and test it; its rules): `docs/api.md`, `docs/web.md`, `docs/e2e.md`, `docs/database.md`, `docs/deployment.md`.
+Before you work on an area, read its doc (how to run, build and test it; its rules): `docs/api.md`, `docs/web.md`, `docs/e2e.md`, `docs/database.md`, `docs/deployment.md`, `docs/maintaining.md` (Renovate PRs, the maintenance workflows).
 
 <!-- stack:end -->
 
