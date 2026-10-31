@@ -17,8 +17,11 @@ const glob = (pattern) =>
 
 /**
  * Whether one of `rules` matches a tool call, as Claude Code matches them: `*` anywhere in the
- * rule, and `Bash(x *)` also matches a bare `x`; ask and deny rules match past leading
- * `VAR=value` assignments, allow rules do not.
+ * rule, and `Bash(x *)` also matches a bare `x` when that `*` is the rule's only one; ask and deny
+ * rules match past leading `VAR=value` assignments, allow rules do not. A rule ending in `:*` is
+ * the legacy prefix form: the command or the command followed by a space, any other `*` in it
+ * read literally (so `Bash(git push * :*)` matches no real push). A `:*` anywhere else is a
+ * literal `:` and a wildcard, as `:**` at the end is (Claude Code says so at startup).
  */
 function matches(rules, call, { skipAssignments }) {
   const [, tool, command] = call.match(/^(\w+)(?:\((.*)\))?$/s) ?? [];
@@ -27,10 +30,17 @@ function matches(rules, call, { skipAssignments }) {
     const [, ruleTool, pattern] = rule.match(/^([\w*]+)(?:\((.*)\))?$/s) ?? [];
     if (!ruleTool || !glob(ruleTool).test(tool)) return false;
     if (pattern === undefined) return true;
+    const prefix = pattern.match(/^(.+):\*$/s)?.[1];
+    if (prefix !== undefined) {
+      return [command, bare].some((c) => c === prefix || c?.startsWith(`${prefix} `));
+    }
     return [command, bare].some(
       (c) =>
         c !== undefined &&
-        (glob(pattern).test(c) || (pattern.endsWith(' *') && c === pattern.slice(0, -2))),
+        (glob(pattern).test(c) ||
+          (pattern.indexOf('*') === pattern.length - 1 &&
+            pattern.endsWith(' *') &&
+            c === pattern.slice(0, -2))),
     );
   });
 }
@@ -49,6 +59,17 @@ it('matches rules the way the docs describe', () => {
   expect(matches(['Bash(railway *)'], 'Bash(railwayx)', { skipAssignments: true })).toBe(false);
   expect(matches(['mcp__x_*'], 'mcp__x_y__z', { skipAssignments: true })).toBe(true);
   expect(matches(['mcp__x_*'], 'Bash(mcp__x_y)', { skipAssignments: true })).toBe(false);
+  expect(matches(['Bash(git log:*)'], 'Bash(git log -5)', { skipAssignments: true })).toBe(true);
+  expect(matches(['Bash(git push * :*)'], 'Bash(git push origin :x)', {})).toBe(false);
+  expect(matches(['Bash(git push * :**)'], 'Bash(git push origin :x)', {})).toBe(true);
+  expect(matches(['Bash(* --help *)'], 'Bash(npm --help)', {})).toBe(false);
+});
+
+// Such a rule reads its `*` literally, so it matches nothing it seems to: a case above only
+// catches it when one names the command.
+it('has no rule that mixes * with a trailing :*', () => {
+  const rules = [permissions.allow, permissions.ask, permissions.deny].flatMap((r) => r ?? []);
+  expect(rules.filter((rule) => /\(.*\*.*:\*\)$/s.test(rule))).toEqual([]);
 });
 
 // Every Railway command an agent could run asks first (docs/deployment-railway.md, "What an agent
@@ -91,12 +112,13 @@ describe('Railway', () => {
 // main, a branch deletion. No rule sees the current branch: a push that names no branch
 // (`git push`, `git push origin`, `git push -u origin`) pushes the checked-out one, main included,
 // and does not ask; that is why work never gets committed on main (AGENTS.md). A short-option
-// bundle is caught when f or d comes first, or second after u, q or v (`-uf`, `-qf`, `-vf`).
+// bundle is caught when f or d comes first, or second after u, q or v (`-uf`, `-qd`, …).
 describe('git push', () => {
   const ROUTINE_PUSHES = [
     'Bash(git push -u origin m7/skills)',
     'Bash(LEFTHOOK=0 git push -q -u origin m6/railway-iac)',
     'Bash(git push origin HEAD:refs/heads/m7/fix-domain)', // the review loop's fixer
+    'Bash(git push origin m7/a:m7/b)',
     'Bash(git push --follow-tags origin m7/dry-run)',
     'Bash(git push --dry-run origin m7/skills)',
     'Bash(git push -u origin m7/maintenance)',
@@ -140,7 +162,14 @@ describe('git push', () => {
     'Bash(git push origin --delete m7/skills)',
     'Bash(git push origin -d m7/skills)',
     'Bash(git push -d origin m7/skills)',
+    'Bash(git push -ud origin m7/skills)',
+    'Bash(git push -qd origin m7/skills)',
+    'Bash(git push origin -vd m7/skills)',
     'Bash(git push origin :m7/skills)',
+    'Bash(git push origin :m7/skills --verbose)',
+    'Bash(git push origin m7/a :m7/old)',
+    'Bash(LEFTHOOK=0 git push origin :m7/skills)',
+    'Bash(git push origin :)', // every matching branch, main included
     'Bash(git push --prune origin refs/heads/*:refs/heads/*)',
     // these run a command of the caller's choosing (locally, for a path remote)
     'Bash(git push --receive-pack=./x.sh /tmp/repo m7/skills)',
