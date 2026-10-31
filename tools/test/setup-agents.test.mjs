@@ -276,6 +276,11 @@ describe('setup-agents', () => {
     res = setupAgents(root, [], { ...installedPlugins(all), PATH: path, PROTO_SHIM_PATH: shim });
     expect(res.out).toContain(`npx is not on PATH; the Nx plugin's MCP server starts with it`);
     expect(shellPath({ PATH: path, PROTO_SHIM_PATH: shim })).toBe(join(root, 'bin'));
+    // a proto directory the shell lists itself, after the shim's, stays
+    const globals = join(root, 'proto/tools/node/globals/bin');
+    expect(shellPath({ PATH: `${path}:${globals}`, PROTO_SHIM_PATH: shim })).toBe(
+      `${join(root, 'bin')}:${globals}`,
+    );
 
     const noNx = { enabledPlugins: { 'typescript-lsp@claude-plugins-official': true } };
     res = setupAgents(

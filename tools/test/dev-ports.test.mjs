@@ -275,7 +275,7 @@ describe('CLI modes', () => {
   // Two primary checkouts on one machine (two projects made from the template) share the fixed
   // ports: the second keeps its own in its .env.local, which Nx also loads into every task (and
   // infers the e2e targets again when it changes: e2e-wiring.test.mjs).
-  it('reads the port variables in .env.local at the checkout root; the environment wins, a bad port fails', () => {
+  it('reads the port variables in .env.local at the checkout root; the environment wins, a bad port is ignored with a warning', () => {
     const cwd = tempDir();
     writeFileSync(
       join(cwd, '.env.local'),
@@ -286,11 +286,29 @@ describe('CLI modes', () => {
     expect(cli(['--get', 'web'], { cwd, env: { WEB_PORT: '3020' } }).stdout).toBe(
       'http://localhost:3020\n',
     );
+    // Nx evaluates dev-ports while it builds the project graph: a bad value must not stop it
     writeFileSync(join(cwd, '.env.local'), 'WEB_PORT=web\n');
     const bad = cli(['--get', 'web'], { cwd });
-    expect(bad.status).toBe(1);
-    expect(bad.stderr).toContain('dev-ports: .env.local sets WEB_PORT="web", which is no port');
-    expect(bad.stderr).not.toContain('    at ');
+    expect(bad.status).toBe(0);
+    expect(bad.stdout).toBe('http://localhost:3000\n');
+    expect(bad.stderr).toContain(
+      'dev-ports: .env.local sets WEB_PORT="web", which is no port: ignored',
+    );
+    for (const port of ['99999', '0', '0080']) {
+      writeFileSync(join(cwd, '.env.local'), `DB_PORT=${port}\n`);
+      const res = cli(['--get', 'db'], { cwd });
+      expect(res.stdout, port).toBe('5432\n');
+      expect(res.stderr, port).toContain('which is no port: ignored');
+    }
+  });
+
+  it('reads .env.local at the checkout root from a subdirectory', () => {
+    const root = makeRepo({ 'apps/web/package.json': '{}' });
+    commitAll(root);
+    writeFileSync(join(root, '.env.local'), 'API_PORT=4010\n');
+    expect(cli(['--get', 'api'], { cwd: join(root, 'apps/web') }).stdout).toBe(
+      'http://localhost:4010/graphql\n',
+    );
   });
 
   it('--print lists the URLs, Drizzle Studio on its own port included', () => {

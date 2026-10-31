@@ -45,10 +45,11 @@ purely additive.
   and tests use `testDb()`.
 - A data change (a backfill) is a migration of its own: `pnpm db:generate <what> --custom` writes
   an empty `migration.sql` for your SQL.
-- So is a Postgres extension (`pg_trgm`, `pgvector`), which drizzle-kit does not manage:
-  `pnpm db:generate enable_<ext> --custom` with `CREATE EXTENSION IF NOT EXISTS <ext>;`, generated
-  before the schema change that uses it. Every database that migrates then has it (`testDb()`
-  clones the migrated database); check that the production host offers it.
+- So is a Postgres extension, which drizzle-kit does not manage: `pnpm db:generate enable_<ext>
+--custom` with `CREATE EXTENSION IF NOT EXISTS <ext>;`, generated before the schema change that
+  uses it. Every database that migrates then has it (`testDb()` clones the migrated database). The
+  extensions Postgres ships (`pg_trgm`, `citext`, …) are in the `postgres` image the repo runs; any
+  other (`pgvector`) needs an image that has it in `docker-compose.yml`, CI and production alike.
 - Never edit a migration git tracks (staged or committed): the guard hook blocks it. To redo a
   new, untracked one you already applied: `pnpm db:reset` (wipes this checkout's whole local
   server: its dev, test and e2e databases; it refuses one other checkouts share), delete its

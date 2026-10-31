@@ -59,17 +59,19 @@ function run(cwd, cmd, args, env) {
 /**
  * PATH as your shell and Claude Code see it. proto's node shim puts the Node it runs (and its
  * globals) first on PATH, with npx beside it, so npx resolves inside this script on a machine
- * whose shell has none: under a proto shim, drop the directories under proto's `tools`.
+ * whose shell has none: under a proto shim, drop the leading directories under proto's `tools`
+ * (the shim's), keeping any your shell lists after them.
  */
 export function shellPath(env = process.env) {
   const path = env.PATH ?? '';
   if (!env.PROTO_SHIM_PATH) return path;
   const tools = join(dirname(dirname(env.PROTO_SHIM_PATH)), 'tools');
   const sep = process.platform === 'win32' ? ';' : ':';
-  return path
-    .split(sep)
-    .filter((dir) => dir !== tools && !dir.startsWith(`${tools}/`) && !dir.startsWith(`${tools}\\`))
-    .join(sep);
+  const dirs = path.split(sep);
+  const isTools = (dir) =>
+    dir === tools || dir.startsWith(`${tools}/`) || dir.startsWith(`${tools}\\`);
+  const first = dirs.findIndex((dir) => !isTools(dir));
+  return (first === -1 ? [] : dirs.slice(first)).join(sep);
 }
 
 const realpath = (p) => {

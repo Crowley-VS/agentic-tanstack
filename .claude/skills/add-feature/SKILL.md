@@ -104,9 +104,10 @@ the API branch until the API PR is merged and deployed.
   `validate:` is the same Zod schema, so its rules and messages apply unchanged.
 - `pnpm nx run api:print-schema` rewrites `packages/graphql/schema.graphql`; read its diff. A
   removed field, or an input or argument that became required, breaks deployed clients. Then run
-  the API tests: `main.test.ts` fails while `schema.graphql` is stale. `pnpm nx run web:codegen`
-  changes nothing yet (`apps/web/src/gql` holds only the types operations use), so the API PR has
-  no web file.
+  the API tests: `main.test.ts` fails while `schema.graphql` is stale. Run `pnpm nx run web:codegen`
+  too: `apps/web/src/gql` holds only the types operations use, so it changes only when an input
+  type an operation already sends gained a field. Commit what it regenerates with the API PR: no
+  web code changes in it.
 - Reads stay on the Drizzle plugin (`t.relation`, `t.relatedCount`, `query(…)`). Add a new
   relation, count or resolver-backed field to the query of the one-statement test in
   `notes.test.ts`: it catches an N+1 only in what it selects. `complexity.test.ts` checks only

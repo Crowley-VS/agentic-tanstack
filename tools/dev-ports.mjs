@@ -252,18 +252,20 @@ export function toEnv(info) {
 /**
  * The port variables `.env.local` at `root` sets: the checkout's dotenv file, which Nx also loads
  * into every task, and whose change makes Nx infer the e2e targets (their readiness URLs) again.
- * Only the port variables are read; one whose value is no port throws, rather than being ignored.
+ * Only the port variables are read. One whose value is no port is left out with a warning on
+ * stderr, not thrown: Nx runs this while it builds the project graph (the e2e targets), and a
+ * throw there would stop every Nx command, `pnpm teardown` included.
  */
-export function localOverrides(root) {
+export function localOverrides(root, { warn = (text) => console.error(text) } = {}) {
   const file = join(root, '.env.local');
   if (!existsSync(file)) return {};
   const values = parseEnv(readFileSync(file, 'utf8'));
   const overrides = {};
   for (const key of Object.values(ENV_KEYS)) {
     if (!values[key]) continue;
-    if (!/^\d{2,5}$/.test(values[key]))
-      throw new Error(`dev-ports: .env.local sets ${key}="${values[key]}", which is no port`);
-    overrides[key] = values[key];
+    if (/^[1-9]\d{0,4}$/.test(values[key]) && Number(values[key]) <= 65535)
+      overrides[key] = values[key];
+    else warn(`dev-ports: .env.local sets ${key}="${values[key]}", which is no port: ignored`);
   }
   return overrides;
 }

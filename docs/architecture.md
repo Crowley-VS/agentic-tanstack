@@ -110,7 +110,8 @@ The generation chain for an API change: `print-schema` → `schema.graphql` → 
 
 Every checkout gets its own ports and database names from `tools/dev-ports.mjs`: the primary
 checkout fixed defaults (web 3000, API 4000, Postgres 5432), each linked worktree its own block;
-environment variables (`WEB_PORT`, `API_PORT`, `DB_PORT`, …) override them, and `.env` holds no
-ports. `pnpm ports` prints them. Secrets and settings come from `.env` (Nx loads it into every
+environment variables (`WEB_PORT`, `API_PORT`, `DB_PORT`, …) override them, or the same variables
+in the checkout's own `.env.local` (no worktree copies it); `.env` holds no ports. `pnpm ports`
+prints them. Secrets and settings come from `.env` (Nx loads it into every
 task), validated at startup by each app's schema (`apps/api/src/env.ts`, `apps/web/src/env.server.ts`).
 What each variable does in production: [deployment.md](deployment.md#what-the-images-expect-at-runtime).

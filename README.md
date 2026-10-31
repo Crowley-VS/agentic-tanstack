@@ -116,9 +116,9 @@ result first, so a failed run can be re-run.
 | `--no-commit`                     | leave the changes uncommitted                                                    |
 | `--keep-script`                   | keep `scripts/bootstrap.*`                                                       |
 
-Its commit is the project's first and belongs on `main`: the one commit made there directly, so
-create your feature branches after it. If your rules need a PR or commit trailers for it, pass
-`--no-commit` and commit it yourself.
+Its commit belongs on `main`, right after the copy's first commit (GitHub's "Initial commit", or
+none for a tarball): the one commit made there directly, so create your feature branches after it.
+If your rules need a PR or commit trailers for it, pass `--no-commit` and commit it yourself.
 
 **3. Run it:**
 
