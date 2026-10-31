@@ -16,7 +16,7 @@ test -f .env || cp .env.example .env   # a fresh clone: then set the values it l
 pnpm install # also installs the git hooks (lefthook): format + lint staged files, keep agent config in sync
 pnpm check   # the definition of done: lint, formatting, module boundaries, typecheck, tests, generated files, agent config
 pnpm ports   # this checkout's ports and database URLs (every git worktree gets its own;
-             # another project on this machine holds them? .ports.local: docs/troubleshooting.md)
+             # another project on this machine holds them? .env.local: docs/troubleshooting.md)
 pnpm dev     # web + API, reloading; curl the web's /api/health and the API's /health
 node tools/setup-agents.mjs   # once per machine: the Claude Code plugins this repo enables, and what they need
 ```

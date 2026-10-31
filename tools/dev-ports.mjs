@@ -14,8 +14,9 @@
 //                        STACK_PORT, COMPOSE_PROJECT_NAME, STACK_PROJECT (`ownsComposeProject` /
 //                        `ownsStackProject` are false when they name a project other than the
 //                        checkout's own)
-//   .ports.local      -> the same port variables, kept with the checkout: KEY=VALUE lines in a
-//                        gitignored file at its root (the environment still wins), for a primary
+//   .env.local        -> the same port variables, kept with the checkout: its gitignored dotenv
+//                        file, which no worktree copies and Nx loads into every task (so the e2e
+//                        targets Nx infers follow it); the environment still wins. For a primary
 //                        checkout whose fixed ports another one already uses
 //   test database URL -> the server's `postgres` maintenance database, for tests that create
 //                        databases of their own
@@ -39,6 +40,7 @@ import {
 } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseEnv } from 'node:util';
 
 const BLOCKS = 400; // blocks of 100 ports in 20000-59999
 const REGISTRY = 'dev-ports.json';
@@ -248,26 +250,21 @@ export function toEnv(info) {
 }
 
 /**
- * The port overrides in `.ports.local` at `root`: KEY=VALUE lines of the port variables, `#`
- * comments. An unknown key or a value that is no port throws, rather than being ignored.
+ * The port variables `.env.local` at `root` sets: the checkout's dotenv file, which Nx also loads
+ * into every task, and whose change makes Nx infer the e2e targets (their readiness URLs) again.
+ * Only the port variables are read; one whose value is no port throws, rather than being ignored.
  */
 export function localOverrides(root) {
-  const file = join(root, '.ports.local');
+  const file = join(root, '.env.local');
   if (!existsSync(file)) return {};
-  const keys = Object.values(ENV_KEYS);
+  const values = parseEnv(readFileSync(file, 'utf8'));
   const overrides = {};
-  readFileSync(file, 'utf8')
-    .split(/\r?\n/)
-    .forEach((raw, i) => {
-      const line = raw.replace(/#.*/, '').trim();
-      if (!line) return;
-      const [, key, value] = line.match(/^(\w+)\s*=\s*(\S*)$/) ?? [];
-      if (!keys.includes(key) || !/^\d{2,5}$/.test(value ?? ''))
-        throw new Error(
-          `dev-ports: .ports.local line ${i + 1}: "${line}" is not KEY=PORT, KEY one of ${keys.join(', ')}`,
-        );
-      overrides[key] = value;
-    });
+  for (const key of Object.values(ENV_KEYS)) {
+    if (!values[key]) continue;
+    if (!/^\d{2,5}$/.test(values[key]))
+      throw new Error(`dev-ports: .env.local sets ${key}="${values[key]}", which is no port`);
+    overrides[key] = values[key];
+  }
   return overrides;
 }
 

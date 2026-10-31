@@ -273,22 +273,23 @@ describe('CLI modes', () => {
   });
 
   // Two primary checkouts on one machine (two projects made from the template) share the fixed
-  // ports: the second keeps its own in a gitignored file instead of every command's environment.
-  it('reads .ports.local at the checkout root; the environment wins, a bad line fails', () => {
+  // ports: the second keeps its own in its .env.local, which Nx also loads into every task (and
+  // infers the e2e targets again when it changes: e2e-wiring.test.mjs).
+  it('reads the port variables in .env.local at the checkout root; the environment wins, a bad port fails', () => {
     const cwd = tempDir();
     writeFileSync(
-      join(cwd, '.ports.local'),
-      '# 3000 and 5432 are taken\nWEB_PORT=3010\nDB_PORT = 5442\n',
+      join(cwd, '.env.local'),
+      '# 3000 and 5432 are taken\nWEB_PORT=3010\nDB_PORT = "5442"\nOTHER_SETTING=not-a-port\n',
     );
     expect(cli(['--get', 'web'], { cwd }).stdout).toBe('http://localhost:3010\n');
     expect(cli(['--get', 'db'], { cwd }).stdout).toBe('5442\n');
     expect(cli(['--get', 'web'], { cwd, env: { WEB_PORT: '3020' } }).stdout).toBe(
       'http://localhost:3020\n',
     );
-    writeFileSync(join(cwd, '.ports.local'), 'WEB_PROT=3010\n');
+    writeFileSync(join(cwd, '.env.local'), 'WEB_PORT=web\n');
     const bad = cli(['--get', 'web'], { cwd });
     expect(bad.status).toBe(1);
-    expect(bad.stderr).toContain('dev-ports: .ports.local line 1: "WEB_PROT=3010" is not KEY=PORT');
+    expect(bad.stderr).toContain('dev-ports: .env.local sets WEB_PORT="web", which is no port');
     expect(bad.stderr).not.toContain('    at ');
   });
 

@@ -18,8 +18,6 @@ tmp/
 .env
 .env.*
 !.env.example
-# this checkout's port overrides (tools/dev-ports.mjs)
-.ports.local
 
 # Agents: local-only files (plans, logs, spike notes, personal settings, worktrees)
 .agents/ignore/
