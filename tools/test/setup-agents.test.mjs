@@ -117,6 +117,10 @@ const READS = [
   'claude plugin marketplace list --json',
 ];
 const OFFICIAL = JSON.stringify([{ name: 'claude-plugins-official' }]);
+/** The fake `claude plugin list` output: `ids` installed for the user. */
+const plugins = (ids) => ({
+  FAKE_PLUGINS: JSON.stringify(ids.map((id) => ({ id, scope: 'user' }))),
+});
 
 describe('setup-agents', () => {
   it('installs every plugin the project enables, adding a marketplace this machine lacks', () => {
@@ -251,9 +255,6 @@ describe('setup-agents', () => {
   // proto shims node and pnpm but not npx, so a machine set up with the repo's .prototools can
   // lack it, and the Nx plugin's MCP server then fails to start.
   it('wants npx only when the project enables the Nx plugin', () => {
-    const plugins = (ids) => ({
-      FAKE_PLUGINS: JSON.stringify(ids.map((id) => ({ id, scope: 'user' }))),
-    });
     const all = ['typescript-lsp@claude-plugins-official', 'nx@nx-claude-plugins'];
     const fakes = ['claude', 'typescript-language-server', 'python3'];
     let res = setupAgents(machine({ fakes }), [], plugins(all));
