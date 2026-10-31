@@ -18,7 +18,9 @@ const glob = (pattern) =>
 /**
  * Whether one of `rules` matches a tool call, as Claude Code matches them: `*` anywhere in the
  * rule, and `Bash(x *)` also matches a bare `x`; ask and deny rules match past leading
- * `VAR=value` assignments, allow rules do not.
+ * `VAR=value` assignments, allow rules do not. A rule ending in `:*` is the legacy prefix form:
+ * the command or the command followed by a space, any other `*` in it read literally (so
+ * `Bash(git push * :*)` matches no real push; `:**` keeps the wildcard).
  */
 function matches(rules, call, { skipAssignments }) {
   const [, tool, command] = call.match(/^(\w+)(?:\((.*)\))?$/s) ?? [];
@@ -27,6 +29,10 @@ function matches(rules, call, { skipAssignments }) {
     const [, ruleTool, pattern] = rule.match(/^([\w*]+)(?:\((.*)\))?$/s) ?? [];
     if (!ruleTool || !glob(ruleTool).test(tool)) return false;
     if (pattern === undefined) return true;
+    const prefix = pattern.match(/^(.+):\*$/s)?.[1];
+    if (prefix !== undefined) {
+      return [command, bare].some((c) => c === prefix || c?.startsWith(`${prefix} `));
+    }
     return [command, bare].some(
       (c) =>
         c !== undefined &&
@@ -49,6 +55,9 @@ it('matches rules the way the docs describe', () => {
   expect(matches(['Bash(railway *)'], 'Bash(railwayx)', { skipAssignments: true })).toBe(false);
   expect(matches(['mcp__x_*'], 'mcp__x_y__z', { skipAssignments: true })).toBe(true);
   expect(matches(['mcp__x_*'], 'Bash(mcp__x_y)', { skipAssignments: true })).toBe(false);
+  expect(matches(['Bash(git log:*)'], 'Bash(git log -5)', { skipAssignments: true })).toBe(true);
+  expect(matches(['Bash(git push * :*)'], 'Bash(git push origin :x)', {})).toBe(false);
+  expect(matches(['Bash(git push * :**)'], 'Bash(git push origin :x)', {})).toBe(true);
 });
 
 // Every Railway command an agent could run asks first (docs/deployment-railway.md, "What an agent
@@ -141,6 +150,7 @@ describe('git push', () => {
     'Bash(git push origin -d m7/skills)',
     'Bash(git push -d origin m7/skills)',
     'Bash(git push origin :m7/skills)',
+    'Bash(git push origin :m7/skills --verbose)',
     'Bash(git push --prune origin refs/heads/*:refs/heads/*)',
     // these run a command of the caller's choosing (locally, for a path remote)
     'Bash(git push --receive-pack=./x.sh /tmp/repo m7/skills)',
