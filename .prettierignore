@@ -1,0 +1,5 @@
+# Read by oxfmt (its default ignore file, with .gitignore), so `pnpm format`, `pnpm check` and the
+# hooks skip these. Template-only: bootstrap removes it with the files it names.
+
+# release-please writes it, in its own Markdown (release-please-config.json)
+CHANGELOG.md

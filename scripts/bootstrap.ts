@@ -24,7 +24,11 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PLACEHOLDER_SCOPE = '@acme';
 const PLACEHOLDER_NAME = 'acme-app';
 
-/** Files that exist only to maintain the template itself. Missing ones are fine. */
+/**
+ * Files that exist only to maintain the template itself (docs/maintaining.md). Missing ones are
+ * fine. A project keeps the rest of the automation: CI, and Renovate's config with its regen
+ * workflow, which do nothing until it turns Renovate on.
+ */
 export const TEMPLATE_ONLY = [
   // the `scripts` Nx project that lints, typechecks and tests this script (bootstrap.ts and
   // bootstrap.mjs themselves are removed last, after everything succeeded)
@@ -41,11 +45,10 @@ export const TEMPLATE_ONLY = [
   // test plan too
   '.github/workflows/template-smoke.yml',
   '.github/workflows/release-please.yml',
-  '.github/workflows/agent-config-drift.yml',
-  '.github/workflows/renovate-regen.yml',
-  '.github/renovate.json5',
   'release-please-config.json',
   '.release-please-manifest.json',
+  // it keeps oxfmt off CHANGELOG.md, which release-please writes
+  '.prettierignore',
 ];
 
 export const USAGE = `Usage: node scripts/bootstrap.mjs [options]
@@ -69,7 +72,7 @@ Options:
       --no-install          skip pnpm install, regeneration and the git hooks (formatting too,
                             unless oxfmt is installed already)
       --no-browsers         skip the Playwright browser download
-      --no-commit           leave the changes uncommitted
+      --no-commit           leave the changes uncommitted (no git identity needed)
       --keep-script         keep scripts/bootstrap.* instead of deleting them at the end
   -h, --help                print this help`;
 
@@ -224,6 +227,23 @@ function tryGit(args: string[]): string | undefined {
 
 function hasCommand(cmd: string): boolean {
   return spawnSync(cmd, ['--version'], { stdio: 'ignore', shell: needsShell(cmd) }).status === 0;
+}
+
+/**
+ * Whether git can name a commit's author and committer: from its config, or GIT_AUTHOR_* /
+ * GIT_COMMITTER_* / EMAIL, as `git commit` would (`git var` fails where the commit would).
+ */
+function hasGitIdentity(): boolean {
+  return ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].every((v) => tryGit(['var', v]) !== undefined);
+}
+
+/**
+ * The commit a copy came from: template.json's `commit`, which `git archive` fills in (export-subst
+ * in .gitattributes: GitHub's tarballs, giget). Anything else (the placeholder itself, in a copy
+ * of the files) is unknown.
+ */
+export function templateCommit(value: unknown): string | null {
+  return typeof value === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(value) ? value : null;
 }
 
 /** `owner/repo` of a GitHub remote URL (https, ssh or scp-like), or undefined. */
@@ -410,6 +430,15 @@ export async function main() {
     );
   }
   if (opts.yes && (!opts.scope || !opts.name)) fail('--yes requires --scope and --name.');
+  // before anything changes: without an identity the last step, the commit, would fail
+  if (opts.commit && !opts.dryRun && !hasGitIdentity()) {
+    fail(
+      'git has no identity to commit with. Set one, then re-run:\n' +
+        '  git config --global user.name "Your Name"\n' +
+        '  git config --global user.email you@example.com\n' +
+        'or pass --no-commit and commit yourself.',
+    );
+  }
   console.log(`  Node ${process.versions.node}, root ${ROOT}`);
 
   // 2. Git ----------------------------------------------------------------------------
@@ -553,7 +582,8 @@ export async function main() {
   step('Provenance');
   const fresh = readJson('package.json');
   if (!fresh.template && template) {
-    fresh.template = { repo: template.repo, version: template.version, commit: template.commit };
+    const commit = templateCommit(template.commit);
+    fresh.template = { repo: template.repo, version: template.version, commit };
     fresh.version = '0.0.0';
     if (!opts.dryRun) {
       writeJson('package.json', fresh);
@@ -561,7 +591,7 @@ export async function main() {
       rewritten.add('package.json');
     }
     console.log(
-      `  recorded template ${template.repo}@${template.version} in package.json#template`,
+      `  recorded template ${template.repo}@${template.version} (commit ${commit ?? 'unknown'}) in package.json#template`,
     );
   } else {
     console.log('  already recorded');
@@ -601,23 +631,20 @@ export async function main() {
   // a failed commit leaves it in place to re-run.
   const self = ['scripts/bootstrap.ts', 'scripts/bootstrap.mjs'];
   if (opts.commit) {
+    // the preflight checked that git has an identity to commit with
     step('Commit');
-    const identity = tryGit(['config', 'user.email']);
-    if (!identity) console.log('  skipped: set git user.name/user.email, then commit yourself');
+    run('git', ['add', '-A']);
+    if (!opts.keepScript) run('git', ['rm', '-q', '--cached', '--ignore-unmatch', '--', ...self]);
+    // exits 0 when nothing is staged
+    if (tryGit(['diff', '--cached', '--quiet']) !== undefined) console.log('  nothing to commit');
     else {
-      run('git', ['add', '-A']);
-      if (!opts.keepScript) run('git', ['rm', '-q', '--cached', '--ignore-unmatch', '--', ...self]);
-      // exits 0 when nothing is staged
-      if (tryGit(['diff', '--cached', '--quiet']) !== undefined) console.log('  nothing to commit');
-      else {
-        // template.json is gone after an earlier run; package.json#template keeps the provenance.
-        const provenance = template ?? fresh.template;
-        const from = provenance?.repo ? `${provenance.repo}@${provenance.version}` : 'template';
-        run('git', ['commit', '-q', '-m', `chore: bootstrap from ${from}`], {
-          env: { LEFTHOOK: '0' },
-        });
-        console.log('  committed');
-      }
+      // template.json is gone after an earlier run; package.json#template keeps the provenance.
+      const provenance = template ?? fresh.template;
+      const from = provenance?.repo ? `${provenance.repo}@${provenance.version}` : 'template';
+      run('git', ['commit', '-q', '-m', `chore: bootstrap from ${from}`], {
+        env: { LEFTHOOK: '0' },
+      });
+      console.log('  committed');
     }
   }
   if (!opts.keepScript) {
@@ -638,6 +665,7 @@ Next steps:${
       : '\n  pnpm format                     once installed: format what bootstrap renamed (oxfmt was not installed yet)'
   }
   pnpm check                      the definition of done (lint, format, boundaries, types, tests, agent config)
+  pnpm dev                        web + API, reloading, on this checkout's Postgres (Docker)
   pnpm ports                      this checkout's ports and database URLs
   node tools/setup-agents.mjs     once per machine: the Claude Code plugins this repo enables, and what they need
   AGENTS.md                       how agents (and you) work in this repo (docs/agents.md for humans)

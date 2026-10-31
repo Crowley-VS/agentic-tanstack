@@ -5,7 +5,7 @@ writes each entry from the [Conventional Commits](https://www.conventionalcommit
 `main` (`feat:`, `fix:`, …) when its release pull request is merged: do not edit the entries by
 hand. What `main` has that no release has yet is listed in that open release pull request.
 
-## [Unreleased]
+## 0.0.0
 
-Nothing is released yet: 0.1.0 will be the first release. release-please adds each release above
-this heading; remove this section in the first release's pull request.
+Development before the first release (0.1.0); the history is in git. release-please adds each
+release above this heading, which stays as the baseline.
