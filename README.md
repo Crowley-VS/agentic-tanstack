@@ -5,7 +5,7 @@ work in reliably from the first clone: **Nx**, **TanStack Start**, a **GraphQL**
 Pothos), **Drizzle** and **Postgres 18** in Docker, one working reference feature, and an agent
 layer that holds every change to one definition of done.
 
-> Pre-release: no version is tagged yet; 0.1.0 will be the first. MIT licensed.
+> MIT licensed. Releases and what changed in each: [CHANGELOG.md](CHANGELOG.md).
 
 ## What it is
 
@@ -199,6 +199,12 @@ permission list: [docs/agents.md](docs/agents.md).
    `.railway/railway.ts` (Railway's TypeScript SDK, a beta: experimental) or set up in the
    dashboard by hand: [docs/deployment-railway.md](docs/deployment-railway.md). The images run on
    any platform that runs containers; logs, versions and shutdown: [docs/production.md](docs/production.md).
+3. **To try it first:**
+   [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/QpDtjR?referralCode=EtCzOy)
+   deploys this repository as it is, into your Railway account: the Notes board, which anyone can
+   write to (rate-limited; `READ_ONLY=true` stops writes) and has no auth. It runs this
+   repository's code, not yours: to change the code, **Eject** the services into your own GitHub
+   copy ([docs/deployment-railway.md](docs/deployment-railway.md#the-deploy-on-railway-button)).
 
 ## Docs
 
