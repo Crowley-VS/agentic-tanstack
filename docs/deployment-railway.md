@@ -190,14 +190,22 @@ Editor) before sharing it:
 - **A template has no shared variables**, so `${{shared.INTERNAL_API_SECRET}}` resolves to
   nothing: set api's `INTERNAL_API_SECRET` to `${{secret(64, "abcdef0123456789")}}` (a new secret
   for each deploy) and web's to `${{api.INTERNAL_API_SECRET}}`.
+- **Add `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=10` to api and web**, as the dashboard setup does.
+  The composer does not show the apps' draining time (`deploy.drainingSeconds`, 10 s), nor the
+  watch paths; a variable is the setting it shows and keeps.
 
 The composer's **Share** gives the link, `https://railway.com/deploy/<code>`, which works without
-publishing the template to Railway's marketplace; the README's button links it. A button deploy
-runs the upstream repository; to change the code, **Eject** the services (Settings, Source) into
-your own GitHub copy. The template does not follow later changes to `.railway/railway.ts`:
-re-generate it when they matter. The composer does not show the watch paths or the draining time:
-check a button deploy once after each re-generation, that its services kept them and the pre-deploy
-command.
+publishing the template to Railway's marketplace; link it from the repository's README with
+`[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/<code>)`. The
+template does not follow later changes to `.railway/railway.ts`: re-generate it when they matter,
+and check a button deploy once after each re-generation, that its services kept the watch paths,
+the draining time and the pre-deploy command.
+
+A button deploy runs the code of the repository the template was generated from. To change it,
+**Eject** the services (Settings, Source) into your own GitHub copy. That copy is the template as
+is: bootstrap it (README, Quickstart) so `.railway/railway.ts` names your repository, and add the
+shared variable `INTERNAL_API_SECRET` (Set it up, above) before any `railway config apply`, which
+points both services at it.
 
 ## Check a deploy
 
