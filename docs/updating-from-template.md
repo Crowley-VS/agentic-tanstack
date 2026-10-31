@@ -71,9 +71,7 @@ upstream() {
     ':(exclude)template.json' ':(exclude)scripts' ':(exclude)CHANGELOG.md' \
     ':(exclude)CODE_OF_CONDUCT.md' ':(exclude)CONTRIBUTING.md' ':(exclude)SECURITY.md' \
     ':(exclude).github/ISSUE_TEMPLATE' ':(exclude).github/workflows/template-smoke.yml' \
-    ':(exclude).github/workflows/release-please.yml' \
-    ':(exclude).github/workflows/agent-config-drift.yml' \
-    ':(exclude).github/workflows/renovate-regen.yml' ':(exclude).github/renovate.json5' \
+    ':(exclude).github/workflows/release-please.yml' ':(exclude).prettierignore' \
     ':(exclude)release-please-config.json' ':(exclude).release-please-manifest.json'
 }
 rescope() { sed -e 's#@acme[/]#@my-org/#g' -e 's#acme[-]app#my-app#g'; }

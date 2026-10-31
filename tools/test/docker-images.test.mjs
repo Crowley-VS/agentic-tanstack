@@ -43,7 +43,8 @@ function envNames(stage) {
 
 /**
  * .dockerignore's rules, in order: Docker's pattern syntax as this file uses it (`**` any number of
- * directories, `*` and `?` within one, a leading `!` re-includes).
+ * directories, `*` and `?` within one, a leading `!` re-includes, and a leading or trailing `/`
+ * dropped, as Docker cleans each pattern).
  */
 function dockerignoreRules(text) {
   return text
@@ -52,7 +53,7 @@ function dockerignoreRules(text) {
     .filter((line) => line && !line.startsWith('#'))
     .map((line) => {
       const negate = line.startsWith('!');
-      const pattern = (negate ? line.slice(1) : line).replace(/^\/+/, '');
+      const pattern = (negate ? line.slice(1) : line).replace(/^\/+/, '').replace(/\/+$/, '');
       let source = '';
       for (let i = 0; i < pattern.length; i++) {
         const c = pattern[i];
@@ -206,6 +207,12 @@ describe('production images', () => {
     const rules = dockerignoreRules(read('.dockerignore'));
     expect(ignored('.agents/generated.json', rules)).toBe(false);
     expect(ignored('.agents/skills/review-loop/SKILL.md', rules)).toBe(true);
+    // what `pnpm pw:agents` writes on one machine (gitignored): no build reads it, and in the
+    // context it would rebuild the layers that copy the sources
+    for (const path of ['.mcp.json', 'specs/notes.plan.json', 'specs'])
+      expect(ignored(path, rules), path).toBe(true);
+    const gitignore = read('.gitignore').split(/\r?\n/);
+    expect(gitignore).toEqual(expect.arrayContaining(['/specs/', '/.mcp.json']));
   });
 
   it("keeps every file the frozen install reads: each workspace package's package.json", () => {
@@ -238,6 +245,9 @@ describe('production images', () => {
     expect(ignored('.agents/skills/a/SKILL.json', rules)).toBe(true);
     expect(ignored('apps/docs/package.json', rules)).toBe(false); // `docs` is the root's only
     expect(ignored('.railway/package.json', dockerignoreRules('.r*\n'))).toBe(true);
+    // a leading or trailing slash changes nothing
+    for (const text of ['/specs/\n', 'specs/\n', '/specs\n'])
+      expect(ignored('specs/a.md', dockerignoreRules(text)), text).toBe(true);
   });
 });
 
@@ -269,6 +279,7 @@ describe('the local stack (docker-compose.stack.yml)', () => {
       expect.arrayContaining([
         '{workspaceRoot}/**/Dockerfile',
         '{workspaceRoot}/.dockerignore',
+        '{workspaceRoot}/.gitignore',
         '{workspaceRoot}/docker-compose*.yml',
         '{workspaceRoot}/.github/workflows/*.yml',
       ]),

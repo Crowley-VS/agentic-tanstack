@@ -114,7 +114,8 @@ function lintLoose() {
 }
 
 /**
- * oxfmt --check on the whole repository: every file type oxfmt formats, minus .gitignore and the
+ * oxfmt --check on the whole repository: every file type oxfmt formats, minus what oxfmt ignores:
+ * .gitignore, .prettierignore (template-only: CHANGELOG.md, which release-please writes) and the
  * ignorePatterns of .oxfmtrc.json (generated files are rendered into them). Returns the exit code.
  */
 export function formatCheck(

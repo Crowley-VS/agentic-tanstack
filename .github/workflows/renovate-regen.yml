@@ -1,0 +1,157 @@
+# Renovate updates dependencies, not what they generate: a new GraphQL Codegen, TanStack Router or
+# drizzle-kit can change the committed generated files, and CI's drift gate then fails the PR. On
+# every push to a Renovate branch this runs `pnpm regen` and pushes the regenerated files back to
+# the branch, as a commit of its own, so CI runs again on the result.
+#
+# Off until the repository has a GitHub App for it (the variable AUTOMATION_APP_CLIENT_ID and the
+# secret AUTOMATION_APP_PRIVATE_KEY): a push with GITHUB_TOKEN would start no CI. One-time setup,
+# and why it is built this way: docs/maintaining.md. Projects made from the template keep it, for
+# when they turn Renovate on.
+#
+# Never on a fork's pull request: `push` runs for branches of this repository only (Renovate's), and
+# never `pull_request_target`, which would give a fork's code this repository's secrets. Even so,
+# the update is untrusted code: the job that runs it (`regen`) holds no secret and only a read-only
+# token. It hands over a patch. The job that can push (`push`) runs nothing from the update and
+# restores no cache (a job that runs the update can write one), and pushes the patch only if it
+# changes nothing but what `pnpm regen` writes: the generated files of .agents/generated.json, and
+# the vendor pins and license files `vendor-skills update` writes (tools/renovate-regen.mjs).
+# Every action is pinned to a commit: a tag can move.
+name: renovate-regen
+
+on:
+  push:
+    branches: ['renovate/**']
+
+permissions: {}
+
+# A newer push to the branch supersedes this run. This workflow's own push gets a group of its own
+# (its jobs skip it): in the shared one it would cancel the run that made it, still in its last steps.
+concurrency:
+  group: renovate-regen-${{ github.ref }}${{ github.event.head_commit.author.email == '41898282+github-actions[bot]@users.noreply.github.com' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: true
+
+env:
+  CI: 'true'
+  NX_NO_CLOUD: 'true'
+  NX_TUI: 'false'
+  # the author of the regen commits: .github/renovate.json5 lists it in gitIgnoredAuthors, so
+  # Renovate keeps rebasing and updating the branch
+  REGEN_AUTHOR_NAME: 'github-actions[bot]'
+  REGEN_AUTHOR_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com'
+
+jobs:
+  regen:
+    name: pnpm regen
+    # set up (the App's client ID), not a branch deletion, and not this workflow's own commit
+    if: >-
+      vars.AUTOMATION_APP_CLIENT_ID != '' && !github.event.deleted &&
+      github.event.head_commit.author.email != '41898282+github-actions[bot]@users.noreply.github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.patch.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No cache: this job runs the update, so it saves no toolchain for a later job to restore.
+      - uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0.6.4
+        with:
+          auto-install: true
+          cache: false
+
+      - name: Locate pnpm store
+        id: pnpm-store
+        run: echo "path=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      # restore only: what CI on main saved
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm regen
+
+      - name: The regenerated files, as a patch
+        id: patch
+        run: |
+          git add --all
+          git diff --cached --stat
+          git diff --cached --binary --no-renames > "$RUNNER_TEMP/regen.patch"
+          if [ -s "$RUNNER_TEMP/regen.patch" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::pnpm regen changed nothing"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.patch.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: regen-patch
+          path: ${{ runner.temp }}/regen.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    name: push the regenerated files
+    needs: regen
+    if: needs.regen.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # the commit the patch was made on: a push fails if the branch moved since
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Node for the check below, at .node-version, from Node's releases and never from a cache: a
+      # job that runs the update can write the branch's caches (setup-toolchain's ~/.proto among
+      # them). No install: the check imports Node's built-in modules and the commit's own files.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: regen-patch
+          path: ${{ runner.temp }}/regen
+
+      # In the index only: the working tree, from which the check runs, stays the commit's own.
+      - name: Stage the patch, if it changes only what pnpm regen writes
+        run: |
+          git apply --cached "$RUNNER_TEMP/regen/regen.patch"
+          node tools/renovate-regen.mjs check
+
+      - name: Commit
+        run: |
+          git -c user.name="$REGEN_AUTHOR_NAME" -c user.email="$REGEN_AUTHOR_EMAIL" \
+            commit --quiet --message 'chore(deps): regenerate the generated files (pnpm regen)'
+          git show --stat --format='%h %s' HEAD
+
+      # Minted only now, for this repository and contents: write alone; revoked when the job ends.
+      - name: Token of the automation App
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      # Not forced: if Renovate pushed again meanwhile, this fails and the newer run regenerates.
+      - name: Push
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          gh auth setup-git
+          git push origin "HEAD:refs/heads/$BRANCH"

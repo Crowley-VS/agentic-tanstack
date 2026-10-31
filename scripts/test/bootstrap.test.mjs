@@ -21,15 +21,26 @@ import {
   oxfmtEntry,
   sortedPackageJson,
   TEMPLATE_ONLY,
+  templateCommit,
   USAGE,
   withoutScriptsRules,
 } from '../bootstrap.ts';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const PROJECT = ['--yes', '--scope', '@smoke', '--name', 'smoke-app'];
+/** A git identity from the environment, as a CI runner without one configured would set it. */
+const IDENTITY_ENV = {
+  GIT_AUTHOR_NAME: 'Smoke',
+  GIT_AUTHOR_EMAIL: 'smoke@example.com',
+  GIT_COMMITTER_NAME: 'Smoke',
+  GIT_COMMITTER_EMAIL: 'smoke@example.com',
+};
 
-/** A tarball-style copy of the working tree: every git-visible file, no .git (like giget). */
-function archiveCopy() {
+/**
+ * A copy of the working tree's files: every git-visible file, no .git. Unlike a real tarball (`git
+ * archive`, GitHub's, giget), it applies no export-subst: template.json keeps its placeholder.
+ */
+function fileCopy() {
   const dest = mkdtempSync(join(tmpdir(), 'bootstrap-copy-'));
   onTestFinished(() => rmSync(dest, { recursive: true, force: true }));
   const files = execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], {
@@ -72,7 +83,7 @@ function snapshot(root, dir = root, out = {}) {
 const renamedCount = (out) => Number(out.match(/→ smoke-app \((\d+) files\)/)?.[1]);
 /** A dry run in a copy whose git origin is `url`. */
 function withOrigin(url) {
-  const copy = archiveCopy();
+  const copy = fileCopy();
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: copy });
   execFileSync('git', ['remote', 'add', 'origin', url], { cwd: copy });
   return bootstrap(copy, [...PROJECT, '--dry-run']);
@@ -81,7 +92,7 @@ function withOrigin(url) {
 const gitIn = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 /** A "Use this template" copy: every file in one initial commit, with a git identity. */
 function templateCopy() {
-  const copy = archiveCopy();
+  const copy = fileCopy();
   gitIn(copy, 'init', '-q', '-b', 'main');
   gitIn(copy, 'config', 'user.email', 'smoke@example.com');
   gitIn(copy, 'config', 'user.name', 'Smoke');
@@ -137,8 +148,8 @@ const railwayRepo = (root) =>
   readFileSync(join(root, '.railway/railway.ts'), 'utf8').match(/^const REPO = '(.*)';$/m)?.[1];
 
 describe('bootstrap', () => {
-  it('turns a tarball copy into a project with no template leftovers', () => {
-    const copy = withOxfmt(archiveCopy());
+  it('turns a copy of the files into a project with no template leftovers', () => {
+    const copy = withOxfmt(fileCopy());
     const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit']);
     expect(res.code, res.out).toBe(0);
 
@@ -147,8 +158,28 @@ describe('bootstrap', () => {
       return text.includes('@acme/') || text.includes('acme-app');
     });
     expect(leftovers).toEqual([]);
-    for (const gone of ['scripts', 'template.json', '.github/workflows/template-smoke.yml'])
+    // the template's own maintenance goes (docs/maintaining.md)...
+    for (const gone of [
+      'scripts',
+      'template.json',
+      '.github/workflows/template-smoke.yml',
+      '.github/workflows/release-please.yml',
+      'release-please-config.json',
+      '.release-please-manifest.json',
+      '.prettierignore',
+    ])
       expect(existsSync(join(copy, gone)), gone).toBe(false);
+    // ...what a project uses stays: CI, and Renovate's config and regen workflow (off until it
+    // installs Renovate and sets up an App), with its tests and docs
+    for (const kept of [
+      '.github/workflows/ci.yml',
+      '.github/renovate.json5',
+      '.github/workflows/renovate-regen.yml',
+      'tools/renovate-regen.mjs',
+      'tools/test/renovate.test.mjs',
+      'docs/maintaining.md',
+    ])
+      expect(existsSync(join(copy, kept)), kept).toBe(true);
     // the template's public files go; its pull request template stays (AGENTS.md asks every PR
     // for a summary and a test plan, in projects too)
     for (const gone of [
@@ -190,6 +221,8 @@ describe('bootstrap', () => {
     const pkg = JSON.parse(readFileSync(join(copy, 'package.json'), 'utf8'));
     expect(pkg.name).toBe('@smoke/source');
     expect(pkg.template.repo).toBeTruthy();
+    // a copy of the files, not an archive: the commit it came from is unknown
+    expect(pkg.template.commit).toBeNull();
 
     // .env: a copy of .env.example with a fresh random secret (never the placeholder)
     expect(secret(copy)).toMatch(/^[0-9a-f]{64}$/);
@@ -197,7 +230,7 @@ describe('bootstrap', () => {
     expect(readFileSync(join(copy, '.env'), 'utf8')).toBe(
       example.replace(/^INTERNAL_API_SECRET=.*$/m, `INTERNAL_API_SECRET=${secret(copy)}`),
     );
-    const other = archiveCopy();
+    const other = fileCopy();
     expect(bootstrap(other, [...PROJECT, '--no-install', '--no-commit']).code).toBe(0);
     expect(secret(other)).not.toBe(secret(copy));
 
@@ -205,7 +238,7 @@ describe('bootstrap', () => {
     expect(readFileSync(join(copy, 'LICENSE'), 'utf8')).toContain(
       `\nCopyright (c) ${new Date().getFullYear()} the project authors\n`,
     );
-    const authored = archiveCopy();
+    const authored = fileCopy();
     const res2 = bootstrap(authored, [
       ...PROJECT,
       '--no-install',
@@ -227,7 +260,7 @@ describe('bootstrap', () => {
         .replaceAll('@acme/', `${SCOPE}/`)
         .replaceAll('acme-app', 'smoke-app');
 
-    const copy = withOxfmt(plantLineAtTheLimit(archiveCopy()));
+    const copy = withOxfmt(plantLineAtTheLimit(fileCopy()));
     const res = bootstrap(copy, LONG);
     expect(res.code, res.out).toBe(0);
     expect(res.out).toMatch(/formatted the \d+ rewritten files/);
@@ -246,7 +279,7 @@ describe('bootstrap', () => {
 
     // before its install a copy has no oxfmt: bootstrap says so, the next steps name
     // `pnpm format`, and the rename alone pushed the planted line over the limit
-    const bare = plantLineAtTheLimit(archiveCopy());
+    const bare = plantLineAtTheLimit(fileCopy());
     const skipped = bootstrap(bare, LONG);
     expect(skipped.code, skipped.out).toBe(0);
     expect(skipped.out).toContain('run `pnpm format` after `pnpm install`');
@@ -268,7 +301,7 @@ describe('bootstrap', () => {
 
     /** A copy whose git origin is a fork of the template on GitHub. */
     const cloned = () => {
-      const copy = archiveCopy();
+      const copy = fileCopy();
       gitIn(copy, 'init', '-q', '-b', 'main');
       gitIn(copy, 'remote', 'add', 'origin', 'git@github.com:origin-owner/origin-repo.git');
       return copy;
@@ -281,13 +314,13 @@ describe('bootstrap', () => {
         from: '--repo',
       },
       {
-        copy: archiveCopy(),
+        copy: fileCopy(),
         args: ['--repo', 'https://github.com/url-owner/url-repo.git'],
         repo: 'url-owner/url-repo',
         from: '--repo',
       },
       { copy: cloned(), args: [], repo: 'origin-owner/origin-repo', from: 'the origin remote' },
-      { copy: archiveCopy(), args: [], repo: 'smoke/smoke-app', from: 'a guess' },
+      { copy: fileCopy(), args: [], repo: 'smoke/smoke-app', from: 'a guess' },
     ]) {
       const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit', ...args]);
       expect(res.code, res.out).toBe(0);
@@ -305,7 +338,7 @@ describe('bootstrap', () => {
 
   it('refuses a --repo that is not owner/repo: it is written into railway.ts as a string', () => {
     for (const repo of ["it's/bad", 'no-slash', 'https://gitlab.com/a/b']) {
-      const copy = archiveCopy();
+      const copy = fileCopy();
       const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit', '--repo', repo]);
       expect(res.code, repo).toBe(1);
       expect(res.out, repo).toContain('is not a GitHub repository');
@@ -335,7 +368,7 @@ describe('bootstrap', () => {
   });
 
   it('only suggests next steps that exist', () => {
-    const copy = archiveCopy();
+    const copy = fileCopy();
     const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit']);
     expect(res.code, res.out).toBe(0);
     const steps = res.out
@@ -353,15 +386,15 @@ describe('bootstrap', () => {
     }
   });
 
-  it('--dry-run on a tarball copy previews the files a real run renames, and writes nothing', () => {
-    const dry = archiveCopy();
+  it('--dry-run on a copy of the files previews the files a real run renames, and writes nothing', () => {
+    const dry = fileCopy();
     const before = snapshot(dry);
     const preview = bootstrap(dry, [...PROJECT, '--dry-run']);
     expect(preview.code, preview.out).toBe(0);
     expect(snapshot(dry)).toEqual(before);
     expect(existsSync(join(dry, '.git'))).toBe(false);
 
-    const real = bootstrap(archiveCopy(), [...PROJECT, '--no-install', '--no-commit']);
+    const real = bootstrap(fileCopy(), [...PROJECT, '--no-install', '--no-commit']);
     expect(real.code, real.out).toBe(0);
     expect(renamedCount(real.out)).toBeGreaterThan(0);
     expect(renamedCount(preview.out)).toBe(renamedCount(real.out));
@@ -370,13 +403,19 @@ describe('bootstrap', () => {
   it.skipIf(process.platform === 'win32')(
     'a re-run after a failed install reports the chosen name, formats and commits the provenance',
     () => {
-      const copy = plantLineAtTheLimit(archiveCopy());
+      const copy = plantLineAtTheLimit(fileCopy());
       // A pnpm whose `install` fails (the first run stops there, after renaming everything).
       const bin = mkdtempSync(join(tmpdir(), 'bootstrap-bin-'));
       onTestFinished(() => rmSync(bin, { recursive: true, force: true }));
       writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\n[ "$1" = install ] && exit 1\nexit 0\n');
       chmodSync(join(bin, 'pnpm'), 0o755);
-      const env = { ...process.env, CI: 'true', PATH: `${bin}${delimiter}${process.env.PATH}` };
+      // an identity to commit with: the preflight checks it before anything changes
+      const env = {
+        ...process.env,
+        ...IDENTITY_ENV,
+        CI: 'true',
+        PATH: `${bin}${delimiter}${process.env.PATH}`,
+      };
 
       const first = bootstrap(copy, PROJECT, env);
       expect(first.code, first.out).toBe(1);
@@ -409,12 +448,12 @@ describe('bootstrap', () => {
     const source = readFileSync(join(REPO, 'scripts/bootstrap.ts'), 'utf8');
     const options = [...source.matchAll(/^\s*case '(-[-\w]+)':/gm)].map((m) => m[1]);
     expect(options).toEqual(expect.arrayContaining(['--yes', '--dry-run', '--keep-script', '-h']));
-    const help = bootstrap(archiveCopy(), ['--help']);
+    const help = bootstrap(fileCopy(), ['--help']);
     expect(help.code).toBe(0);
     expect(help.out.trim()).toBe(USAGE);
     for (const option of options)
       expect(help.out, option).toMatch(new RegExp(`(^|[\\s,])${option}\\b`));
-    const unknown = bootstrap(archiveCopy(), ['--frobnicate']);
+    const unknown = bootstrap(fileCopy(), ['--frobnicate']);
     expect(unknown.code).toBe(1);
     expect(unknown.out).toContain('unknown option --frobnicate');
     expect(unknown.out).toContain(USAGE);
@@ -505,8 +544,8 @@ describe('bootstrap', () => {
   it.skipIf(process.platform === 'win32')(
     'formats and commits the rename after its install, and leaves no Nx daemon behind: the first Nx task after a local (non-CI) bootstrap passes',
     () => {
-      // a tarball copy with a fresh repository, as in the report this reproduces
-      const copy = plantLineAtTheLimit(archiveCopy());
+      // a copy of the files with a fresh repository, as in the report this reproduces
+      const copy = plantLineAtTheLimit(fileCopy());
       gitIn(copy, 'init', '-q', '-b', 'main');
       gitIn(copy, 'config', 'user.email', 'smoke@example.com');
       gitIn(copy, 'config', 'user.name', 'Smoke');
@@ -552,9 +591,82 @@ describe('bootstrap', () => {
   );
 
   it('fails with a readable error instead of prompting when stdin is not a terminal', () => {
-    const res = bootstrap(archiveCopy(), ['--dry-run']);
+    const res = bootstrap(fileCopy(), ['--dry-run']);
     expect(res.code).toBe(1);
     expect(res.out).toContain('stdin is not a terminal');
     expect(res.out).not.toContain('unsettled top-level await');
+  });
+
+  it('stops before changing anything when git has no identity to commit with', () => {
+    // none in the environment, and git may not guess one (the global config is already /dev/null)
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([k]) => !/^GIT_(?:AUTHOR|COMMITTER)_|^EMAIL$/.test(k)),
+    );
+    Object.assign(env, {
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'user.useConfigOnly',
+      GIT_CONFIG_VALUE_0: 'true',
+    });
+    const copy = fileCopy();
+    const before = snapshot(copy);
+    const res = bootstrap(copy, [...PROJECT, '--no-install'], env);
+    expect(res.code, res.out).toBe(1);
+    expect(res.out).toContain('git has no identity to commit with');
+    expect(res.out).toContain('git config --global user.email');
+    expect(snapshot(copy)).toEqual(before);
+    expect(existsSync(join(copy, '.git'))).toBe(false);
+
+    // --no-commit needs none; an identity from the environment is one
+    const uncommitted = bootstrap(fileCopy(), [...PROJECT, '--no-install', '--no-commit'], env);
+    expect(uncommitted.code, uncommitted.out).toBe(0);
+    const fromEnv = fileCopy();
+    const committed = bootstrap(fromEnv, [...PROJECT, '--no-install'], { ...env, ...IDENTITY_ENV });
+    expect(committed.code, committed.out).toBe(0);
+    expect(gitIn(fromEnv, 'log', '-1', '--format=%an <%ae>')).toBe('Smoke <smoke@example.com>');
+  });
+
+  it('records the commit an archive came from (git archive fills it in), null for a file copy', () => {
+    expect(templateCommit('$Format:%H$')).toBeNull();
+    expect(templateCommit(null)).toBeNull();
+    expect(templateCommit('abc123')).toBeNull();
+    for (const sha of ['a1'.repeat(20), 'b2'.repeat(32)]) expect(templateCommit(sha)).toBe(sha);
+
+    // the tarball GitHub (and giget) serve: `git archive` of a commit
+    const source = templateCopy();
+    const sha = gitIn(source, 'rev-parse', 'HEAD');
+    const tarball = join(mkdtempSync(join(tmpdir(), 'bootstrap-tar-')), 'copy.tar');
+    onTestFinished(() => rmSync(dirname(tarball), { recursive: true, force: true }));
+    gitIn(source, 'archive', '--format=tar', '-o', tarball, 'HEAD');
+    const copy = mkdtempSync(join(tmpdir(), 'bootstrap-archive-'));
+    onTestFinished(() => rmSync(copy, { recursive: true, force: true }));
+    execFileSync('tar', ['-xf', tarball, '-C', copy]);
+    expect(JSON.parse(readFileSync(join(copy, 'template.json'), 'utf8')).commit).toBe(sha);
+
+    const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit']);
+    expect(res.code, res.out).toBe(0);
+    expect(res.out).toContain(`(commit ${sha})`);
+    const { repo, version } = JSON.parse(readFileSync(join(REPO, 'template.json'), 'utf8'));
+    expect(JSON.parse(readFileSync(join(copy, 'package.json'), 'utf8')).template).toEqual({
+      repo,
+      version,
+      commit: sha,
+    });
+  });
+
+  it('removes exactly the workflows that run only in the template (TEMPLATE_MAINTENANCE)', () => {
+    const dir = join(REPO, '.github/workflows');
+    const workflows = readdirSync(dir).filter((f) => /\.ya?ml$/.test(f));
+    expect(workflows).toEqual(expect.arrayContaining(['ci.yml', 'template-smoke.yml']));
+    for (const file of workflows) {
+      const text = readFileSync(join(dir, file), 'utf8');
+      const jobs = [...text.slice(text.indexOf('\njobs:\n')).matchAll(/^ {2}[\w-]+:$/gm)];
+      const gates = [...text.matchAll(/^ {4}if: vars\.TEMPLATE_MAINTENANCE == 'true'$/gm)];
+      const templateOnly = TEMPLATE_ONLY.includes(`.github/workflows/${file}`);
+      // every job of a template-only workflow is gated (a copy made before bootstrap ran, or
+      // with --keep-script, must not run them), and no other workflow's job is
+      expect(gates.length, file).toBe(templateOnly ? jobs.length : 0);
+    }
+    for (const file of TEMPLATE_ONLY.filter((f) => f.startsWith('.github/workflows/')))
+      expect(existsSync(join(REPO, file)), file).toBe(true);
   });
 });

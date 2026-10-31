@@ -16,3 +16,8 @@ apps/web/src/routeTree.gen.ts linguist-generated=true
 
 # Generated, but not a regenerable artifact of .agents/generated.json.
 pnpm-lock.yaml linguist-generated=true
+
+# `git archive` (GitHub's tarballs, giget) writes the commit into template.json's "commit"
+# ($Format:%H$), and bootstrap records it: where a copy came from. A project made from the
+# template has no template.json (bootstrap removes it), so there this line does nothing.
+template.json export-subst

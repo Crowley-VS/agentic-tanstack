@@ -110,8 +110,9 @@ check suites of other GitHub apps on the account (another host's, say) may stay 
 hold a deploy. A failed run skips the deploy (`SKIPPED` in `railway deployment list -s <service>`;
 `railway status --json` shows it as failed); a passing one releases a waiting deploy within
 seconds. In the upstream template repository (`TEMPLATE_MAINTENANCE` set) CI includes the template
-smoke test, up to 40 minutes. `railway redeploy -s <service> --from-source` deploys the branch's
-latest commit; `railway redeploy -s <service> --yes` redeploys the deployment that runs.
+smoke test, up to 40 minutes, and release-please (`docs/maintaining.md`).
+`railway redeploy -s <service> --from-source` deploys the branch's latest commit;
+`railway redeploy -s <service> --yes` redeploys the deployment that runs.
 
 A push redeploys a service only when it changes one of its watch paths: its app, the workspace
 packages its image bundles, and the files every install reads (`railway.ts` lists them; its test

@@ -33,6 +33,9 @@ apps/api/migrations
 .playwright-cli
 docs
 **/*.md
+# `pnpm pw:agents` (opt-in, per machine): the planner's test plans and the .mcp.json it writes
+/specs/
+/.mcp.json
 
 # The image definitions: editing one must not invalidate the copied sources.
 **/Dockerfile

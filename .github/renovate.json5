@@ -1,0 +1,129 @@
+// Renovate: weekly dependency update PRs, held to the versions this stack supports. Inert until
+// the Renovate GitHub App is installed on the repository. What each rule is for, the regen commit
+// on its branches (.github/workflows/renovate-regen.yml) and how to turn it on: docs/maintaining.md.
+// Validate a change with `pnpm dlx --package renovate renovate-config-validator --strict`.
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: ['config:recommended', ':semanticCommits', 'schedule:weekly'],
+  // A release must be this old before Renovate proposes it (pnpm refuses one under a day old:
+  // minimumReleaseAge in pnpm-workspace.yaml).
+  minimumReleaseAge: '3 days',
+  // The renovate-regen workflow commits the regenerated files on Renovate's branches as this
+  // author: such a branch is still Renovate's to rebase and update.
+  gitIgnoredAuthors: ['41898282+github-actions[bot]@users.noreply.github.com'],
+  customManagers: [
+    {
+      // package.json#packageManager and .prototools need none: the npm and proto managers read them
+      customType: 'regex',
+      description: 'The pnpm the Dockerfiles install (`npm install --global pnpm@<version>`)',
+      // the Dockerfiles Renovate's dockerfile manager reads (its default patterns)
+      managerFilePatterns: [
+        '/(^|/|\\.)([Dd]ocker|[Cc]ontainer)file$/',
+        '/(^|/)([Dd]ocker|[Cc]ontainer)file[^/]*$/',
+      ],
+      matchStrings: ['\\bpnpm@(?<currentValue>\\d+\\.\\d+\\.\\d+)\\b'],
+      depNameTemplate: 'pnpm',
+      datasourceTemplate: 'npm',
+    },
+  ],
+  packageRules: [
+    {
+      description: 'Nx and its plugins: `nx migrate` (skill nx-upgrade), never a bare version bump, which skips the migrations a release ships',
+      matchDatasources: ['npm'],
+      matchPackageNames: ['nx', '@nx/*'],
+      enabled: false,
+    },
+    {
+      description: 'graphql 16: Pothos and Yoga are built for it (pnpm-workspace.yaml overrides every copy)',
+      matchPackageNames: ['graphql'],
+      allowedVersions: '<17',
+    },
+    {
+      description: 'TypeScript 6.0: a minor release changes what type-checks; move to 6.1 or 7 on purpose',
+      matchPackageNames: ['typescript'],
+      allowedVersions: '<6.1',
+    },
+    {
+      description: 'Vitest 4, with the companions that pin its exact version (tools/check-versions.mjs)',
+      matchPackageNames: ['vitest', '@vitest/*'],
+      allowedVersions: '<5',
+      groupName: 'Vitest',
+    },
+    {
+      description: 'pnpm 11 at every pin: package.json#packageManager, .prototools, the Dockerfiles (tools/check-versions.mjs)',
+      matchPackageNames: ['pnpm'],
+      allowedVersions: '<12',
+      groupName: 'pnpm',
+    },
+    {
+      // Odd majors never become LTS; Renovate's node versioning also waits for an even one's LTS date.
+      description: 'Node.js LTS lines only, at every pin: .node-version, .prototools, the node images of the Dockerfiles (tools/check-versions.mjs)',
+      matchPackageNames: ['node'],
+      allowedVersions: '/^v?\\d*[02468]\\./',
+      groupName: 'Node',
+    },
+    {
+      description: "@types/node with Node; its major follows the runtime's (.node-version): bump it with a Node major, by hand",
+      matchPackageNames: ['@types/node'],
+      groupName: 'Node',
+    },
+    {
+      matchPackageNames: ['@types/node'],
+      matchUpdateTypes: ['major'],
+      enabled: false,
+    },
+    {
+      description: 'Postgres 18: the major of the production database (Railway); a new major is a database upgrade, made on purpose',
+      matchDatasources: ['docker'],
+      matchPackageNames: ['postgres'],
+      allowedVersions: '<19',
+    },
+    {
+      description: 'The node and postgres images by digest (Dockerfiles, docker-compose files): a tag can move, a digest cannot',
+      matchDatasources: ['docker'],
+      matchPackageNames: ['node', 'postgres'],
+      pinDigests: true,
+    },
+    {
+      description: 'oxc: oxlint, its type-aware companion and oxfmt (a new oxfmt can reformat: `pnpm format` on the branch)',
+      matchPackageNames: ['oxlint', 'oxlint-tsgolint', 'oxfmt'],
+      groupName: 'oxc',
+    },
+    {
+      description: 'Playwright: @playwright/test brings its own playwright, at the same exact version (tools/check-versions.mjs)',
+      matchPackageNames: ['@playwright/test', 'playwright'],
+      groupName: 'Playwright',
+    },
+    {
+      description: 'Tailwind: @tailwindcss/vite depends on its exact tailwindcss (tools/check-versions.mjs)',
+      matchPackageNames: ['tailwindcss', '@tailwindcss/*'],
+      groupName: 'Tailwind',
+    },
+    {
+      description: 'TanStack Start pins its Router exactly, and the SSR query integration is from the same release train (pnpm-workspace.yaml)',
+      matchPackageNames: [
+        '@tanstack/react-start',
+        '@tanstack/react-router',
+        '@tanstack/react-router-ssr-query',
+      ],
+      groupName: 'TanStack Start',
+    },
+    {
+      description: 'Drizzle 1.0 release candidates: follow the rc tag (latest is still 0.x, and the other prereleases are branch builds)',
+      matchPackageNames: ['drizzle-orm', 'drizzle-kit'],
+      followTag: 'rc',
+    },
+    {
+      description: 'Drizzle with the Pothos plugin built against it; a prerelease group, never automerged',
+      matchPackageNames: ['drizzle-orm', 'drizzle-kit', '@pothos/plugin-drizzle'],
+      groupName: 'Drizzle',
+      automerge: false,
+    },
+    {
+      description: 'Nitro 3 is published only as betas, tagged latest: follow the tag; a prerelease, never automerged',
+      matchPackageNames: ['nitro'],
+      followTag: 'latest',
+      automerge: false,
+    },
+  ],
+}
