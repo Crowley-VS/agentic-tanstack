@@ -180,13 +180,13 @@ A Railway template lives on Railway, not in this repository: the maintainer appl
 `.railway/railway.ts` to a reference project and runs **Project Settings → Generate Template from
 Project**. Generation keeps the references (`${{Postgres.DATABASE_URL}}`,
 `${{api.RAILWAY_PRIVATE_DOMAIN}}`, …), the pre-deploy command, the health checks and web's public
-port, but not the build settings or every value. Fix these in the template composer (each service's
-Variables → Raw Editor) before sharing it:
+port, but not every value, and no build settings. Fix these in the template composer before
+sharing it, in each service's Variables → Raw Editor:
 
-- **The build settings are gone**: the Dockerfile path and the watch paths. Without the path,
-  Railway builds the repository's root, which has no Dockerfile: set `RAILWAY_DOCKERFILE_PATH` to
-  `apps/api/Dockerfile` on api and `apps/web/Dockerfile` on web. The watch paths have no variable:
-  a button deploy runs without them.
+- **No build settings**: the template has no builder, Dockerfile path or watch paths. Without a
+  path, Railway builds the repository's root, which has no Dockerfile: set `RAILWAY_DOCKERFILE_PATH`
+  to `apps/api/Dockerfile` on api and `apps/web/Dockerfile` on web, and Railway builds that
+  Dockerfile. The watch paths have no variable: a button deploy runs without them.
 - **Plain values come out empty**, for whoever deploys to fill in: set `PORT` to `8080` on api and
   web, and Postgres's own values to Railway's (those of the reference project's Postgres):
   `PGDATA=/var/lib/postgresql/data/pgdata`, `PGPORT=5432`, `POSTGRES_DB=railway`,
@@ -197,26 +197,35 @@ Variables → Raw Editor) before sharing it:
 - **Add `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=10` to api and web**, as the dashboard setup does.
   The composer does not show the apps' draining time (`deploy.drainingSeconds`, 10 s); a variable
   is the setting it shows and keeps.
-- **The name is the project's**: set the template's name and description under Template Settings;
-  the deploy page shows them.
 
-The composer **stages** every edit: until you apply them (the "Apply N changes" bar above the
-canvas, which a window narrower than about 1,000 px hides), the link deploys the template as
-generated. Open the link afterwards: each service should say "Ready to be deployed", with no value
-left to fill in.
+The template takes the project's name: set its name and description under Template Settings (the
+deploy page shows them). The composer **stages** edits: until you apply them (the "Apply N changes"
+bar above the canvas, which a window narrower than about 1,000 px hides), the deploy link (Share,
+below) deploys the template as generated. Open the link afterwards: each service should say "Ready
+to be deployed", with no value left to fill in.
 
 The composer's **Share** gives the link, `https://railway.com/deploy/<code>`, which works without
 publishing the template to Railway's marketplace; link it from the repository's README with
 `[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/<code>)`. The
-template does not follow later changes to `.railway/railway.ts`: re-generate it when they matter,
-and check a button deploy once after each re-generation: both images build from their Dockerfiles,
-the migration runs before the api starts, both health checks pass and the board loads.
+template does not follow later changes to `.railway/railway.ts`: re-generate it when they matter
+(if Share then gives a new code, update the README's link), and check a button deploy once after
+each re-generation:
+
+- each build log reads `load build definition from apps/api/Dockerfile` (web's,
+  `apps/web/Dockerfile`);
+- the migration ran before the api started, and both health checks pass (Check a deploy, below,
+  items 3 and 4);
+- api and web list `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=10` under Variables;
+- the board loads.
 
 A button deploy runs the code of the repository the template was generated from. To change it,
 **Eject** the services (Settings, Source) into your own GitHub copy. That copy is the template as
 is: bootstrap it (README, Quickstart) so `.railway/railway.ts` names your repository, and add the
 shared variable `INTERNAL_API_SECRET` (Set it up, above) before any `railway config apply`, which
-points both services at it.
+points both services at it. That first apply also sets the builds, watch paths and draining time
+from the file, and deletes the template's `RAILWAY_DOCKERFILE_PATH` and
+`RAILWAY_DEPLOYMENT_DRAINING_SECONDS` variables, which the file does not list: its plan shows them as
+destructive.
 
 ## Check a deploy
 
