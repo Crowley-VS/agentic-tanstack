@@ -118,7 +118,7 @@ const READS = [
 ];
 const OFFICIAL = JSON.stringify([{ name: 'claude-plugins-official' }]);
 /** The fake `claude plugin list` output: `ids` installed for the user. */
-const plugins = (ids) => ({
+const installedPlugins = (ids) => ({
   FAKE_PLUGINS: JSON.stringify(ids.map((id) => ({ id, scope: 'user' }))),
 });
 
@@ -257,11 +257,11 @@ describe('setup-agents', () => {
   it('wants npx only when the project enables the Nx plugin', () => {
     const all = ['typescript-lsp@claude-plugins-official', 'nx@nx-claude-plugins'];
     const fakes = ['claude', 'typescript-language-server', 'python3'];
-    let res = setupAgents(machine({ fakes }), [], plugins(all));
+    let res = setupAgents(machine({ fakes }), [], installedPlugins(all));
     expect(res.out).toContain(
       `Remains for you:\n  - npx is not on PATH; the Nx plugin's MCP server starts with it: ${INSTALL.npx}`,
     );
-    expect(setupAgents(machine({ fakes }), ['--check'], plugins(all)).code).toBe(1);
+    expect(setupAgents(machine({ fakes }), ['--check'], installedPlugins(all)).code).toBe(1);
 
     // Under proto's node shim, the Node it runs leads PATH, npx beside it; the shell has none.
     const root = machine({ fakes });
@@ -270,10 +270,10 @@ describe('setup-agents', () => {
     writeFileSync(join(nodeBin, 'npx'), '#!/bin/sh\necho 11.6.2\n');
     chmodSync(join(nodeBin, 'npx'), 0o755);
     const path = `${nodeBin}:${join(root, 'bin')}`;
-    res = setupAgents(root, [], { ...plugins(all), PATH: path });
+    res = setupAgents(root, [], { ...installedPlugins(all), PATH: path });
     expect(res.out).toContain("  - npx 11.6.2 (the Nx plugin's MCP server)");
     const shim = join(root, 'proto/shims/node');
-    res = setupAgents(root, [], { ...plugins(all), PATH: path, PROTO_SHIM_PATH: shim });
+    res = setupAgents(root, [], { ...installedPlugins(all), PATH: path, PROTO_SHIM_PATH: shim });
     expect(res.out).toContain(`npx is not on PATH; the Nx plugin's MCP server starts with it`);
     expect(shellPath({ PATH: path, PROTO_SHIM_PATH: shim })).toBe(join(root, 'bin'));
 
@@ -281,7 +281,7 @@ describe('setup-agents', () => {
     res = setupAgents(
       machine({ fakes, settings: `${JSON.stringify(noNx, null, 2)}\n` }),
       [],
-      plugins(all.slice(0, 1)),
+      installedPlugins(all.slice(0, 1)),
     );
     expect(res.out).not.toContain('npx');
     expect(res.out).toContain('Remains for you:\n  nothing');
