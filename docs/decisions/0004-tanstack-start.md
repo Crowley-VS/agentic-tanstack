@@ -1,6 +1,6 @@
 # 0004 — TanStack Start for the web app
 
-- **Status:** accepted (2026-09-29)
+- **Status:** accepted (2026-09-29); amended 2026-10-31 (Rendering model, and what it suits)
 - **Applies to:** `apps/web`
 
 ## Context
@@ -32,24 +32,30 @@ build, not a user.
 
 ## Rendering model, and what it suits
 
-- **The first request renders on the server.** Nitro runs the route's loaders, which fill a
-  query cache for that request, and the HTML arrives complete: a fast first view, readable by
-  crawlers, with links that work before the JavaScript loads. The cache travels in the page.
+- **Every full page load renders on the server** (the first visit, a reload, a shared link).
+  Start's server (on Nitro) runs the loaders of the matched routes (the root's and the page's),
+  which fill a query cache for that request, and the HTML arrives complete: a fast first view,
+  readable by crawlers, with links that work before the JavaScript loads. The cache travels in the
+  page.
 - **After that it is a single-page app.** The browser takes over that cache without refetching it
   (`staleTime` 30 s, `apps/web/src/router.tsx`), and TanStack Router navigates without reloading
   the page: a link runs the next route's loaders in the browser, which fetch through the BFF only
-  what the cache lacks (hovering a link already preloads it). Every page shares one cache, and a
-  write refreshes only the queries it changed.
+  what the cache lacks (hovering a link already preloads it); a query older than 30 s shows at
+  once and refreshes in the background. In the browser every page shares one cache, and a write
+  refetches only the queries that show what it changed.
 
 This suits **interactive, app-like UIs**, where one visit moves through many views of the same
-data and acts on it: dashboards, admin and internal tools, B2B SaaS, editors. The server render
+data and acts on it: dashboards, admin and internal tools, B2B SaaS, marketplaces. The server render
 makes the first view fast; client-side navigation and the shared cache make every view after it
 quick, with no new page from the server.
 
 It suits **content-first sites** less (blogs, documentation, marketing pages, where most visits
 read one page): every visit downloads and hydrates the app's JavaScript to show mostly static
-text. Astro (static HTML with islands of JavaScript) or streamed React Server Components (Next.js)
-send far less JavaScript there.
+text. Astro (static HTML with islands of JavaScript) or a static site generator sends little or
+none there, and React Server Components (Next.js) leave the code of components that only render
+content out of the bundle. Editors with frequent saves fit less well as built: writes have no
+optimistic updates and wait for their refetch, and the BFF limits writes per client
+(`docs/web.md`).
 
 ## Consequences
 
