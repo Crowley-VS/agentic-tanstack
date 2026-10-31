@@ -5,6 +5,8 @@ description: 'Use when adding a field or small feature across the stack: db colu
 
 # Add a field or feature end to end
 
+<!-- agents:unchecked feat/<x>-api feat/<x>-web -->
+
 Go through the layers in this order. Every generated file comes from its source through the command
 named, never from a hand edit. The Notes board is the reference for every layer: copy its patterns
 rather than inventing new ones. `Comment.authorName` already crosses every layer as an optional
@@ -19,7 +21,9 @@ the API that has it is live (skill `graphql-change`, step 3): steps 1-4 are one 
 operations and input keys (steps 5-7) the next. UI wording and identifiers that never reach the
 API (a label, a formatter's name, a DOM id) may ship with the API PR. If you cannot tell whether
 the app is deployed, assume it is: two PRs, the web one after the API one is live. The first PR's
-description says what the next one does (the plan file is gitignored).
+description says what the next one does (the plan file is gitignored). Put them on two branches:
+`feat/<x>-api` (steps 1-4), and `feat/<x>-web` branched from it (steps 5-7), its PR a draft against
+the API branch until the API PR is merged and deployed.
 
 ## 0. Start
 
@@ -85,15 +89,24 @@ description says what the next one does (the plan file is gitignored).
   `addComment` does with the foreign key.
 - Tests in `packages/core/src/notes/notes.test.ts` use `testDb()` and assert only on rows the test
   created (other tests in the file share its database).
+- A filter on a read (a search, a status) is no write: no core function needs it unless another
+  app reads the same way. It becomes a Drizzle relational `where` in step 4.
 
 ## 4. API (`apps/api/src/graphql`)
+
+- A filter on a read: an optional argument with `validate:` on the connection, turned into a
+  relational `where` and passed in its resolve as `query({ where, orderBy })`. The plugin ANDs it
+  with its own cursor filter, so the order and the pages hold. Add a case to the one-statement
+  test, and an index (skill `db-migration`) when the filter must stay fast on a large table.
 
 - In `notes.ts`, expose the column on the `drizzleObject` (`t.exposeString('x', { nullable: true })`
   for a nullable one) and add it to the input type (`t.string()` is optional). The input's
   `validate:` is the same Zod schema, so its rules and messages apply unchanged.
 - `pnpm nx run api:print-schema` rewrites `packages/graphql/schema.graphql`; read its diff. A
   removed field, or an input or argument that became required, breaks deployed clients. Then run
-  the API tests: `main.test.ts` fails while `schema.graphql` is stale.
+  the API tests: `main.test.ts` fails while `schema.graphql` is stale. `pnpm nx run web:codegen`
+  changes nothing yet (`apps/web/src/gql` holds only the types operations use), so the API PR has
+  no web file.
 - Reads stay on the Drizzle plugin (`t.relation`, `t.relatedCount`, `query(…)`). Add a new
   relation, count or resolver-backed field to the query of the one-statement test in
   `notes.test.ts`: it catches an N+1 only in what it selects. `complexity.test.ts` checks only
@@ -117,6 +130,9 @@ description says what the next one does (the plan file is gitignored).
   with more fields still fits it): add a field the card shows to it by hand.
 
 ## 6. Web UI (`apps/web/src/components`, `apps/web/src/routes`)
+
+- Page state that belongs in the URL (a search, a filter, a tab): `docs/web.md`, "State in the
+  URL" (`validateSearch`, `loaderDeps`, how the router parses values).
 
 - A form field: copy one from `note-form.tsx` (`comment-form.tsx` has an optional one). `Field`,
   `FieldLabel` and `FieldError`; `name` is the input's key; `maxLength` from `NOTE_LIMITS`;

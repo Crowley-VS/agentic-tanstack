@@ -113,6 +113,25 @@ Hydration-safe rendering:
 - Timestamps are UTC text (`formatTimestamp()` in `src/lib/notes/format.ts`): the server and
   every browser render the same string, whatever their time zone or locale.
 
+## State in the URL
+
+Page state that should survive a reload, a shared link and Back (a search, a filter, a tab) lives
+in the route's search params. The board has none yet; four rules of TanStack Router hold for the
+first one:
+
+- **`validateSearch`'s result is spread over the raw params** (`{ ...raw, ...validated }`), not put
+  in their place. Return every key the route owns, `undefined` when it is absent or invalid;
+  otherwise the raw value (an array from `?q=a&q=b`, an object, `null`) still reaches `loaderDeps`,
+  the loader and `head()`. Test it through the router (a navigation in a browser test or an e2e
+  spec), not `validateSearch` alone: the merge happens in the router.
+- **Values are JSON-parsed:** `?q=123` arrives as a number, `?q=true` as a boolean, `?q=null` as
+  `null`. A text param turns them back into text, and text that looks like a number is written
+  quoted (`?q=%22123%22`).
+- **A loader runs again only for what `loaderDeps` returns:** pass the validated params through
+  it, and into the query options' key.
+- **A box that writes the URL as you type keeps its own text:** never reset it from the URL when a
+  navigation lands, or it wipes what was typed meanwhile.
+
 ## Writes: forms
 
 The board's "New note" form (`src/components/note-form.tsx`) is the reference; copy it for a new

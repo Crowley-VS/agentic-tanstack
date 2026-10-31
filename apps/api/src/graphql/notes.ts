@@ -1,4 +1,5 @@
-// The Notes board: a public, create-only board of notes with comments. Reads go through the
+// The Notes board: a public board of notes with comments, which anyone can read and write to (no
+// auth: docs/decisions/0012-adding-auth.md). Reads go through the
 // Drizzle plugin (a nested query, counts included, is planned as one SQL statement); writes go
 // through @acme/core, validated here first with the same Zod schemas (@acme/validators), so core's
 // own validation never fails for input that got this far.

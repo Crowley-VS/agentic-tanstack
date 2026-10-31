@@ -3,6 +3,7 @@
 ## Claude Code specifics
 
 - Start `claude` at the repo root so project settings, hooks and skills load.
+- The Nx plugin's MCP server starts with `npx` (`docs/agents.md`); when it is not connected, the same answers come from `pnpm nx show projects` and `pnpm nx show project <name> --json`.
 - Hooks: edits to generated files are blocked (the message names the regen command); edited files are auto-formatted with oxfmt; opening a PR (`gh pr create`, or `gh pr ready` for a draft) offers the review loop (`tools/agent-hooks/pr-opened.mjs`: `REVIEW_LOOP_AUTO=1` starts it without asking, `REVIEW_LOOP_AUTO=0` turns it off).
 
 <!-- nx configuration start-->

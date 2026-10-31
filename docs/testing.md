@@ -52,7 +52,9 @@ Component tests in real Chromium, through Vitest Browser Mode (`vitest.browser.c
 headless; `HEADED=1` to watch). They mock `execute()`'s module, seed the app status in the
 `QueryClient`, and load the app's stylesheet, so visibility and disabled states are real
 ([web.md](web.md#browser-tests)). `apps/web/src/test-projects.test.ts` checks that every test file
-runs in exactly one of the two Vitest configs.
+runs in exactly one of the two Vitest configs. Every run logs two Vite "Pre-transform error" lines
+(`#tanstack-router-entry`, `tanstack-start-manifest:v`): they are expected (server code left out of
+pre-bundling, `vitest.browser.config.ts`); judge the run by its "Tests … passed" line.
 
 ### End-to-end tests
 
