@@ -8,11 +8,11 @@ project made from the template is its owner's: report a problem in someone's dep
 | Version                    | Supported                  |
 | -------------------------- | -------------------------- |
 | `main`                     | yes: fixes land here first |
-| the latest release (`0.x`) | yes, once releases exist   |
+| the latest release (`0.x`) | yes                        |
 | older releases             | no: update to the latest   |
 
-No release is tagged yet; until 0.1.0, only `main` is supported. Projects made from the template
-take fixes by hand: `docs/updating-from-template.md`.
+Releases are tagged `vX.Y.Z` (`CHANGELOG.md`). Projects made from the template take fixes by hand:
+`docs/updating-from-template.md`.
 
 ## Reporting a vulnerability
 

@@ -38,8 +38,8 @@ specs tested.
   in production; the web server's BFF is the only door.
 - An `apply` deletes what the file leaves out (a variable set in the dashboard, say): the file must
   stay the source of truth.
-- The Railway "Deploy" button needs a template published on Railway itself; it is a launch task,
-  not part of the repository.
+- The Railway "Deploy" button needs a template on Railway itself, shared by link; it is a launch
+  task, not part of the repository.
 - Image builds reinstall everything when the lockfile changes (about 50 s): Railway rejects the
   BuildKit cache mounts that would avoid it.
 

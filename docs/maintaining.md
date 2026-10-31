@@ -159,5 +159,6 @@ change). A newer Nx's agent config comes with the Nx upgrade (skill `nx-upgrade`
 
 **At launch, once:** set `TEMPLATE_MAINTENANCE` to `true`; create the automation App with the three
 permissions and set `AUTOMATION_APP_CLIENT_ID` and `AUTOMATION_APP_PRIVATE_KEY`; install the
-Renovate App on the repository. Railway's "Wait for CI" (`docs/deployment-railway.md`) waits for
+Renovate App on the repository; generate and share the Railway template for the README's button
+(`docs/deployment-railway.md`, The "Deploy on Railway" button). Railway's "Wait for CI" waits for
 these runs on main too.
