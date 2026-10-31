@@ -355,6 +355,41 @@ export function withoutScriptsRules(settings: string): string {
     .join('\n');
 }
 
+/** The lines around a template-only passage in a Markdown file a project keeps. */
+export const TEMPLATE_ONLY_START = '<!-- template-only:start -->';
+export const TEMPLATE_ONLY_END = '<!-- template-only:end -->';
+
+/**
+ * `text` without its template-only passages: each run of lines from a TEMPLATE_ONLY_START line to
+ * the next TEMPLATE_ONLY_END line, both included, and the blank line after it when one comes
+ * before it too. Throws on a marker without its pair, which would keep the passage or cut the rest
+ * of the file.
+ */
+export function withoutTemplateOnly(text: string): string {
+  const lines = text.split('\n');
+  const kept: string[] = [];
+  let start: number | undefined;
+  let skipBlank = false;
+  for (const [i, raw] of lines.entries()) {
+    const line = raw.trim();
+    const blank = skipBlank && line === '';
+    skipBlank = false;
+    if (blank) continue;
+    if (line === TEMPLATE_ONLY_START) {
+      if (start !== undefined) throw new Error(`line ${i + 1}: a second ${TEMPLATE_ONLY_START}`);
+      start = i;
+    } else if (line === TEMPLATE_ONLY_END) {
+      if (start === undefined)
+        throw new Error(`line ${i + 1}: ${TEMPLATE_ONLY_END} without a start`);
+      start = undefined;
+      skipBlank = kept.at(-1)?.trim() === '';
+    } else if (start === undefined) kept.push(raw);
+  }
+  if (start !== undefined)
+    throw new Error(`line ${start + 1}: ${TEMPLATE_ONLY_START} without an end`);
+  return kept.join('\n');
+}
+
 /**
  * The CLI script of the oxfmt installed in `root`'s node_modules, or undefined before install (or
  * when the package or its bin is missing). Run with this Node: no `.bin` shim, so no shell.
@@ -553,6 +588,21 @@ export async function main() {
     if (!opts.dryRun) renameSync(join(ROOT, 'README.project.md'), join(ROOT, 'README.md'));
     if (rewritten.delete('README.project.md')) rewritten.add('README.md');
     console.log('  README.project.md → README.md');
+  }
+  // the template's own passages in the Markdown a project keeps (docs/maintaining.md, …)
+  for (const f of projectFiles().filter((p) => p.endsWith('.md'))) {
+    const text = readFileSync(join(ROOT, f), 'utf8');
+    if (!text.includes(TEMPLATE_ONLY_START)) continue;
+    let stripped: string;
+    try {
+      stripped = withoutTemplateOnly(text);
+    } catch (err) {
+      fail(`${f}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (stripped === text) continue; // the markers' names in a sentence (updating-from-template.md)
+    if (!opts.dryRun) writeFileSync(join(ROOT, f), stripped);
+    rewritten.add(f);
+    console.log(`  removed the template-only passages from ${f}`);
   }
   if (existsSync(join(ROOT, 'LICENSE')) && needsRename) {
     const author = opts.author ?? tryGit(['config', 'user.name']) ?? 'the project authors';

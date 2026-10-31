@@ -31,7 +31,13 @@ Vitest in Node (each project's `vitest.config.ts`, `.mjs` in tools and scripts, 
 `@nx/vitest`; its `include` lists the project's test files). The tools project
 (`tools/test`) tests the repository's own machinery: the hooks, `pnpm check`'s gates, the dev
 ports, the agent-config checks, the permissions in `.claude/settings.json`, the CI workflow's
-wiring. `scripts/test` tests bootstrap (template only: bootstrap removes the project).
+wiring.
+
+<!-- template-only:start -->
+
+`scripts/test` tests bootstrap (template only: bootstrap removes the project).
+
+<!-- template-only:end -->
 
 ### Database and API tests
 
@@ -101,9 +107,13 @@ or API change, and `pnpm nx run web-e2e:e2e-stack` after a Dockerfile, `.dockeri
   both servers report the commit, a clean exit within 10 s of SIGTERM) and runs every e2e spec
   against them ([deployment.md](deployment.md#ci-the-docker-job)).
 
+<!-- template-only:start -->
+
 The upstream template repository also runs a smoke test that bootstraps fresh copies (a tarball
 and a "Use this template" copy) and runs `pnpm check --all` on them. It runs only where the
 repository variable `TEMPLATE_MAINTENANCE` is `true`, and bootstrap removes it from projects.
+
+<!-- template-only:end -->
 
 ## Writing tests
 
