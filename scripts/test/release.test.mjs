@@ -74,10 +74,15 @@ describe('release-please', () => {
     // release-please's changelog updater inserts above the first heading like `## 1.2.3` or
     // `## [1.2.3]`; without one it prepends its own `# Changelog` and demotes the file's headings
     // (a second "Changelog" heading). `## 0.0.0`, the manifest's start, is the permanent baseline;
-    // an `## [Unreleased]` section would match too and end up below every release.
+    // an `## [Unreleased]` section would match too and end up below every release. The newest
+    // heading names the manifest's version: release-please writes `## 0.1.0 (2026-10-31)` for the
+    // first release and `## [0.2.0](<compare url>) (<date>)` after it.
     const text = read('CHANGELOG.md');
     const first = text.match(/\n##? v?[0-9[][^\n]*/)?.[0].trim();
-    expect(first).toBe(`## ${manifest['.']}`);
+    const heading = first?.match(
+      /^## (?:(\d+\.\d+\.\d+)|\[(\d+\.\d+\.\d+)\]\([^)\s]+\))(?: \(\d{4}-\d{2}-\d{2}\))?$/,
+    );
+    expect(heading?.[1] ?? heading?.[2], first).toBe(manifest['.']);
     expect(text.startsWith('# Changelog\n')).toBe(true);
     expect(text).not.toMatch(/unreleased/i);
   });
