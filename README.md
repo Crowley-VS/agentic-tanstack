@@ -95,7 +95,8 @@ node scripts/bootstrap.mjs --yes --scope @my-org --name my-app   # or asks nothi
 ```
 
 It renames the `@acme/…` packages and the `acme-app` placeholder, writes `.env` with a generated
-`INTERNAL_API_SECRET`, removes the template-only files and swaps in the project README, records the
+`INTERNAL_API_SECRET`, removes the template-only files (and their allow rules in
+`.claude/settings.json`) and swaps in the project README, records the
 template version in `package.json#template`, installs (dependencies, git hooks, Chromium),
 regenerates and formats what it touched, commits, and deletes itself. Every step checks its own
 result first, so a failed run can be re-run.
@@ -114,6 +115,10 @@ result first, so a failed run can be re-run.
 | `--no-browsers`                   | skip the Playwright Chromium download                                            |
 | `--no-commit`                     | leave the changes uncommitted                                                    |
 | `--keep-script`                   | keep `scripts/bootstrap.*`                                                       |
+
+Its commit belongs on `main`, right after the copy's first commit (GitHub's "Initial commit", or
+none for a tarball): the one commit made there directly, so create your feature branches after it.
+If your rules need a PR or commit trailers for it, pass `--no-commit` and commit it yourself.
 
 **3. Run it:**
 

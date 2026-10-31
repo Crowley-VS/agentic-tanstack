@@ -14,6 +14,10 @@
 //                        STACK_PORT, COMPOSE_PROJECT_NAME, STACK_PROJECT (`ownsComposeProject` /
 //                        `ownsStackProject` are false when they name a project other than the
 //                        checkout's own)
+//   .env.local        -> the same port variables, kept with the checkout: its gitignored dotenv
+//                        file, which no worktree copies and Nx loads into every task (so the e2e
+//                        targets Nx infers follow it); the environment still wins. For a primary
+//                        checkout whose fixed ports another one already uses
 //   test database URL -> the server's `postgres` maintenance database, for tests that create
 //                        databases of their own
 //
@@ -36,6 +40,7 @@ import {
 } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseEnv } from 'node:util';
 
 const BLOCKS = 400; // blocks of 100 ports in 20000-59999
 const REGISTRY = 'dev-ports.json';
@@ -244,6 +249,27 @@ export function toEnv(info) {
   };
 }
 
+/**
+ * The port variables `.env.local` at `root` sets: the checkout's dotenv file, which Nx also loads
+ * into every task, and whose change makes Nx infer the e2e targets (their readiness URLs) again.
+ * Only the port variables are read. One whose value is no port is left out with a warning on
+ * stderr, not thrown: Nx runs this while it builds the project graph (the e2e targets), and a
+ * throw there would stop every Nx command, `pnpm teardown` included.
+ */
+export function localOverrides(root, { warn = (text) => console.error(text) } = {}) {
+  const file = join(root, '.env.local');
+  if (!existsSync(file)) return {};
+  const values = parseEnv(readFileSync(file, 'utf8'));
+  const overrides = {};
+  for (const key of Object.values(ENV_KEYS)) {
+    if (!values[key]) continue;
+    if (/^[1-9]\d{0,4}$/.test(values[key]) && Number(values[key]) <= 65535)
+      overrides[key] = values[key];
+    else warn(`dev-ports: .env.local sets ${key}="${values[key]}", which is no port: ignored`);
+  }
+  return overrides;
+}
+
 /** Ports, names and URLs for the checkout that contains `cwd` (what `--json` prints). */
 export function resolveInfo(cwd = process.cwd(), env = process.env) {
   const checkout = detectCheckout(cwd);
@@ -251,11 +277,17 @@ export function resolveInfo(cwd = process.cwd(), env = process.env) {
     checkout.primary || !checkout.commonDir
       ? undefined
       : worktreeBlock(checkout.root, checkout.commonDir);
-  return computePorts({ ...checkout, block }, env);
+  return computePorts({ ...checkout, block }, { ...localOverrides(checkout.root), ...env });
 }
 
 function main(argv) {
-  const info = resolveInfo();
+  let info;
+  try {
+    info = resolveInfo();
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
   const [flag, ...rest] = argv;
   switch (flag) {
     case '--json':

@@ -79,10 +79,16 @@ export function deletedWorkspace(dir, { platform = process.platform, exists = ex
   return path !== undefined && !exists(path) ? path : undefined;
 }
 
-/** Every process: `pid uid args` lines. */
+/**
+ * Every process: `pid uid args` lines. On a busy machine (a CI runner mid-check, its tasks' long
+ * command lines) they pass execFileSync's default 1 MB, which kills `ps` (ENOBUFS).
+ */
 export function listProcesses() {
   if (process.platform === 'win32') return '';
-  return execFileSync('ps', ['-A', '-o', 'pid=,uid=,args='], { encoding: 'utf8' });
+  return execFileSync('ps', ['-A', '-o', 'pid=,uid=,args='], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
 }
 
 /** True while process `pid` exists (someone else's included). */

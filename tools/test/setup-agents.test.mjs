@@ -1,4 +1,4 @@
-// tools/setup-agents.mjs with fakes: `claude`, `typescript-language-server` and Python are small
+// tools/setup-agents.mjs with fakes: `claude`, `npx`, `typescript-language-server` and Python are small
 // scripts alone on PATH, and the script runs from a copy in a temp directory with its own
 // .claude/settings.json. Nothing here runs the real `claude plugin install`.
 import { spawnSync } from 'node:child_process';
@@ -14,7 +14,13 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { INSTALL, isInstalled, projectPlugins, pythonVersion } from '../setup-agents.mjs';
+import {
+  INSTALL,
+  isInstalled,
+  projectPlugins,
+  pythonVersion,
+  shellPath,
+} from '../setup-agents.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const SETTINGS = {
@@ -58,7 +64,10 @@ else if (is('plugin', 'install')) {
 `;
 
 /** A temp checkout with the script and `settings`, and a bin directory holding `fakes`. */
-function machine({ fakes = ['claude', 'typescript-language-server', 'python3'], settings } = {}) {
+function machine({
+  fakes = ['claude', 'npx', 'typescript-language-server', 'python3'],
+  settings,
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), 'setup-agents-'));
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, 'tools'));
@@ -69,6 +78,7 @@ function machine({ fakes = ['claude', 'typescript-language-server', 'python3'], 
   mkdirSync(bin);
   const scripts = {
     claude: FAKE_CLAUDE,
+    npx: "console.log('11.6.2');",
     'typescript-language-server': "console.log('4.3.4');",
     python3: "console.log(process.env.FAKE_PYTHON3 ?? 'Python 3.12.1');",
     python: "console.log(process.env.FAKE_PYTHON ?? 'Python 3.11.2');",
@@ -107,6 +117,10 @@ const READS = [
   'claude plugin marketplace list --json',
 ];
 const OFFICIAL = JSON.stringify([{ name: 'claude-plugins-official' }]);
+/** The fake `claude plugin list` output: `ids` installed for the user. */
+const installedPlugins = (ids) => ({
+  FAKE_PLUGINS: JSON.stringify(ids.map((id) => ({ id, scope: 'user' }))),
+});
 
 describe('setup-agents', () => {
   it('installs every plugin the project enables, adding a marketplace this machine lacks', () => {
@@ -225,6 +239,7 @@ describe('setup-agents', () => {
       ]),
     });
     expect(res.out).toContain('In place:\n  - claude 2.1.300 (Claude Code)\n');
+    expect(res.out).toContain("  - npx 11.6.2 (the Nx plugin's MCP server)");
     expect(res.out).toContain('  - typescript-language-server 4.3.4 (the typescript-lsp plugin)');
     expect(res.out).toContain('  - Python 3.12 (only the security-guidance opt-in needs it)');
     expect(res.out).toContain('Remains for you:\n  nothing');
@@ -235,6 +250,46 @@ describe('setup-agents', () => {
     expect(res.out).toContain('  - Python 3.9 (only the security-guidance opt-in needs it)');
     res = setupAgents(bare, [], { FAKE_PYTHON3: 'Python 2.7.18', FAKE_PYTHON: 'Python 3.7.9' });
     expect(res.out).toContain(`Optional:\n  - no Python 3.8+ on PATH`);
+  });
+
+  // proto shims node and pnpm but not npx, so a machine set up with the repo's .prototools can
+  // lack it, and the Nx plugin's MCP server then fails to start.
+  it('wants npx only when the project enables the Nx plugin', () => {
+    const all = ['typescript-lsp@claude-plugins-official', 'nx@nx-claude-plugins'];
+    const fakes = ['claude', 'typescript-language-server', 'python3'];
+    let res = setupAgents(machine({ fakes }), [], installedPlugins(all));
+    expect(res.out).toContain(
+      `Remains for you:\n  - npx is not on PATH; the Nx plugin's MCP server starts with it: ${INSTALL.npx}`,
+    );
+    expect(setupAgents(machine({ fakes }), ['--check'], installedPlugins(all)).code).toBe(1);
+
+    // Under proto's node shim, the Node it runs leads PATH, npx beside it; the shell has none.
+    const root = machine({ fakes });
+    const nodeBin = join(root, 'proto/tools/node/24.21.0/bin');
+    mkdirSync(nodeBin, { recursive: true });
+    writeFileSync(join(nodeBin, 'npx'), '#!/bin/sh\necho 11.6.2\n');
+    chmodSync(join(nodeBin, 'npx'), 0o755);
+    const path = `${nodeBin}:${join(root, 'bin')}`;
+    res = setupAgents(root, [], { ...installedPlugins(all), PATH: path });
+    expect(res.out).toContain("  - npx 11.6.2 (the Nx plugin's MCP server)");
+    const shim = join(root, 'proto/shims/node');
+    res = setupAgents(root, [], { ...installedPlugins(all), PATH: path, PROTO_SHIM_PATH: shim });
+    expect(res.out).toContain(`npx is not on PATH; the Nx plugin's MCP server starts with it`);
+    expect(shellPath({ PATH: path, PROTO_SHIM_PATH: shim })).toBe(join(root, 'bin'));
+    // a proto directory the shell lists itself, after the shim's, stays
+    const globals = join(root, 'proto/tools/node/globals/bin');
+    expect(shellPath({ PATH: `${path}:${globals}`, PROTO_SHIM_PATH: shim })).toBe(
+      `${join(root, 'bin')}:${globals}`,
+    );
+
+    const noNx = { enabledPlugins: { 'typescript-lsp@claude-plugins-official': true } };
+    res = setupAgents(
+      machine({ fakes, settings: `${JSON.stringify(noNx, null, 2)}\n` }),
+      [],
+      installedPlugins(all.slice(0, 1)),
+    );
+    expect(res.out).not.toContain('npx');
+    expect(res.out).toContain('Remains for you:\n  nothing');
   });
 
   it('refuses unknown arguments', () => {

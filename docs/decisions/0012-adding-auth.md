@@ -9,8 +9,8 @@
 Every product authenticates differently: email links or passwords, OAuth, SSO, organizations and
 roles, API keys for partners. A template that picks one makes everyone else rip it out, and a
 half-finished auth that people trust because it came with the template is worse than none. The
-reference feature (the Notes board) is therefore a **public, create-only demo**: anyone who can
-reach the web server can read every note and add notes and comments.
+reference feature (the Notes board) is therefore a **public demo**: anyone who can reach the web
+server can read every note and write to the board (in the template: add notes and comments).
 
 ## Decision
 

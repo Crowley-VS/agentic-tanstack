@@ -2,12 +2,13 @@
 // config and the api and web serve-e2e targets it starts. tools:test's inputs include every
 // package.json and playwright config, so a change to any of them re-runs these tests.
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, matchesGlob, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { nodeBin } from '../lib/bin.mjs';
+import { makeRepo } from './helpers.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const serveE2e = (app) =>
@@ -167,6 +168,47 @@ describe('e2e wiring', () => {
       expect(targets[task].inputs, task).toContainEqual({ env: 'BASE_URL' });
     }
   }, 60_000);
+
+  // @nx/playwright caches the targets it infers, keyed on the project's files and the dotenv files
+  // Nx loads into its tasks, never on another untracked file: a port override only reaches the
+  // readiness gate from .env.local (dev-ports reads it for that reason). A sandbox workspace whose
+  // Playwright config asks dev-ports for its ports, as playwright.config.mts does; no daemon, so the
+  // second command gets the plugin's cache from the first
+  it('infers the readiness gate again when .env.local moves the e2e ports', () => {
+    const devPorts = JSON.stringify(join(REPO, 'tools/dev-ports.mjs'));
+    const root = makeRepo({
+      'package.json': { name: 'sandbox', private: true },
+      'nx.json': { plugins: [{ plugin: '@nx/playwright/plugin', options: { targetName: 'e2e' } }] },
+      '.gitignore': '.env.local\n.nx/\nnode_modules\n',
+      'apps/e/package.json': { name: 'e', nx: { targets: { serve: { command: 'true' } } } },
+      'apps/e/playwright.config.mjs': [
+        "import { execFileSync } from 'node:child_process';",
+        `const json = execFileSync(process.execPath, [${devPorts}, '--json'], { encoding: 'utf8' });`,
+        'const { webE2e } = JSON.parse(json).ports;',
+        "const server = { command: 'pnpm nx run e:serve', reuseExistingServer: true };",
+        'export default { webServer: [{ ...server, url: `http://127.0.0.1:${webE2e}/health` }] };',
+      ].join('\n'),
+    });
+    symlinkSync(join(REPO, 'node_modules'), join(root, 'node_modules'), 'junction');
+    // neither this task's Nx variables nor a port override of the checkout running the test
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !/^NX_|_PORT$/.test(key)),
+    );
+    Object.assign(env, { NX_DAEMON: 'false', NX_NO_CLOUD: 'true' });
+    const [cmd = '', ...pre] = nodeBin(REPO, 'nx') ?? [];
+    const gate = () =>
+      JSON.parse(
+        execFileSync(cmd, [...pre, 'show', 'project', 'e', '--json'], {
+          cwd: root,
+          env,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }),
+      ).targets['e2e--wait-for-webserver']?.options.servers.map((s) => s.url);
+    expect(gate()).toEqual(['http://127.0.0.1:3100/health']);
+    writeFileSync(join(root, '.env.local'), 'WEB_E2E_PORT=3110\n');
+    expect(gate()).toEqual(['http://127.0.0.1:3110/health']);
+  }, 120_000);
 
   it('gives a spec in a subfolder the same cache inputs (nx.json targetDefaults)', () => {
     const { targetDefaults } = JSON.parse(readFileSync(join(REPO, 'nx.json'), 'utf8'));
