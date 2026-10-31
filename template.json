@@ -1,6 +1,6 @@
 {
   "$comment": "Template provenance: bootstrap copies it into package.json#template, then removes this file. version: written by release-please (release-please-config.json). commit: filled in by `git archive` (export-subst in .gitattributes), so a tarball copy (GitHub's archives, giget) records the commit it came from; a \"Use this template\" copy cannot tell, and records null.",
   "repo": "Crowley-VS/agentic-tanstack",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "commit": "$Format:%H$"
 }
