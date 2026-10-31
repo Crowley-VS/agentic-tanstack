@@ -1,5 +1,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -263,6 +270,26 @@ describe('CLI modes', () => {
     expect(lines).toEqual(
       expect.arrayContaining(['WEB_PORT=3000', 'API_PORT=4999', 'DB_STUDIO_PORT=4983']),
     );
+  });
+
+  // Two primary checkouts on one machine (two projects made from the template) share the fixed
+  // ports: the second keeps its own in a gitignored file instead of every command's environment.
+  it('reads .ports.local at the checkout root; the environment wins, a bad line fails', () => {
+    const cwd = tempDir();
+    writeFileSync(
+      join(cwd, '.ports.local'),
+      '# 3000 and 5432 are taken\nWEB_PORT=3010\nDB_PORT = 5442\n',
+    );
+    expect(cli(['--get', 'web'], { cwd }).stdout).toBe('http://localhost:3010\n');
+    expect(cli(['--get', 'db'], { cwd }).stdout).toBe('5442\n');
+    expect(cli(['--get', 'web'], { cwd, env: { WEB_PORT: '3020' } }).stdout).toBe(
+      'http://localhost:3020\n',
+    );
+    writeFileSync(join(cwd, '.ports.local'), 'WEB_PROT=3010\n');
+    const bad = cli(['--get', 'web'], { cwd });
+    expect(bad.status).toBe(1);
+    expect(bad.stderr).toContain('dev-ports: .ports.local line 1: "WEB_PROT=3010" is not KEY=PORT');
+    expect(bad.stderr).not.toContain('    at ');
   });
 
   it('--print lists the URLs, Drizzle Studio on its own port included', () => {

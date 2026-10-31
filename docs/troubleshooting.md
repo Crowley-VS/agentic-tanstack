@@ -36,9 +36,11 @@ WEB_PORT=3005 API_PORT=4005 pnpm dev
 ```
 
 The variables are `WEB_PORT`, `API_PORT`, `DB_PORT`, `DB_STUDIO_PORT`, `WEB_E2E_PORT`,
-`API_E2E_PORT` and `STACK_PORT` (`tools/dev-ports.mjs`). Export them in your shell profile to keep
-them, since every command computes the ports again. Linked worktrees get a block of ports of their
-own, so two worktrees never collide with each other.
+`API_E2E_PORT` and `STACK_PORT` (`tools/dev-ports.mjs`). Every command computes the ports again:
+to keep an override, put it in `.ports.local` at the checkout root (gitignored), one `KEY=PORT`
+per line, and every command reads it (the environment still wins). That is how two primary
+checkouts on one machine, say two projects made from the template, keep apart. Linked worktrees
+get a block of ports of their own, so two worktrees never collide with each other.
 
 ## Containers, daemons and temp files pile up
 

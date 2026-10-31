@@ -14,6 +14,9 @@
 //                        STACK_PORT, COMPOSE_PROJECT_NAME, STACK_PROJECT (`ownsComposeProject` /
 //                        `ownsStackProject` are false when they name a project other than the
 //                        checkout's own)
+//   .ports.local      -> the same port variables, kept with the checkout: KEY=VALUE lines in a
+//                        gitignored file at its root (the environment still wins), for a primary
+//                        checkout whose fixed ports another one already uses
 //   test database URL -> the server's `postgres` maintenance database, for tests that create
 //                        databases of their own
 //
@@ -244,6 +247,30 @@ export function toEnv(info) {
   };
 }
 
+/**
+ * The port overrides in `.ports.local` at `root`: KEY=VALUE lines of the port variables, `#`
+ * comments. An unknown key or a value that is no port throws, rather than being ignored.
+ */
+export function localOverrides(root) {
+  const file = join(root, '.ports.local');
+  if (!existsSync(file)) return {};
+  const keys = Object.values(ENV_KEYS);
+  const overrides = {};
+  readFileSync(file, 'utf8')
+    .split(/\r?\n/)
+    .forEach((raw, i) => {
+      const line = raw.replace(/#.*/, '').trim();
+      if (!line) return;
+      const [, key, value] = line.match(/^(\w+)\s*=\s*(\S*)$/) ?? [];
+      if (!keys.includes(key) || !/^\d{2,5}$/.test(value ?? ''))
+        throw new Error(
+          `dev-ports: .ports.local line ${i + 1}: "${line}" is not KEY=PORT, KEY one of ${keys.join(', ')}`,
+        );
+      overrides[key] = value;
+    });
+  return overrides;
+}
+
 /** Ports, names and URLs for the checkout that contains `cwd` (what `--json` prints). */
 export function resolveInfo(cwd = process.cwd(), env = process.env) {
   const checkout = detectCheckout(cwd);
@@ -251,11 +278,17 @@ export function resolveInfo(cwd = process.cwd(), env = process.env) {
     checkout.primary || !checkout.commonDir
       ? undefined
       : worktreeBlock(checkout.root, checkout.commonDir);
-  return computePorts({ ...checkout, block }, env);
+  return computePorts({ ...checkout, block }, { ...localOverrides(checkout.root), ...env });
 }
 
 function main(argv) {
-  const info = resolveInfo();
+  let info;
+  try {
+    info = resolveInfo();
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
   const [flag, ...rest] = argv;
   switch (flag) {
     case '--json':

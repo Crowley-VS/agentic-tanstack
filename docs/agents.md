@@ -11,8 +11,10 @@ POSIX shell.
 
 1. `node tools/setup-agents.mjs` (`--check` reports without changing anything). Committed
    settings turn the project's plugins on, but Claude Code downloads none of them by itself: the
-   script installs each one (`claude plugin install <id> --scope project`), and checks for
-   `typescript-language-server` and Python. It says what it changed and what is left for you.
+   script installs each one (`claude plugin install <id> --scope project`), and checks for `npx`
+   (the Nx plugin's MCP server), `typescript-language-server` and Python. It says what it changed
+   and what is left for you. On a machine set up with proto, `npx` is missing until you install
+   proto's npm tool: proto puts only `node` and `pnpm` on PATH.
 2. `pnpm exec playwright install chromium`, for browser tests and e2e.
 3. Start `claude` at the repo root and trust the folder (next section).
 
@@ -110,13 +112,13 @@ skill copies and check the agent config on every commit.
 them once (`node tools/setup-agents.mjs`). Once installed, `claude plugin details <id>` shows
 what one adds to each session, in tokens.
 
-| Plugin                                    | What it does                                                                                      | Cost and prerequisites                                                                                                |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `typescript-lsp@claude-plugins-official`  | Code intelligence: definitions, references, diagnostics after edits                               | `typescript-language-server` on PATH; a language server process; diagnostics added to context                         |
-| `nx@nx-claude-plugins`                    | Nx skills (workspace, generators, running tasks, CI) and a CI-monitor subagent; the Nx MCP server | Its MCP server starts with `npx nx-mcp@latest` (a download outside this repo's pins); skill listings in every session |
-| `context7@claude-plugins-official`        | Current library docs through Context7's hosted MCP server                                         | Network; queries go to a third party; anonymous rate limits unless you set `CONTEXT7_API_KEY`                         |
-| `frontend-design@claude-plugins-official` | A skill for distinctive UI work                                                                   | Its skill listing in every session                                                                                    |
-| `railway@railway-skills`                  | Railway skills and Railway's hosted MCP server (`docs/deployment-railway.md`)                     | The `railway` CLI and your own login; every Railway command and MCP tool asks first (ask rules)                       |
+| Plugin                                    | What it does                                                                                      | Cost and prerequisites                                                                                                               |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `typescript-lsp@claude-plugins-official`  | Code intelligence: definitions, references, diagnostics after edits                               | `typescript-language-server` on PATH; a language server process; diagnostics added to context                                        |
+| `nx@nx-claude-plugins`                    | Nx skills (workspace, generators, running tasks, CI) and a CI-monitor subagent; the Nx MCP server | Its MCP server starts with `npx nx-mcp@latest` (`npx` on PATH; a download outside this repo's pins); skill listings in every session |
+| `context7@claude-plugins-official`        | Current library docs through Context7's hosted MCP server                                         | Network; queries go to a third party; anonymous rate limits unless you set `CONTEXT7_API_KEY`                                        |
+| `frontend-design@claude-plugins-official` | A skill for distinctive UI work                                                                   | Its skill listing in every session                                                                                                   |
+| `railway@railway-skills`                  | Railway skills and Railway's hosted MCP server (`docs/deployment-railway.md`)                     | The `railway` CLI and your own login; every Railway command and MCP tool asks first (ask rules)                                      |
 
 To turn one off for yourself, set it to `false` in `.claude/settings.local.json` (gitignored),
 which wins over the project file:

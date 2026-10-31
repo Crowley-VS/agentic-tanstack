@@ -12,8 +12,9 @@
 //    does not know it yet (`claude plugin marketplace add`, which writes your user settings).
 //    A project-scope install rewrites .claude/settings.json: when only the formatting changed,
 //    this script puts the file back; any other change is reported for you to review.
-// 3. typescript-language-server on PATH: the typescript-lsp plugin starts it.
-// 4. Python 3.8+: only the security-guidance opt-in needs it (docs/agents.md).
+// 3. npx on PATH, when the project enables the Nx plugin: its MCP server starts with npx.
+// 4. typescript-language-server on PATH: the typescript-lsp plugin starts it.
+// 5. Python 3.8+: only the security-guidance opt-in needs it (docs/agents.md).
 //
 // Plain Node with no dependencies (it may run before `pnpm install`), on macOS, Linux, WSL2 and
 // Windows. Exit code: 1 when something it ran failed, or with --check when something remains.
@@ -30,10 +31,12 @@ const GITHUB_REPO = /^[\w.-]+\/[\w.-]+$/;
 export const USAGE = `Usage: node tools/setup-agents.mjs [--check]
 
 Once per machine: installs the Claude Code plugins .claude/settings.json enables (project scope),
-and checks for typescript-language-server and Python. --check reports without changing anything.`;
+and checks for npx, typescript-language-server and Python. --check reports without changing anything.`;
 export const INSTALL = {
-  claude: 'install Claude Code: https://code.claude.com/docs/en/setup',
-  tsls: 'pnpm add -g typescript-language-server typescript (pnpm setup puts its global bin directory on PATH)',
+  claude:
+    'install Claude Code: https://code.claude.com/docs/en/setup (the desktop app does not put its copy on PATH)',
+  npx: 'npx comes with npm: install Node.js with npm, or with proto its npm tool (`proto install npm`), which adds the npm and npx shims',
+  tsls: "once, `pnpm setup` (it puts pnpm's global bin directory on PATH; then open a new shell), then `pnpm add -g typescript-language-server typescript`",
   python: 'install Python 3.8 or later (python.org, or your package manager)',
 };
 
@@ -41,15 +44,32 @@ export const INSTALL = {
  * Run `cmd` with fixed arguments in `cwd`. No shell, except on Windows, where npm-installed CLIs
  * are .cmd shims; the arguments are plain words checked by the callers (PLUGIN_ID, GITHUB_REPO).
  */
-function run(cwd, cmd, args) {
+function run(cwd, cmd, args, env) {
   const res = spawnSync(cmd, args, {
     cwd,
     encoding: 'utf8',
     shell: process.platform === 'win32',
     timeout: 300_000,
+    env: env && { ...process.env, ...env },
   });
   const out = `${res.stdout ?? ''}${res.stderr ?? ''}`.trim();
   return { ok: res.status === 0 && !res.error, stdout: res.stdout ?? '', out };
+}
+
+/**
+ * PATH as your shell and Claude Code see it. proto's node shim puts the Node it runs (and its
+ * globals) first on PATH, with npx beside it, so npx resolves inside this script on a machine
+ * whose shell has none: under a proto shim, drop the directories under proto's `tools`.
+ */
+export function shellPath(env = process.env) {
+  const path = env.PATH ?? '';
+  if (!env.PROTO_SHIM_PATH) return path;
+  const tools = join(dirname(dirname(env.PROTO_SHIM_PATH)), 'tools');
+  const sep = process.platform === 'win32' ? ';' : ':';
+  return path
+    .split(sep)
+    .filter((dir) => dir !== tools && !dir.startsWith(`${tools}/`) && !dir.startsWith(`${tools}\\`))
+    .join(sep);
 }
 
 const realpath = (p) => {
@@ -185,7 +205,14 @@ export function setup({ root = ROOT, check = false } = {}) {
   } else if (!valid.length) ok('.claude/settings.json enables no plugins');
   else todo(`plugins to install once claude is there: ${valid.join(', ')}`);
 
-  // 3. The TypeScript language server (plugin typescript-lsp)
+  // 3. npx, which starts the Nx plugin's MCP server (`npx nx-mcp@latest`)
+  if (valid.some((id) => id.startsWith('nx@'))) {
+    const npx = run(root, 'npx', ['--version'], { PATH: shellPath() });
+    if (npx.ok) ok(`npx ${npx.out.split('\n')[0]} (the Nx plugin's MCP server)`);
+    else todo(`npx is not on PATH; the Nx plugin's MCP server starts with it: ${INSTALL.npx}`);
+  }
+
+  // 4. The TypeScript language server (plugin typescript-lsp)
   const tsls = run(root, 'typescript-language-server', ['--version']);
   if (tsls.ok)
     ok(`typescript-language-server ${tsls.out.split('\n')[0]} (the typescript-lsp plugin)`);
@@ -194,7 +221,7 @@ export function setup({ root = ROOT, check = false } = {}) {
       `typescript-language-server is not on PATH; the typescript-lsp plugin needs it: ${INSTALL.tsls}`,
     );
 
-  // 4. Python, for the security-guidance opt-in only
+  // 5. Python, for the security-guidance opt-in only
   const python = [
     ['python3', ['--version']],
     ['python', ['--version']],
