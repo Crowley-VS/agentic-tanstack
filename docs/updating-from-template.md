@@ -98,6 +98,10 @@ What `upstream` leaves out, and what to do instead:
   names them. When `<new>` adds one (`git show <new>:scripts/bootstrap.ts`), add it to `upstream`
   too: a patch creates every file upstream added, and a template workflow would then run in your
   repository.
+- **Template-only passages** of the docs your project kept (`docs/maintaining.md`'s template
+  section, a few paragraphs elsewhere), between `<!-- template-only:start -->` and
+  `<!-- template-only:end -->` lines, which bootstrap removed. A hunk inside one does not apply:
+  skip it.
 - **`README.md`** and **`README.project.md`**: upstream's `README.md` is the template's front page,
   and yours came from its `README.project.md`. Read upstream's changes to that file
   (`git diff <old> <new> -- README.project.md`) and copy what you want into your `README.md`.

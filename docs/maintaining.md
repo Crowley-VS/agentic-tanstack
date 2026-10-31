@@ -1,16 +1,22 @@
 # Maintenance automation
 
-What keeps this repository current without a person starting it: Renovate's dependency PRs, the
-workflow that regenerates the generated files on them and, in the upstream template only, its
-releases and weekly checks. CI itself (`.github/workflows/ci.yml`) is `pnpm check` and the jobs
-`AGENTS.md` and `docs/deployment.md` describe.
+What keeps this repository current without a person starting it: Renovate's dependency PRs and the
+workflow that regenerates the generated files on them. CI itself (`.github/workflows/ci.yml`) is
+`pnpm check` and the jobs `AGENTS.md` and `docs/deployment.md` describe.
 
-| File                                                                    | What it does                                                 | When                                       | In a project made from the template  |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------ | ------------------------------------ |
-| `.github/renovate.json5`                                                | Renovate's config                                            | weekly, once the Renovate App is installed | kept, off until it installs Renovate |
-| `.github/workflows/renovate-regen.yml`                                  | `pnpm regen` on Renovate's branches, pushed back             | each push to a `renovate/**` branch        | kept, off until it sets up its App   |
-| `.github/workflows/template-smoke.yml`                                  | bootstraps fresh copies, then every check and the e2e tests  | pull requests, main, Mondays               | removed by bootstrap                 |
-| `.github/workflows/release-please.yml`, `release-please-config.json`, … | the release PR, the tags and GitHub releases, `CHANGELOG.md` | each push to main                          | removed by bootstrap                 |
+| File                                   | What it does                                     | When                                       | In a project made from the template  |
+| -------------------------------------- | ------------------------------------------------ | ------------------------------------------ | ------------------------------------ |
+| `.github/renovate.json5`               | Renovate's config                                | weekly, once the Renovate App is installed | kept, off until it installs Renovate |
+| `.github/workflows/renovate-regen.yml` | `pnpm regen` on Renovate's branches, pushed back | each push to a `renovate/**` branch        | kept, off until it sets up its App   |
+
+<!-- template-only:start -->
+
+The upstream template also runs its releases (`release-please.yml`, `release-please-config.json`,
+…: the release PR, the tags and GitHub releases, `CHANGELOG.md`, on each push to main) and a smoke
+test (`template-smoke.yml`: bootstraps fresh copies, then every check and the e2e tests, on pull
+requests, main and Mondays). Bootstrap removes both: [Maintaining the template](#maintaining-the-template-upstream-only).
+
+<!-- template-only:end -->
 
 ## Dependency updates: Renovate
 
@@ -109,10 +115,15 @@ Without the variable the workflow starts no job; with the variable and no secret
 fails and says why. The App pushes to `renovate/**` only: a ruleset on main is untouched, and one
 that covers those branches (signed commits, say) must let the App through.
 
+<!-- template-only:start -->
+
 ## Maintaining the template (upstream only)
 
-Bootstrap removes all of this from a copy (`TEMPLATE_ONLY` in `scripts/bootstrap.ts`). A project
-keeps CI and the two Renovate files above; this section is the template's record of what it runs.
+Bootstrap removes all of this from a copy: the files (`TEMPLATE_ONLY` in `scripts/bootstrap.ts`),
+and this section with every other passage of the docs between a `<!-- template-only:start -->` line
+and a `<!-- template-only:end -->` line (`withoutTemplateOnly()`; the smoke test checks none is
+left). A project keeps CI and the two Renovate files above; this section is the template's record
+of what it runs.
 
 **`TEMPLATE_MAINTENANCE`:** a repository variable (Settings → Secrets and variables → Actions →
 Variables), `true` on the upstream repository only. Every job of the template-only workflows runs
@@ -162,3 +173,5 @@ permissions and set `AUTOMATION_APP_CLIENT_ID` and `AUTOMATION_APP_PRIVATE_KEY`;
 Renovate App on the repository; generate and share the Railway template for the README's button
 (`docs/deployment-railway.md`, The "Deploy on Railway" button). Railway's "Wait for CI" waits for
 these runs on main too.
+
+<!-- template-only:end -->

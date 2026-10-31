@@ -122,8 +122,8 @@ describe('api app', () => {
   });
 
   it('rejects abusive operations before executing them', async () => {
-    // each message names the configured limit, so raising or lowering one fails here (SECURITY.md
-    // promises these numbers)
+    // each message names the configured limit, so raising or lowering one fails here (the
+    // template's SECURITY.md promises these numbers)
     const aliases = Array.from({ length: 16 }, (_, i) => `a${i}: apiVersion`).join(' ');
     expect(messages((await query(dev, `{ ${aliases} }`)).body)).toContain(
       'Aliases limit of 15 exceeded, found 16.',

@@ -81,6 +81,10 @@ jobs:
           test ! -e scripts/bootstrap.ts
           test ! -e scripts/bootstrap.mjs
           test ! -e template.json
+          # and so are the docs' template-only passages (a marker line, not its name in a sentence)
+          if git grep -nE '^\s*<!-- template-only:(start|end) -->\s*$'; then
+            echo "template-only passages survived bootstrap"; exit 1
+          fi
           # the template's maintenance (docs/maintaining.md) is gone; what a project uses stays
           for f in template-smoke.yml release-please.yml; do
             test ! -e ".github/workflows/$f"
