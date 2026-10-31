@@ -30,6 +30,27 @@ build, not a user.
   `pnpm exec intent list` and `pnpm exec intent load <package>#<skill>` serve (TanStack Intent,
   pinned in the catalog).
 
+## Rendering model, and what it suits
+
+- **The first request renders on the server.** Nitro runs the route's loaders, which fill a
+  query cache for that request, and the HTML arrives complete: a fast first view, readable by
+  crawlers, with links that work before the JavaScript loads. The cache travels in the page.
+- **After that it is a single-page app.** The browser takes over that cache without refetching it
+  (`staleTime` 30 s, `apps/web/src/router.tsx`), and TanStack Router navigates without reloading
+  the page: a link runs the next route's loaders in the browser, which fetch through the BFF only
+  what the cache lacks (hovering a link already preloads it). Every page shares one cache, and a
+  write refreshes only the queries it changed.
+
+This suits **interactive, app-like UIs**, where one visit moves through many views of the same
+data and acts on it: dashboards, admin and internal tools, B2B SaaS, editors. The server render
+makes the first view fast; client-side navigation and the shared cache make every view after it
+quick, with no new page from the server.
+
+It suits **content-first sites** less (blogs, documentation, marketing pages, where most visits
+read one page): every visit downloads and hydrates the app's JavaScript to show mostly static
+text. Astro (static HTML with islands of JavaScript) or streamed React Server Components (Next.js)
+send far less JavaScript there.
+
 ## Consequences
 
 - Typed routes and typed operations together mean a renamed page, param or field is a type error

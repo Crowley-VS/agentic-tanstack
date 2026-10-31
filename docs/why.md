@@ -62,6 +62,16 @@ heads. So the template gives every rule a check, and the agent a way to ask:
   `pnpm nx affected -t lint eslint typecheck build`, then
   `pnpm nx affected -t test --exclude=tag:needs-db`.
 
+## How the web app renders, and why that decides the fit
+
+The first page is rendered on the server; after that the app runs in the browser as a single-page
+app, moving between pages without reloading over one shared data cache
+([ADR 0004](decisions/0004-tanstack-start.md#rendering-model-and-what-it-suits)). That is why
+interactive, app-like products fit (dashboards, admin and internal tools, B2B SaaS, editors: many
+views of the same data, a fast first view and quick navigation after it), and why content-first
+sites do not: every visit would download and hydrate the app's JavaScript to show mostly static
+text, where Astro or streamed Server Components send far less.
+
 ## Why these choices
 
 | Choice                           | In one line                                                                                | Record                                            |
