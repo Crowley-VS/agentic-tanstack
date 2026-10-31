@@ -1221,7 +1221,9 @@ describe('check: the paths and pnpm commands skills name', () => {
     // a broken worktree link: git fails, and the check must not pass the paths unchecked
     rmSync(join(root, '.git'), { recursive: true });
     writeFile(root, '.git', `gitdir: ${join(root, 'gone')}\n`);
-    expect(() => check(root)).toThrow(/git cannot list the repo's files.*not a git repository/s);
+    // git's own wording varies by version ("not a git repository", "gitfile does not point to a
+    // valid repository"): match its `fatal:` prefix, after this check's own message
+    expect(() => check(root)).toThrow(/git cannot list the repo's files.*fatal: /s);
     // a source archive (no .git): nothing tells repo files from local ones, so paths go unchecked
     rmSync(join(root, '.git'));
     expect(referenceProblems(root)).toEqual([]);
