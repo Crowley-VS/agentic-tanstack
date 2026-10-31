@@ -1,0 +1,35 @@
+# A proposal for the template. Template-only: bootstrap removes .github/ISSUE_TEMPLATE from
+# projects made from it.
+name: Feature request
+description: Propose a change to the template's stack, defaults, checks or agent layer.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The template stays small on purpose: one reference feature, one way to do each thing, every rule enforced by a check (CONTRIBUTING.md).
+        Open-ended ideas fit Discussions better.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is hard or missing today, for whom (people, agents), and how you work around it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The proposal
+      description: What should change, and which files, checks or docs it touches.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways to solve it, and why this one. For a stack choice, the ADR in docs/decisions it would change.
+  - type: textarea
+    id: enforcement
+    attributes:
+      label: How a check would enforce it
+      description: The test, lint rule or `pnpm check` gate that keeps it true, if it is a rule.

@@ -20,6 +20,7 @@ import {
   needsShell,
   oxfmtEntry,
   sortedPackageJson,
+  TEMPLATE_ONLY,
   USAGE,
   withoutScriptsRules,
 } from '../bootstrap.ts';
@@ -148,6 +149,25 @@ describe('bootstrap', () => {
     expect(leftovers).toEqual([]);
     for (const gone of ['scripts', 'template.json', '.github/workflows/template-smoke.yml'])
       expect(existsSync(join(copy, gone)), gone).toBe(false);
+    // the template's public files go; its pull request template stays (AGENTS.md asks every PR
+    // for a summary and a test plan, in projects too)
+    for (const gone of [
+      'CHANGELOG.md',
+      'CODE_OF_CONDUCT.md',
+      'CONTRIBUTING.md',
+      'SECURITY.md',
+      '.github/ISSUE_TEMPLATE',
+    ]) {
+      expect(existsSync(join(REPO, gone)), `${gone} in the template`).toBe(true);
+      expect(existsSync(join(copy, gone)), gone).toBe(false);
+    }
+    expect(existsSync(join(copy, '.github/pull_request_template.md'))).toBe(true);
+    // no doc the project keeps links to a file bootstrap removed (or to a heading it dropped)
+    const links = spawnSync(process.execPath, ['tools/doc-links.mjs'], {
+      cwd: copy,
+      encoding: 'utf8',
+    });
+    expect(links.status, `${links.stdout}${links.stderr}`).toBe(0);
     // what every clone runs stays, with its tests, in the tools project (docs/agents.md)
     for (const kept of ['setup-agents', 'pw-agents'])
       for (const f of [`tools/${kept}.mjs`, `tools/test/${kept}.test.mjs`])
@@ -398,6 +418,23 @@ describe('bootstrap', () => {
     expect(unknown.code).toBe(1);
     expect(unknown.out).toContain('unknown option --frobnicate');
     expect(unknown.out).toContain(USAGE);
+  });
+
+  it("keeps every template-only file out of docs/updating-from-template.md's patches", () => {
+    // the `upstream` helper's pathspecs: a patch from upstream would recreate a removed file
+    const doc = readFileSync(join(REPO, 'docs/updating-from-template.md'), 'utf8');
+    const excluded = [...doc.matchAll(/':\(exclude\)([^']+)'/g)].map((m) => m[1]);
+    const covered = (path) => excluded.some((e) => path === e || path.startsWith(`${e}/`));
+    const removed = [
+      ...TEMPLATE_ONLY,
+      'template.json',
+      'scripts/bootstrap.ts',
+      'README.project.md',
+    ];
+    expect(removed.filter((path) => !covered(path))).toEqual([]);
+    // and nothing a project keeps
+    expect(covered('apps/web/scripts/check-client-bundle.mjs')).toBe(false);
+    expect(covered('.github/pull_request_template.md')).toBe(false);
   });
 
   it('starts only pnpm through a shell (cmd.exe would split the commit message)', () => {

@@ -3,9 +3,11 @@
 import { createDb } from '@acme/db';
 import { createLogger, type LogFormat } from '@acme/logger';
 import { CLIENT_IP_HEADER, REQUEST_ID_HEADER, SECRET_HEADER } from '@acme/validators/internal-api';
+import { execute, parse } from 'graphql';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createApp } from './app';
 import { loadEnv } from './env';
+import { schema } from './graphql/schema';
 
 const { db, close } = createDb({ url: 'postgres://nobody@127.0.0.1:1/none' });
 afterAll(() => close());
@@ -120,14 +122,71 @@ describe('api app', () => {
   });
 
   it('rejects abusive operations before executing them', async () => {
+    // each message names the configured limit, so raising or lowering one fails here (SECURITY.md
+    // promises these numbers)
     const aliases = Array.from({ length: 16 }, (_, i) => `a${i}: apiVersion`).join(' ');
-    expect(messages((await query(dev, `{ ${aliases} }`)).body)).toMatch(/aliases/i);
-    const directives = Array.from({ length: 11 }, () => '@include(if: true)').join(' ');
-    expect(messages((await query(dev, `{ apiVersion ${directives} }`)).body)).toMatch(
-      /directives/i,
+    expect(messages((await query(dev, `{ ${aliases} }`)).body)).toContain(
+      'Aliases limit of 15 exceeded, found 16.',
     );
+    const directives = Array.from({ length: 11 }, () => '@include(if: true)').join(' ');
+    expect(messages((await query(dev, `{ apiVersion ${directives} }`)).body)).toContain(
+      'Directives limit of 10 exceeded, found 11.',
+    );
+    expect(messages((await query(dev, nested(11))).body)).toContain(
+      'Query depth limit of 10 exceeded, found 11.',
+    );
+    // `{`, 1,999 fields and `}`: one token over
+    expect(messages((await query(dev, `{ ${'apiVersion '.repeat(1999)}}`)).body)).toContain(
+      'Token limit of 2000 exceeded.',
+    );
+    // graphql-armor's own price, not the schema's complexity: a page of 1,000 costs 7,250
+    expect(
+      messages((await query(dev, '{ notes(first: 1000) { edges { cursor } } }')).body),
+    ).toContain('Query Cost limit of 5000 exceeded');
+  });
+
+  it('limits depth in the schema too, behind graphql-armor (Pothos complexity)', async () => {
+    // executed without Yoga's validation rules, so graphql-armor's depth limit never sees it
+    const result = await execute({
+      schema,
+      document: parse(nested(11)),
+      contextValue: { db, readOnly: false },
+    });
+    expect(result.errors?.map((e) => e.message)).toEqual([
+      'Query exceeds maximum depth (depth: 11, max: 10)',
+    ]);
+  });
+
+  it('sends no CORS headers: a page on another origin can read none of its answers', async () => {
+    const origin = { origin: 'https://elsewhere.example' };
+    for (const app of [dev, prod]) {
+      const preflight = await app.fetch('http://api/graphql', {
+        method: 'OPTIONS',
+        headers: {
+          ...origin,
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': 'content-type',
+        },
+      });
+      expect(preflight.headers.get('access-control-allow-origin')).toBeNull();
+      const post = await app.fetch('http://api/graphql', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...origin, ...trusted },
+        body: JSON.stringify({ query: '{ apiVersion }' }),
+      });
+      expect(post.status).toBe(200);
+      expect(post.headers.get('access-control-allow-origin')).toBeNull();
+    }
   });
 });
+
+/** A query `depth` fields deep: a note, then comment lists and their notes, ending in an id. */
+function nested(depth: number) {
+  const fields = Array.from({ length: depth - 1 }, (_, i) =>
+    i === 0 ? 'note(id: "0199aa00-0000-7000-8000-000000000001")' : i % 2 ? 'comments' : 'note',
+  );
+  return `{ ${fields.reduceRight((inner, field) => `${field} { ${inner} }`, 'id')} }`;
+}
 
 /** An app whose log lines go to `lines`. */
 function logged(env: Record<string, string>, format: LogFormat = 'text') {

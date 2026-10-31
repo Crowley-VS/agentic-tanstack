@@ -25,7 +25,7 @@ const PLACEHOLDER_SCOPE = '@acme';
 const PLACEHOLDER_NAME = 'acme-app';
 
 /** Files that exist only to maintain the template itself. Missing ones are fine. */
-const TEMPLATE_ONLY = [
+export const TEMPLATE_ONLY = [
   // the `scripts` Nx project that lints, typechecks and tests this script (bootstrap.ts and
   // bootstrap.mjs themselves are removed last, after everything succeeded)
   'scripts/project.json',
@@ -37,7 +37,8 @@ const TEMPLATE_ONLY = [
   'CONTRIBUTING.md',
   'SECURITY.md',
   '.github/ISSUE_TEMPLATE',
-  '.github/pull_request_template.md',
+  // not .github/pull_request_template.md: AGENTS.md asks every project's PRs for its summary and
+  // test plan too
   '.github/workflows/template-smoke.yml',
   '.github/workflows/release-please.yml',
   '.github/workflows/agent-config-drift.yml',
