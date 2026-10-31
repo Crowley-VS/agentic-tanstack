@@ -106,10 +106,12 @@ describe('computePorts', () => {
     expect(computePorts(checkout, { STACK_PROJECT: 'theirs' }).stackProject).toBe('theirs');
     expect(owns({ STACK_PROJECT: 'theirs' })).toBe(false);
     expect(owns({ COMPOSE_PROJECT_NAME: 'shared' })).toBe(false);
-    // a CI runner holds one checkout: the project its workflow names is the run's own
-    expect(owns({ CI: 'true', STACK_PROJECT: 'acme-app-stack' })).toBe(true);
-    expect(owns({ CI: 'false', STACK_PROJECT: 'acme-app-stack' })).toBe(false);
-    expect(owns({ CI: '0', STACK_PROJECT: 'acme-app-stack' })).toBe(false);
+    // a CI runner holds one checkout: the project its workflow names is the run's own. Not the
+    // placeholder project's name: bootstrap renames it, to `my-app-stack` with `--name my-app`
+    // (the README's), and this checkout's own stack is already owned
+    expect(owns({ CI: 'true', STACK_PROJECT: 'ci-stack' })).toBe(true);
+    expect(owns({ CI: 'false', STACK_PROJECT: 'ci-stack' })).toBe(false);
+    expect(owns({ CI: '0', STACK_PROJECT: 'ci-stack' })).toBe(false);
     expect(owns({ CI: 'true', COMPOSE_PROJECT_NAME: 'shared' })).toBe(false);
     const worktree = { root: '/work/my-app/.claude/worktrees/a', primary: false };
     const own = computePorts(worktree);

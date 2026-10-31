@@ -41,7 +41,8 @@ export const TEMPLATE_ONLY = [
   'CONTRIBUTING.md',
   'SECURITY.md',
   '.github/ISSUE_TEMPLATE',
-  '.github/pull_request_template.md',
+  // not .github/pull_request_template.md: AGENTS.md asks every project's PRs for its summary and
+  // test plan too
   '.github/workflows/template-smoke.yml',
   '.github/workflows/release-please.yml',
   'release-please-config.json',

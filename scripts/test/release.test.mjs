@@ -70,6 +70,18 @@ describe('release-please', () => {
     expect(check()).toBe(0);
   });
 
+  it('finds a version heading in CHANGELOG.md to insert each release above, after the intro', () => {
+    // release-please's changelog updater inserts above the first heading like `## 1.2.3` or
+    // `## [1.2.3]`; without one it prepends its own `# Changelog` and demotes the file's headings
+    // (a second "Changelog" heading). `## 0.0.0`, the manifest's start, is the permanent baseline;
+    // an `## [Unreleased]` section would match too and end up below every release.
+    const text = read('CHANGELOG.md');
+    const first = text.match(/\n##? v?[0-9[][^\n]*/)?.[0].trim();
+    expect(first).toBe(`## ${manifest['.']}`);
+    expect(text.startsWith('# Changelog\n')).toBe(true);
+    expect(text).not.toMatch(/unreleased/i);
+  });
+
   it('runs on main in the template only, as the App when there is one, else GITHUB_TOKEN', () => {
     const text = read('.github/workflows/release-please.yml');
     expect(text).toMatch(/^on:\n {2}push:\n {4}branches: \[main\]\n\n/m);

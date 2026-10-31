@@ -19,8 +19,8 @@ One Railway project, three services per environment:
 
 The browser only ever talks to web; web's BFF and SSR reach the api over Railway's private network
 (WireGuard, `http://`), sending `INTERNAL_API_SECRET`. The api has no public domain, and the
-database no TCP proxy: keep it that way. Postgres 18 on Debian trixie, like the local
-`postgres:18.6-trixie` (same glibc, same text sort order). Its `DATABASE_URL` has no `sslmode`:
+database no TCP proxy: keep it that way. Postgres 18 on Debian trixie, like the local image
+(`docker-compose.yml`: same glibc, same text sort order). Its `DATABASE_URL` has no `sslmode`:
 the connection stays on the private network.
 
 What the servers get from Railway with no setting of theirs (`docs/production.md`):

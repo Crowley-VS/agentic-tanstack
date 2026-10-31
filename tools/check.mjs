@@ -7,7 +7,8 @@
 // Gates, in order: agent-config hygiene · Nx's agent config · generated-file drift · lint (oxlint) ·
 // eslint (module boundaries) · typecheck · test · test-browser (tests in a real browser; a no-op for
 // projects without the target) · build · Nx sync (tsconfig project references) · lint of the files
-// no project owns · formatting (oxfmt --check) · pinned version consistency.
+// no project owns · formatting (oxfmt --check) · pinned version consistency · relative Markdown
+// links and anchors.
 //
 // Generated-file drift runs BEFORE the nx step. It reports the files regen changes, compared with
 // the tree as regen found it. A task in the nx step may depend on a generator and rewrite a
@@ -64,6 +65,8 @@ export const steps = (nxMode) => [
   // a bot, a clone without hooks) is only caught here
   { name: 'format', command: ['node', 'tools/check.mjs', '--format'] },
   { name: 'versions', command: ['node', 'tools/check-versions.mjs'] },
+  // not an Nx target: a change to docs alone affects no Nx project, so it would never run
+  { name: 'doc links', command: ['node', 'tools/doc-links.mjs'] },
 ];
 
 /**
