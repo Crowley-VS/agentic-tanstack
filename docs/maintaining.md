@@ -26,7 +26,7 @@ installing the App for its repository: the config is there, so Renovate skips it
 
 - **When:** PRs open on Mondays before 04:00 UTC (`schedule:weekly`), for releases at least 3 days
   old (pnpm's own floor, `minimumReleaseAge` in `pnpm-workspace.yaml`, is 1 day). Commit messages
-  are Conventional (`chore(deps): …`, `fix(deps): …`), as release-please reads them.
+  are Conventional (`chore(deps): …`, `fix(deps): …`), like the repository's other commits.
 - **The catalog:** Renovate updates the versions in `pnpm-workspace.yaml` (its catalog and
   `overrides`) and the lockfile; the `catalog:` references in the `package.json` files stay.
 - **Caps:** vitest `<5`, typescript `<6.1`, graphql `<17` (catalog and override together: Pothos

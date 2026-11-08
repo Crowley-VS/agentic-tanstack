@@ -54,9 +54,10 @@ export const TEMPLATE_ONLY = [
 export const USAGE = `Usage: node scripts/bootstrap.mjs [options]
 
 Turns a fresh copy of this template into your project: renames the @acme / acme-app placeholders,
-writes .env with a generated secret, removes template-only files, records the template version,
-installs, formats what it rewrote, commits, and deletes itself. It asks for anything it needs that
-no option gives, unless --yes is set. Safe to re-run after a failure.
+writes .env with a generated secret, removes template-only files and the template-only passages
+of the docs it keeps, records the template version, installs, formats what it rewrote, commits,
+and deletes itself. It asks for anything it needs that no option gives, unless --yes is set. Safe
+to re-run after a failure.
 
 Options:
   -y, --yes                 never ask: take the defaults (needs --scope and --name)
@@ -391,6 +392,27 @@ export function withoutTemplateOnly(text: string): string {
 }
 
 /**
+ * The kept Markdown files with template-only passages (docs/maintaining.md, …), each with its text
+ * without them. Fails on a marker without its pair.
+ */
+function templateOnlyPassages(): Map<string, string> {
+  const found = new Map<string, string>();
+  for (const f of projectFiles().filter((p) => p.endsWith('.md'))) {
+    const text = readFileSync(join(ROOT, f), 'utf8');
+    if (!text.includes(TEMPLATE_ONLY_START) && !text.includes(TEMPLATE_ONLY_END)) continue;
+    let stripped: string;
+    try {
+      stripped = withoutTemplateOnly(text);
+    } catch (err) {
+      fail(`${f}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // unchanged: the markers' names in a sentence (updating-from-template.md)
+    if (stripped !== text) found.set(f, stripped);
+  }
+  return found;
+}
+
+/**
  * The CLI script of the oxfmt installed in `root`'s node_modules, or undefined before install (or
  * when the package or its bin is missing). Run with this Node: no `.bin` shim, so no shell.
  */
@@ -474,6 +496,8 @@ export async function main() {
         'or pass --no-commit and commit yourself.',
     );
   }
+  // before anything changes: a re-run after a failure in step 5 would skip the LICENSE step
+  templateOnlyPassages();
   console.log(`  Node ${process.versions.node}, root ${ROOT}`);
 
   // 2. Git ----------------------------------------------------------------------------
@@ -589,17 +613,7 @@ export async function main() {
     if (rewritten.delete('README.project.md')) rewritten.add('README.md');
     console.log('  README.project.md → README.md');
   }
-  // the template's own passages in the Markdown a project keeps (docs/maintaining.md, …)
-  for (const f of projectFiles().filter((p) => p.endsWith('.md'))) {
-    const text = readFileSync(join(ROOT, f), 'utf8');
-    if (!text.includes(TEMPLATE_ONLY_START)) continue;
-    let stripped: string;
-    try {
-      stripped = withoutTemplateOnly(text);
-    } catch (err) {
-      fail(`${f}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    if (stripped === text) continue; // the markers' names in a sentence (updating-from-template.md)
+  for (const [f, stripped] of templateOnlyPassages()) {
     if (!opts.dryRun) writeFileSync(join(ROOT, f), stripped);
     rewritten.add(f);
     console.log(`  removed the template-only passages from ${f}`);

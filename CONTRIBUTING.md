@@ -62,7 +62,10 @@ same rules apply to people and agents.
    any other review.
 6. A maintainer merges. The template's own files (this one, the issue forms, the template smoke
    test) are kept out of projects by bootstrap's `TEMPLATE_ONLY` list: add a new template-only file
-   there, with a test in `scripts/test/bootstrap.test.mjs`.
+   there, with a test in `scripts/test/bootstrap.test.mjs`. Template-only text in a doc that
+   projects keep goes between a `<!-- template-only:start -->` and a `<!-- template-only:end -->`
+   line, each on its own line with a blank line around it; bootstrap removes the passage
+   ([docs/maintaining.md](docs/maintaining.md#maintaining-the-template-upstream-only)).
 
 ## Repository settings
 

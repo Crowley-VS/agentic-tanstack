@@ -27,15 +27,15 @@ A cached result replays: `--skip-nx-cache` reruns it.
 
 ### Unit tests
 
-Vitest in Node (each project's `vitest.config.ts`, `.mjs` in tools and scripts, inferred by
-`@nx/vitest`; its `include` lists the project's test files). The tools project
-(`tools/test`) tests the repository's own machinery: the hooks, `pnpm check`'s gates, the dev
-ports, the agent-config checks, the permissions in `.claude/settings.json`, the CI workflow's
-wiring.
+Vitest in Node (each project's `vitest.config.ts`, `.mjs` in tools, inferred by `@nx/vitest`; its
+`include` lists the project's test files). The tools project (`tools/test`) tests the repository's
+own machinery: the hooks, `pnpm check`'s gates, the dev ports, the agent-config checks, the
+permissions in `.claude/settings.json`, the CI workflow's wiring.
 
 <!-- template-only:start -->
 
-`scripts/test` tests bootstrap (template only: bootstrap removes the project).
+The scripts project (`scripts/test`, `.mjs` too) tests bootstrap (template only: bootstrap removes
+the project).
 
 <!-- template-only:end -->
 

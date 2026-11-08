@@ -101,7 +101,9 @@ What `upstream` leaves out, and what to do instead:
 - **Template-only passages** of the docs your project kept (`docs/maintaining.md`'s template
   section, a few paragraphs elsewhere), between `<!-- template-only:start -->` and
   `<!-- template-only:end -->` lines, which bootstrap removed. A hunk inside one does not apply:
-  skip it.
+  skip it. A hunk next to one carries its lines as context and is rejected too: apply its change
+  to your kept lines by hand. A hunk that adds a new passage applies cleanly, so after applying,
+  `git grep -nx '<!-- template-only:start -->'` and delete each passage it finds, markers included.
 - **`README.md`** and **`README.project.md`**: upstream's `README.md` is the template's front page,
   and yours came from its `README.project.md`. Read upstream's changes to that file
   (`git diff <old> <new> -- README.project.md`) and copy what you want into your `README.md`.

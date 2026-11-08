@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  appendFileSync,
   chmodSync,
   cpSync,
   existsSync,
@@ -667,6 +668,23 @@ describe('bootstrap', () => {
     const committed = bootstrap(fromEnv, [...PROJECT, '--no-install'], { ...env, ...IDENTITY_ENV });
     expect(committed.code, committed.out).toBe(0);
     expect(gitIn(fromEnv, 'log', '-1', '--format=%an <%ae>')).toBe('Smoke <smoke@example.com>');
+  });
+
+  it('stops before changing anything when a kept doc has a template-only marker without its pair', () => {
+    for (const [marker, error] of [
+      [TEMPLATE_ONLY_START, 'without an end'],
+      [TEMPLATE_ONLY_END, 'without a start'],
+    ]) {
+      const copy = fileCopy();
+      appendFileSync(join(copy, 'docs/web.md'), `\nStray.\n\n${marker}\n`);
+      const before = snapshot(copy);
+      const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit']);
+      expect(res.code, res.out).toBe(1);
+      expect(res.out).toMatch(new RegExp(`docs/web\\.md: line \\d+: .*${error}`));
+      // a re-run would find the names changed and skip the LICENSE step
+      expect(snapshot(copy)).toEqual(before);
+      expect(existsSync(join(copy, '.git'))).toBe(false);
+    }
   });
 
   it('records the commit an archive came from (git archive fills it in), null for a file copy', () => {
