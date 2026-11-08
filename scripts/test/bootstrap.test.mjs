@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  appendFileSync,
   chmodSync,
   cpSync,
   existsSync,
@@ -21,12 +22,17 @@ import {
   oxfmtEntry,
   sortedPackageJson,
   TEMPLATE_ONLY,
+  TEMPLATE_ONLY_END,
+  TEMPLATE_ONLY_START,
   templateCommit,
   USAGE,
   withoutScriptsRules,
+  withoutTemplateOnly,
 } from '../bootstrap.ts';
 
 const REPO = resolve(import.meta.dirname, '../..');
+/** A template-only marker line (not the marker's name in a sentence), as the smoke test greps. */
+const MARKER_LINE = /^\s*<!-- template-only:(start|end) -->\s*$/m;
 const PROJECT = ['--yes', '--scope', '@smoke', '--name', 'smoke-app'];
 /** A git identity from the environment, as a CI runner without one configured would set it. */
 const IDENTITY_ENV = {
@@ -158,6 +164,14 @@ describe('bootstrap', () => {
       return text.includes('@acme/') || text.includes('acme-app');
     });
     expect(leftovers).toEqual([]);
+    // the docs' template-only passages go, the rest of each doc stays
+    const marked = Object.keys(snapshot(copy)).filter((f) =>
+      MARKER_LINE.test(readFileSync(join(copy, f), 'utf8')),
+    );
+    expect(marked).toEqual([]);
+    const maintaining = readFileSync(join(copy, 'docs/maintaining.md'), 'utf8');
+    expect(maintaining).not.toContain('Maintaining the template');
+    expect(maintaining).toContain('## Dependency updates: Renovate');
     // the template's own maintenance goes (docs/maintaining.md)...
     for (const gone of [
       'scripts',
@@ -482,6 +496,37 @@ describe('bootstrap', () => {
     for (const cmd of ['pnpm', 'git']) expect(needsShell(cmd, 'linux'), cmd).toBe(false);
   });
 
+  it('drops the template-only passages of a kept doc, and nothing else', () => {
+    const doc = ['# Doc', '', 'Kept.', '', TEMPLATE_ONLY_START, '', 'Upstream only.', ''];
+    expect(withoutTemplateOnly([...doc, TEMPLATE_ONLY_END, '', 'Also kept.', ''].join('\n'))).toBe(
+      '# Doc\n\nKept.\n\nAlso kept.\n',
+    );
+    // at the end of the file
+    expect(withoutTemplateOnly([...doc, TEMPLATE_ONLY_END, ''].join('\n'))).toBe(
+      '# Doc\n\nKept.\n',
+    );
+    // the markers' names in a sentence are no markers
+    const sentence = `Between a \`${TEMPLATE_ONLY_START}\` and a \`${TEMPLATE_ONLY_END}\` line.\n`;
+    expect(withoutTemplateOnly(sentence)).toBe(sentence);
+    expect(() => withoutTemplateOnly(`${TEMPLATE_ONLY_START}\ncut\n`)).toThrow(/without an end/);
+    expect(() => withoutTemplateOnly(`${TEMPLATE_ONLY_END}\n`)).toThrow(/without a start/);
+    expect(() => withoutTemplateOnly(`${TEMPLATE_ONLY_START}\n${TEMPLATE_ONLY_START}\n`)).toThrow(
+      /a second/,
+    );
+  });
+
+  it("pairs every template-only marker in the template's docs", () => {
+    const docs = execFileSync('git', ['ls-files', '*.md'], { cwd: REPO, encoding: 'utf8' })
+      .split('\n')
+      .filter(Boolean);
+    const marked = docs.filter((f) => MARKER_LINE.test(readFileSync(join(REPO, f), 'utf8')));
+    expect(marked).toContain('docs/maintaining.md');
+    for (const f of marked) {
+      const kept = withoutTemplateOnly(readFileSync(join(REPO, f), 'utf8'));
+      expect(MARKER_LINE.test(kept), f).toBe(false);
+    }
+  });
+
   it('drops only whole allow-rule lines for the scripts project', () => {
     const text =
       '{\n  "allow": [\n    "Bash(pnpm nx run scripts:test)",\n    "Bash(pnpm nx run tools:test)"\n  ]\n}\n';
@@ -623,6 +668,23 @@ describe('bootstrap', () => {
     const committed = bootstrap(fromEnv, [...PROJECT, '--no-install'], { ...env, ...IDENTITY_ENV });
     expect(committed.code, committed.out).toBe(0);
     expect(gitIn(fromEnv, 'log', '-1', '--format=%an <%ae>')).toBe('Smoke <smoke@example.com>');
+  });
+
+  it('stops before changing anything when a kept doc has a template-only marker without its pair', () => {
+    for (const [marker, error] of [
+      [TEMPLATE_ONLY_START, 'without an end'],
+      [TEMPLATE_ONLY_END, 'without a start'],
+    ]) {
+      const copy = fileCopy();
+      appendFileSync(join(copy, 'docs/web.md'), `\nStray.\n\n${marker}\n`);
+      const before = snapshot(copy);
+      const res = bootstrap(copy, [...PROJECT, '--no-install', '--no-commit']);
+      expect(res.code, res.out).toBe(1);
+      expect(res.out).toMatch(new RegExp(`docs/web\\.md: line \\d+: .*${error}`));
+      // a re-run would find the names changed and skip the LICENSE step
+      expect(snapshot(copy)).toEqual(before);
+      expect(existsSync(join(copy, '.git'))).toBe(false);
+    }
   });
 
   it('records the commit an archive came from (git archive fills it in), null for a file copy', () => {

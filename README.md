@@ -96,7 +96,8 @@ node scripts/bootstrap.mjs --yes --scope @my-org --name my-app   # or asks nothi
 
 It renames the `@acme/…` packages and the `acme-app` placeholder, writes `.env` with a generated
 `INTERNAL_API_SECRET`, removes the template-only files (and their allow rules in
-`.claude/settings.json`) and swaps in the project README, records the
+`.claude/settings.json`) and the template-only passages of the docs it keeps, swaps in the project
+README, records the
 template version in `package.json#template`, installs (dependencies, git hooks, Chromium),
 regenerates and formats what it touched, commits, and deletes itself. Every step checks its own
 result first, so a failed run can be re-run.

@@ -109,10 +109,15 @@ printed which). Wait for CI waits for every GitHub Actions run on the commit, an
 check suites of other GitHub apps on the account (another host's, say) may stay queued and do not
 hold a deploy. A failed run skips the deploy (`SKIPPED` in `railway deployment list -s <service>`;
 `railway status --json` shows it as failed); a passing one releases a waiting deploy within
-seconds. In the upstream template repository (`TEMPLATE_MAINTENANCE` set) CI includes the template
-smoke test, up to 40 minutes, and release-please (`docs/maintaining.md`).
-`railway redeploy -s <service> --from-source` deploys the branch's latest commit;
+seconds. `railway redeploy -s <service> --from-source` deploys the branch's latest commit;
 `railway redeploy -s <service> --yes` redeploys the deployment that runs.
+
+<!-- template-only:start -->
+
+In the upstream template repository (`TEMPLATE_MAINTENANCE` set), the runs Wait for CI waits for
+include the template smoke test, up to 40 minutes, and release-please (`docs/maintaining.md`).
+
+<!-- template-only:end -->
 
 A push redeploys a service only when it changes one of its watch paths: its app, the workspace
 packages its image bundles, and the files every install reads (`railway.ts` lists them; its test
