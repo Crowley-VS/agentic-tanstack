@@ -5,6 +5,13 @@ writes each entry from the [Conventional Commits](https://www.conventionalcommit
 `main` (`feat:`, `fix:`, …) when its release pull request is merged: do not edit the entries by
 hand. What `main` has that no release has yet is listed in that open release pull request.
 
+## [0.1.1](https://github.com/Crowley-VS/agentic-tanstack/compare/v0.1.0...v0.1.1) (2026-11-08)
+
+
+### Bug Fixes
+
+* **bootstrap:** strip the docs' template-only passages from a project ([#50](https://github.com/Crowley-VS/agentic-tanstack/issues/50)) ([cc12053](https://github.com/Crowley-VS/agentic-tanstack/commit/cc1205337ba2b34551f5b0268ee642a5ba3f14cb))
+
 ## 0.1.0 (2026-10-31)
 
 
